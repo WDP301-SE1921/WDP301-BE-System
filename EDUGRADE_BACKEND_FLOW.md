@@ -2,7 +2,7 @@
 
 ## 1. Mục tiêu
 
-Tài liệu này mô tả một luồng Backend hoàn chỉnh cho EduGrade bằng **Next.js App Router**:
+Tài liệu này mô tả một luồng Backend hoàn chỉnh cho EduGrade bằng **NestJS**:
 
 ```text
 Quản lý tạo đăng ký
@@ -37,21 +37,17 @@ Quản lý tạo đăng ký
 
 ## 3. Stack đề xuất
 
-- Next.js App Router + TypeScript.
-- Route Handlers trong `app/api`.
+- NestJS + TypeScript.
+- REST Controller mỏng, nghiệp vụ nằm trong Service và persistence nằm trong Repository/Prisma.
 - PostgreSQL.
 - Prisma ORM.
 - Auth bằng session/JWT lưu trong cookie `HttpOnly`, `Secure`, `SameSite=Lax`.
 - Mật khẩu hash bằng Argon2id hoặc bcrypt với cost phù hợp.
-- Zod để kiểm tra request body.
+- `class-validator` và `class-transformer` để kiểm tra request DTO.
 - Transactional Outbox cho email.
 - Worker riêng xử lý hàng đợi email; không gửi email trực tiếp trong database transaction.
 
-Các Route Handler liên quan tới Prisma, hash mật khẩu và transaction phải chạy Node.js runtime:
-
-```ts
-export const runtime = "nodejs";
-```
+Prisma được cung cấp qua một `DatabaseService` dùng chung do NestJS quản lý vòng đời.
 
 ## 4. Mô hình dữ liệu cốt lõi
 
@@ -469,7 +465,7 @@ API trả dữ liệu hoặc PDF biên lai. Nút **In** nằm ở frontend và g
 ```mermaid
 sequenceDiagram
     actor M as Quản lý
-    participant API as Next.js API
+    participant API as NestJS API
     participant DB as PostgreSQL
     participant W as Email Worker
     actor P as Phụ huynh
@@ -496,64 +492,48 @@ sequenceDiagram
     API-->>P: Liên kết thành công
 ```
 
-## 8. Cấu trúc source Next.js đề xuất
+## 8. Cấu trúc source NestJS đề xuất
 
 ```text
 src/
-├── app/
-│   └── api/
-│       ├── manager/
-│       │   └── registration-orders/
-│       │       ├── route.ts
-│       │       └── [orderId]/
-│       │           ├── confirm-payment/route.ts
-│       │           └── reissue-link/route.ts
-│       ├── link-invitations/
-│       │   ├── inspect/route.ts
-│       │   ├── claim/route.ts
-│       │   └── claim-and-sign-up/route.ts
-│       └── manager/payments/[paymentId]/receipt/route.ts
-├── modules/
-│   ├── auth/
-│   │   ├── auth.service.ts
-│   │   ├── password.service.ts
-│   │   └── authorization.ts
-│   ├── registration/
-│   │   ├── registration.schema.ts
-│   │   ├── registration.service.ts
-│   │   ├── payment-confirmation.service.ts
-│   │   └── link-claim.service.ts
-│   ├── pricing/
-│   │   └── pricing.service.ts
-│   ├── enrollment/
-│   │   └── enrollment.service.ts
-│   ├── notification/
-│   │   ├── outbox.service.ts
-│   │   ├── email.worker.ts
-│   │   └── templates/
-│   └── audit/
-│       └── audit.service.ts
-├── lib/
-│   ├── db.ts
-│   ├── errors.ts
-│   ├── idempotency.ts
-│   └── crypto-token.ts
-└── generated/
-    └── prisma/
+├── main.ts
+├── app.module.ts
+├── common/
+│   ├── decorators/
+│   ├── guards/
+│   ├── filters/
+│   ├── interceptors/
+│   ├── middleware/
+│   └── errors/
+├── config/
+├── database/orm/
+└── modules/
+    ├── auth/
+    ├── registration/
+    │   ├── dto/
+    │   ├── registration.controller.ts
+    │   ├── registration.service.ts
+    │   └── registration.repository.ts
+    ├── link-invitations/
+    ├── payments/
+    ├── enrollments/
+    ├── notifications/
+    ├── audit/
+    └── health/
 
 prisma/
 ├── schema.prisma
 └── migrations/
 ```
 
-Route Handler chỉ nên làm bốn việc:
+Controller chỉ nên làm bốn việc:
 
 1. Đọc request.
 2. Xác thực và phân quyền.
 3. Validate dữ liệu.
 4. Gọi service rồi chuyển kết quả thành HTTP response.
 
-Không đặt transaction hoặc nghiệp vụ lớn trực tiếp trong `route.ts`.
+Không đặt transaction hoặc nghiệp vụ lớn trực tiếp trong Controller.
 
 ## 9. Luồng gửi email
 
@@ -699,7 +679,7 @@ Response lỗi thống nhất:
 5. Thông tin tối thiểu bắt buộc của StudentProfile ngoài tên và khối.
 6. Một phụ huynh có được đổi email đăng nhập sau khi đã liên kết hay không.
 
-Các điểm trên nên trở thành cấu hình/quy tắc rõ ràng; không nên để Route Handler tự suy đoán.
+Các điểm trên nên trở thành cấu hình/quy tắc rõ ràng; không nên để Controller tự suy đoán.
 
 ## 15. Definition of Done
 

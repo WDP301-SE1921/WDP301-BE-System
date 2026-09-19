@@ -1,0 +1,278 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  MANAGER
+  TEACHER
+  PARENT
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RegistrationType {
+  FIRST_CHILD
+  NEW_CHILD
+  EXISTING_STUDENT_NEW_SUBJECT
+}
+
+enum RegistrationStatus {
+  DRAFT
+  PAYMENT_CONFIRMED
+  LINKED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  CONFIRMED
+}
+
+enum EnrollmentStatus {
+  PENDING_LINK
+  ACTIVE
+  ENDED
+}
+
+enum InvitationStatus {
+  ACTIVE
+  USED
+  EXPIRED
+  REVOKED
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+model User {
+  id                 String           @id @default(cuid())
+  email              String           @unique
+  passwordHash       String?
+  displayName        String?
+  role               UserRole
+  status             UserStatus       @default(ACTIVE)
+  parentProfile      ParentProfile?
+  createdOrders      RegistrationOrder[] @relation("OrderCreatedBy")
+  confirmedPayments  Payment[]        @relation("PaymentConfirmedBy")
+  usedInvitations    LinkInvitation[] @relation("InvitationUsedBy")
+  auditLogs          AuditLog[]
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@map("users")
+}
+
+model ParentProfile {
+  id        String           @id @default(cuid())
+  userId    String           @unique
+  phone     String?
+  user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  students  StudentProfile[]
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@map("parent_profiles")
+}
+
+model StudentProfile {
+  id              String           @id @default(cuid())
+  parentProfileId String
+  fullName        String
+  grade           Int
+  dateOfBirth     DateTime?        @db.Date
+  status          StudentStatus    @default(ACTIVE)
+  parentProfile   ParentProfile    @relation(fields: [parentProfileId], references: [id], onDelete: Restrict)
+  enrollments     Enrollment[]
+  targetedOrders  RegistrationOrder[] @relation("TargetStudent")
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([parentProfileId])
+  @@map("student_profiles")
+}
+
+model Program {
+  id        String   @id @default(cuid())
+  name      String
+  subject   String
+  grade     Int
+  classes   Class[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([subject, grade])
+  @@map("programs")
+}
+
+model Class {
+  id                 String              @id @default(cuid())
+  programId          String
+  name               String
+  capacity           Int
+  isOpen             Boolean             @default(true)
+  monthlyFee         Decimal             @db.Decimal(14, 2)
+  program            Program             @relation(fields: [programId], references: [id], onDelete: Restrict)
+  registrationOrders RegistrationOrder[]
+  enrollments        Enrollment[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([programId, isOpen])
+  @@map("classes")
+}
+
+model RegistrationOrder {
+  id                  String             @id @default(cuid())
+  type                RegistrationType
+  parentEmail         String
+  parentPhone         String?
+  studentFullName     String
+  studentGrade        Int
+  targetStudentId     String?
+  classId             String
+  packageMonths       Int
+  quotedAmount        Decimal            @db.Decimal(14, 2)
+  currency            String             @default("VND") @db.VarChar(3)
+  status              RegistrationStatus @default(DRAFT)
+  createdByManagerId  String
+  confirmedAt         DateTime?
+  linkedAt            DateTime?
+  targetStudent       StudentProfile?    @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
+  class               Class              @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdByManager    User               @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
+  payment             Payment?
+  enrollment          Enrollment?
+  invitations         LinkInvitation[]
+  outboxEvents        OutboxEvent[]
+  idempotencyRecords  IdempotencyRecord[]
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([parentEmail])
+  @@index([classId, status])
+  @@index([targetStudentId])
+  @@map("registration_orders")
+}
+
+model Payment {
+  id                     String        @id @default(cuid())
+  registrationOrderId    String        @unique
+  amount                 Decimal       @db.Decimal(14, 2)
+  currency               String        @default("VND") @db.VarChar(3)
+  status                 PaymentStatus @default(CONFIRMED)
+  confirmedByManagerId   String
+  confirmedAt            DateTime      @default(now())
+  receiptNumber          String        @unique
+  registrationOrder      RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  confirmedByManager     User          @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
+  createdAt              DateTime      @default(now())
+
+  @@index([confirmedByManagerId])
+  @@map("payments")
+}
+
+model Enrollment {
+  id                  String           @id @default(cuid())
+  registrationOrderId String           @unique
+  studentProfileId    String?
+  classId             String
+  packageMonths       Int
+  status              EnrollmentStatus @default(PENDING_LINK)
+  startDate           DateTime?        @db.Date
+  endDate             DateTime?        @db.Date
+  activatedAt         DateTime?
+  endedAt             DateTime?
+  registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  studentProfile      StudentProfile?  @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
+  class               Class            @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([classId, status])
+  @@index([studentProfileId, status])
+  @@map("enrollments")
+}
+
+model LinkInvitation {
+  id                    String           @id @default(cuid())
+  registrationOrderId   String
+  tokenHash             String           @unique @db.Char(64)
+  expectedParentEmail   String
+  status                InvitationStatus @default(ACTIVE)
+  expiresAt             DateTime
+  usedAt                DateTime?
+  usedByUserId          String?
+  registrationOrder     RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  usedByUser             User?            @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
+  createdAt             DateTime           @default(now())
+
+  @@index([registrationOrderId, status])
+  @@index([expectedParentEmail])
+  @@map("link_invitations")
+}
+
+model OutboxEvent {
+  id                  String       @id @default(cuid())
+  eventType           String
+  aggregateId         String
+  payload             Json
+  status              OutboxStatus @default(PENDING)
+  attemptCount        Int          @default(0)
+  nextAttemptAt       DateTime     @default(now())
+  lastError           String?
+  registrationOrder   RegistrationOrder @relation(fields: [aggregateId], references: [id], onDelete: Restrict)
+  createdAt           DateTime     @default(now())
+  sentAt              DateTime?
+
+  @@index([status, nextAttemptAt])
+  @@index([aggregateId])
+  @@map("outbox_events")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String
+  action      String
+  entityType  String
+  entityId    String
+  beforeData  Json?
+  afterData   Json?
+  ipAddress   String?
+  userAgent   String?
+  actor       User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  createdAt   DateTime @default(now())
+
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model IdempotencyRecord {
+  id                  String   @id @default(cuid())
+  scope               String
+  key                 String
+  registrationOrderId String
+  response            Json
+  registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  createdAt           DateTime @default(now())
+
+  @@unique([scope, key])
+  @@index([registrationOrderId])
+  @@map("idempotency_records")
+}
