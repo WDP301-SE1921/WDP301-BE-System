@@ -32,9 +32,15 @@ describe('Health endpoints (e2e)', () => {
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
-    process.env.DATABASE_URL = 'postgresql://user:password@localhost:5432/wdp301_test';
+    process.env.DATABASE_URL = 'mysql://root:admin123@localhost:3306/edugrade_health_test';
     process.env.CORS_ORIGINS = 'http://localhost:3000,http://localhost:8081';
     process.env.SWAGGER_ENABLED = 'false';
+    process.env.JWT_ACCESS_SECRET = 'test-access-secret-test-access-secret-test-access-secret';
+    process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-test-refresh-secret-test-refresh-secret';
+    process.env.JWT_ISSUER = 'edugrade-api-test';
+    process.env.JWT_AUDIENCE = 'edugrade-clients-test';
+    process.env.JWT_ACCESS_TTL_SECONDS = '900';
+    process.env.JWT_REFRESH_TTL_SECONDS = '604800';
 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DatabaseService)

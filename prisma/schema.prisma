@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -61,27 +61,43 @@ enum OutboxStatus {
 }
 
 model User {
-  id                 String           @id @default(cuid())
-  email              String           @unique
-  passwordHash       String?
-  displayName        String?
+  id                 String              @id @default(cuid()) @db.VarChar(191)
+  email              String              @unique @db.VarChar(255)
+  passwordHash       String?             @db.VarChar(255)
+  displayName        String?             @db.VarChar(255)
   role               UserRole
-  status             UserStatus       @default(ACTIVE)
+  status             UserStatus          @default(ACTIVE)
   parentProfile      ParentProfile?
+  sessions           AuthSession[]
   createdOrders      RegistrationOrder[] @relation("OrderCreatedBy")
-  confirmedPayments  Payment[]        @relation("PaymentConfirmedBy")
-  usedInvitations    LinkInvitation[] @relation("InvitationUsedBy")
+  confirmedPayments  Payment[]           @relation("PaymentConfirmedBy")
+  usedInvitations    LinkInvitation[]    @relation("InvitationUsedBy")
   auditLogs          AuditLog[]
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@map("users")
 }
 
+model AuthSession {
+  id               String    @id @default(cuid()) @db.VarChar(191)
+  userId           String    @db.VarChar(191)
+  refreshTokenHash String    @db.Char(64)
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
 model ParentProfile {
-  id        String           @id @default(cuid())
-  userId    String           @unique
-  phone     String?
+  id        String           @id @default(cuid()) @db.VarChar(191)
+  userId    String           @unique @db.VarChar(191)
+  phone     String?          @db.VarChar(32)
   user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
   students  StudentProfile[]
   createdAt DateTime         @default(now())
@@ -91,26 +107,26 @@ model ParentProfile {
 }
 
 model StudentProfile {
-  id              String           @id @default(cuid())
-  parentProfileId String
-  fullName        String
+  id              String              @id @default(cuid()) @db.VarChar(191)
+  parentProfileId String              @db.VarChar(191)
+  fullName        String              @db.VarChar(255)
   grade           Int
-  dateOfBirth     DateTime?        @db.Date
-  status          StudentStatus    @default(ACTIVE)
-  parentProfile   ParentProfile    @relation(fields: [parentProfileId], references: [id], onDelete: Restrict)
+  dateOfBirth     DateTime?           @db.Date
+  status          StudentStatus       @default(ACTIVE)
+  parentProfile   ParentProfile       @relation(fields: [parentProfileId], references: [id], onDelete: Restrict)
   enrollments     Enrollment[]
   targetedOrders  RegistrationOrder[] @relation("TargetStudent")
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
   @@index([parentProfileId])
   @@map("student_profiles")
 }
 
 model Program {
-  id        String   @id @default(cuid())
-  name      String
-  subject   String
+  id        String   @id @default(cuid()) @db.VarChar(191)
+  name      String   @db.VarChar(255)
+  subject   String   @db.VarChar(191)
   grade     Int
   classes   Class[]
   createdAt DateTime @default(now())
@@ -121,9 +137,9 @@ model Program {
 }
 
 model Class {
-  id                 String              @id @default(cuid())
-  programId          String
-  name               String
+  id                 String              @id @default(cuid()) @db.VarChar(191)
+  programId          String              @db.VarChar(191)
+  name               String              @db.VarChar(255)
   capacity           Int
   isOpen             Boolean             @default(true)
   monthlyFee         Decimal             @db.Decimal(14, 2)
@@ -138,31 +154,31 @@ model Class {
 }
 
 model RegistrationOrder {
-  id                  String             @id @default(cuid())
+  id                  String                @id @default(cuid()) @db.VarChar(191)
   type                RegistrationType
-  parentEmail         String
-  parentPhone         String?
-  studentFullName     String
+  parentEmail         String                @db.VarChar(255)
+  parentPhone         String?               @db.VarChar(32)
+  studentFullName     String                @db.VarChar(255)
   studentGrade        Int
-  targetStudentId     String?
-  classId             String
+  targetStudentId     String?               @db.VarChar(191)
+  classId             String                @db.VarChar(191)
   packageMonths       Int
-  quotedAmount        Decimal            @db.Decimal(14, 2)
-  currency            String             @default("VND") @db.VarChar(3)
-  status              RegistrationStatus @default(DRAFT)
-  createdByManagerId  String
+  quotedAmount        Decimal               @db.Decimal(14, 2)
+  currency            String                @default("VND") @db.VarChar(3)
+  status              RegistrationStatus    @default(DRAFT)
+  createdByManagerId  String                @db.VarChar(191)
   confirmedAt         DateTime?
   linkedAt            DateTime?
-  targetStudent       StudentProfile?    @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
-  class               Class              @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdByManager    User               @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
+  targetStudent       StudentProfile?       @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
+  class               Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdByManager    User                  @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
   payment             Payment?
   enrollment          Enrollment?
   invitations         LinkInvitation[]
   outboxEvents        OutboxEvent[]
   idempotencyRecords  IdempotencyRecord[]
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
 
   @@index([parentEmail])
   @@index([classId, status])
@@ -171,38 +187,38 @@ model RegistrationOrder {
 }
 
 model Payment {
-  id                     String        @id @default(cuid())
-  registrationOrderId    String        @unique
-  amount                 Decimal       @db.Decimal(14, 2)
-  currency               String        @default("VND") @db.VarChar(3)
-  status                 PaymentStatus @default(CONFIRMED)
-  confirmedByManagerId   String
-  confirmedAt            DateTime      @default(now())
-  receiptNumber          String        @unique
+  id                     String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId    String            @unique @db.VarChar(191)
+  amount                 Decimal           @db.Decimal(14, 2)
+  currency               String            @default("VND") @db.VarChar(3)
+  status                 PaymentStatus     @default(CONFIRMED)
+  confirmedByManagerId   String            @db.VarChar(191)
+  confirmedAt            DateTime          @default(now())
+  receiptNumber          String            @unique @db.VarChar(191)
   registrationOrder      RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  confirmedByManager     User          @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
-  createdAt              DateTime      @default(now())
+  confirmedByManager     User              @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
+  createdAt              DateTime          @default(now())
 
   @@index([confirmedByManagerId])
   @@map("payments")
 }
 
 model Enrollment {
-  id                  String           @id @default(cuid())
-  registrationOrderId String           @unique
-  studentProfileId    String?
-  classId             String
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId String            @unique @db.VarChar(191)
+  studentProfileId    String?           @db.VarChar(191)
+  classId             String            @db.VarChar(191)
   packageMonths       Int
-  status              EnrollmentStatus @default(PENDING_LINK)
-  startDate           DateTime?        @db.Date
-  endDate             DateTime?        @db.Date
+  status              EnrollmentStatus  @default(PENDING_LINK)
+  startDate           DateTime?         @db.Date
+  endDate             DateTime?         @db.Date
   activatedAt         DateTime?
   endedAt             DateTime?
   registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  studentProfile      StudentProfile?  @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
-  class               Class            @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  studentProfile      StudentProfile?   @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
+  class               Class             @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   @@index([classId, status])
   @@index([studentProfileId, status])
@@ -210,17 +226,17 @@ model Enrollment {
 }
 
 model LinkInvitation {
-  id                    String           @id @default(cuid())
-  registrationOrderId   String
-  tokenHash             String           @unique @db.Char(64)
-  expectedParentEmail   String
-  status                InvitationStatus @default(ACTIVE)
+  id                    String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId   String            @db.VarChar(191)
+  tokenHash             String            @unique @db.Char(64)
+  expectedParentEmail   String            @db.VarChar(255)
+  status                InvitationStatus  @default(ACTIVE)
   expiresAt             DateTime
   usedAt                DateTime?
-  usedByUserId          String?
+  usedByUserId          String?           @db.VarChar(191)
   registrationOrder     RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  usedByUser             User?            @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
-  createdAt             DateTime           @default(now())
+  usedByUser             User?             @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
+  createdAt             DateTime          @default(now())
 
   @@index([registrationOrderId, status])
   @@index([expectedParentEmail])
@@ -228,16 +244,16 @@ model LinkInvitation {
 }
 
 model OutboxEvent {
-  id                  String       @id @default(cuid())
-  eventType           String
-  aggregateId         String
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  eventType           String            @db.VarChar(191)
+  aggregateId         String            @db.VarChar(191)
   payload             Json
-  status              OutboxStatus @default(PENDING)
-  attemptCount        Int          @default(0)
-  nextAttemptAt       DateTime     @default(now())
-  lastError           String?
+  status              OutboxStatus      @default(PENDING)
+  attemptCount        Int               @default(0)
+  nextAttemptAt       DateTime          @default(now())
+  lastError           String?           @db.Text
   registrationOrder   RegistrationOrder @relation(fields: [aggregateId], references: [id], onDelete: Restrict)
-  createdAt           DateTime     @default(now())
+  createdAt           DateTime          @default(now())
   sentAt              DateTime?
 
   @@index([status, nextAttemptAt])
@@ -246,15 +262,15 @@ model OutboxEvent {
 }
 
 model AuditLog {
-  id          String   @id @default(cuid())
-  actorUserId String
-  action      String
-  entityType  String
-  entityId    String
+  id          String   @id @default(cuid()) @db.VarChar(191)
+  actorUserId String   @db.VarChar(191)
+  action      String   @db.VarChar(191)
+  entityType  String   @db.VarChar(191)
+  entityId    String   @db.VarChar(191)
   beforeData  Json?
   afterData   Json?
-  ipAddress   String?
-  userAgent   String?
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.Text
   actor       User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
   createdAt   DateTime @default(now())
 
@@ -264,13 +280,13 @@ model AuditLog {
 }
 
 model IdempotencyRecord {
-  id                  String   @id @default(cuid())
-  scope               String
-  key                 String
-  registrationOrderId String
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  scope               String            @db.VarChar(191)
+  key                 String            @db.VarChar(191)
+  registrationOrderId String            @db.VarChar(191)
   response            Json
   registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  createdAt           DateTime @default(now())
+  createdAt           DateTime          @default(now())
 
   @@unique([scope, key])
   @@index([registrationOrderId])

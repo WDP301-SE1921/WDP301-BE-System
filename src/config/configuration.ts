@@ -6,6 +6,14 @@ export interface AppConfiguration {
   databaseUrl: string;
   corsOrigins: string[];
   swaggerEnabled: boolean;
+  jwt: {
+    accessSecret: string;
+    refreshSecret: string;
+    issuer: string;
+    audience: string;
+    accessTtlSeconds: number;
+    refreshTtlSeconds: number;
+  };
 }
 
 type Environment = Record<string, string | undefined>;
@@ -41,6 +49,22 @@ function parseBoolean(rawValue: string | undefined, defaultValue: boolean): bool
   throw new Error('SWAGGER_ENABLED must be true or false');
 }
 
+function parsePositiveInteger(environment: Environment, key: string, defaultValue: number): number {
+  const value = Number(environment[key] ?? defaultValue);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+  return value;
+}
+
+function requiredSecret(environment: Environment, key: string): string {
+  const value = required(environment, key);
+  if (value.length < 32) {
+    throw new Error(`${key} must be at least 32 characters`);
+  }
+  return value;
+}
+
 export function validateEnvironment(environment: Environment): AppConfiguration {
   const nodeEnv = parseNodeEnvironment(environment.NODE_ENV);
   const corsOrigins = required(environment, 'CORS_ORIGINS')
@@ -58,5 +82,13 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
     databaseUrl: required(environment, 'DATABASE_URL'),
     corsOrigins,
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
+    jwt: {
+      accessSecret: requiredSecret(environment, 'JWT_ACCESS_SECRET'),
+      refreshSecret: requiredSecret(environment, 'JWT_REFRESH_SECRET'),
+      issuer: environment.JWT_ISSUER?.trim() || 'edugrade-api',
+      audience: environment.JWT_AUDIENCE?.trim() || 'edugrade-clients',
+      accessTtlSeconds: parsePositiveInteger(environment, 'JWT_ACCESS_TTL_SECONDS', 900),
+      refreshTtlSeconds: parsePositiveInteger(environment, 'JWT_REFRESH_TTL_SECONDS', 604800),
+    },
   };
 }
