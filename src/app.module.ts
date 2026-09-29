@@ -8,6 +8,7 @@ import { AppConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/orm/database.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { AcademicModule } from './modules/academic/academic.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { HealthModule } from './modules/health/health.module';
     DatabaseModule,
     AuthModule,
     HealthModule,
+    AcademicModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

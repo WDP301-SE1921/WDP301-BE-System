@@ -6,6 +6,18 @@ export interface AppConfiguration {
   databaseUrl: string;
   corsOrigins: string[];
   swaggerEnabled: boolean;
+  academic: {
+    aiUrl: string;
+    aiKey: string;
+    aiModel: string;
+    storageEndpoint: string;
+    storageRegion: string;
+    storageBucket: string;
+    storageKey: string;
+    storageSecret: string;
+    smtpUrl: string;
+    mailFrom: string;
+  };
   jwt: {
     accessSecret: string;
     refreshSecret: string;
@@ -82,6 +94,18 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
     databaseUrl: required(environment, 'DATABASE_URL'),
     corsOrigins,
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
+    academic: {
+      aiUrl: environment.AI_CHAT_URL?.trim() || '',
+      aiKey: environment.AI_API_KEY?.trim() || '',
+      aiModel: environment.AI_MODEL?.trim() || '',
+      storageEndpoint: environment.STORAGE_ENDPOINT?.trim() || '',
+      storageRegion: environment.STORAGE_REGION?.trim() || 'us-east-1',
+      storageBucket: environment.STORAGE_BUCKET?.trim() || '',
+      storageKey: environment.STORAGE_ACCESS_KEY?.trim() || '',
+      storageSecret: environment.STORAGE_SECRET_KEY?.trim() || '',
+      smtpUrl: environment.SMTP_URL?.trim() || '',
+      mailFrom: environment.MAIL_FROM?.trim() || '',
+    },
     jwt: {
       accessSecret: requiredSecret(environment, 'JWT_ACCESS_SECRET'),
       refreshSecret: requiredSecret(environment, 'JWT_REFRESH_SECRET'),

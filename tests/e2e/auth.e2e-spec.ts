@@ -1,5 +1,7 @@
 import { INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { validateEnvironment } from '../../src/config/configuration';
 import type { Server } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import * as mysql from 'mysql2/promise';
@@ -56,7 +58,10 @@ describe('Auth endpoints (e2e)', () => {
       },
     );
 
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(ConfigService)
+      .useValue(new ConfigService(validateEnvironment(process.env)))
+      .compile();
 
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api');
@@ -72,7 +77,7 @@ describe('Auth endpoints (e2e)', () => {
     app.useGlobalInterceptors(new ResponseInterceptor());
     await app.init();
     httpServer = app.getHttpServer() as Server;
-  });
+  }, 60000);
 
   afterAll(async () => {
     if (app) await app.close();

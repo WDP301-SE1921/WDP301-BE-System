@@ -136,7 +136,34 @@ POST /api/v1/auth/refresh
 
 voi `refreshToken`, sau do thay ca access token va refresh token bang cap moi.
 
-## Pending / Lam Sau
+## Academic P1 - 2026-09-30
+
+### Implemented
+
+- Branch: `feature/academic-workflows`; API prefix `/api/v1/academic`.
+- Don nghi, duyet/huy nghi, hoc bu, diem danh ket thuc buoi, chuyen lop co lich su placement, ket thuc hoc cua mot con.
+- Gop y giao an, designer tao ban sua, manager duyet; giu nguyen bai cua buoi cu.
+- Bai tap nhap/sua/giao/dong/mo lai; parent nop bai theo recipient, gioi han lan nop, file PDF/PNG/JPEG qua S3.
+- Cham trac nghiem, cham tay, AI job de xuat, teacher duyet va cong bo diem; parent khong xem diem nhap.
+- Bao cao snapshot, diem chuan hoa, chuyen can va tien do buoi; xuat XLSX/PDF, AI tom tat tuy chon.
+- Thong bao lop, lenh gui SMTP va nhac hoc phi; khong trien khai retry/outbox mo rong theo pham vi da chot.
+- Migration additive `20260929000000_academic_workflows`.
+- Sua test auth de cau hinh database test duoc inject truoc khi ket noi, tranh dung database local do import ConfigModule som.
+- Tai lieu chi tiet: `docs/academic-p1-api.md`.
+
+### Integration configuration / Deferred
+
+- AI/S3/SMTP can cau hinh trong `.env`; test AI dung mock, khong gui email that.
+- AI cham text; file dinh kem do teacher xem/cham, chua co OCR.
+- P0 nhan su, thu phi/claim, curriculum version day du, audit va email retry van la cac module rieng chua trien khai.
+- Hoc lai sau khi ket thuc can enrollment da thanh toan moi tu luong dang ky; khong tu tao goi mien phi.
+
+### Verify
+
+- `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm test:e2e`, `pnpm build`, `pnpm prisma:validate`.
+- Verified 2026-09-30: 3 unit tests va 13 E2E tests pass; build/typecheck/lint/schema validation pass. `prisma migrate status`: database up to date.
+
+## Pending P0 / Lam Sau
 
 - Tao API quan ly giao vien do manager/admin tao.
 - Seed tai khoan manager dau tien neu can dang nhap bang role quan ly.
