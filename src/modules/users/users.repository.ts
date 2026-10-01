@@ -52,6 +52,7 @@ export class UsersRepository {
       displayName: user.displayName,
       role: user.role,
       status: user.status,
+      emailVerifiedAt: user.emailVerifiedAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

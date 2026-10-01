@@ -183,6 +183,26 @@ export class ReportDto {
   @ApiProperty() @IsDateString() to!: string;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() includeAi?: boolean;
 }
+export enum AnalyticsBucket {
+  DAY = 'DAY',
+  WEEK = 'WEEK',
+  MONTH = 'MONTH',
+}
+export class AnalyticsQueryDto {
+  @ApiProperty() @IsDateString() from!: string;
+  @ApiProperty() @IsDateString() to!: string;
+  @ApiProperty({ enum: AnalyticsBucket }) @IsEnum(AnalyticsBucket) bucket!: AnalyticsBucket;
+  @ApiPropertyOptional() @IsOptional() @IsString() classId?: string;
+}
+export class BulkReportExportDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @IsString({ each: true })
+  reportIds!: string[];
+}
 export class AnnouncementDto {
   @ApiProperty() @IsString() @MinLength(1) classId!: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;

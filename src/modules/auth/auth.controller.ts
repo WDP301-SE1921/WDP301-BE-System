@@ -24,6 +24,8 @@ import { LoginDto } from './dto/login.dto';
 import { LogoutResponseDto } from './dto/logout-response.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterParentDto } from './dto/register-parent.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 
 @ApiTags('auth')
 @ApiExtraModels(AuthResponseDto, LogoutResponseDto, SafeUserDto)
@@ -99,6 +101,26 @@ export class AuthController {
     return this.authService.refresh(body.refreshToken);
   }
 
+  @Public()
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Verify a parent email address' })
+  @ApiOkResponse({ description: 'Email verified.' })
+  verifyEmail(@Body() body: VerifyEmailDto): Promise<{ verified: true }> {
+    return this.authService.verifyEmail(body.token);
+  }
+
+  @Public()
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Resend parent email verification token' })
+  @ApiOkResponse({ description: 'Verification email accepted for delivery when configured.' })
+  resendVerification(@Body() body: ResendVerificationDto): Promise<{ sent: boolean }> {
+    return this.authService.resendVerification(body.email);
+  }
+
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
@@ -139,6 +161,7 @@ export class AuthController {
       displayName: user.displayName,
       role: user.role,
       status: user.status,
+      emailVerifiedAt: user.emailVerifiedAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

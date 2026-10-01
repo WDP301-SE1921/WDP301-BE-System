@@ -8,6 +8,7 @@ datasource db {
 }
 
 enum UserRole {
+  STAFF
   MANAGER
   TEACHER
   CURRICULUM_DESIGNER
@@ -32,6 +33,7 @@ enum RegistrationType {
 
 enum RegistrationStatus {
   DRAFT
+  COMPLETED
   PAYMENT_CONFIRMED
   LINKED
   CANCELLED
@@ -68,8 +70,10 @@ model User {
   displayName        String?             @db.VarChar(255)
   role               UserRole
   status             UserStatus          @default(ACTIVE)
+  emailVerifiedAt    DateTime?
   parentProfile      ParentProfile?
   sessions           AuthSession[]
+  emailVerificationTokens EmailVerificationToken[]
   createdOrders      RegistrationOrder[] @relation("OrderCreatedBy")
   confirmedPayments  Payment[]           @relation("PaymentConfirmedBy")
   usedInvitations    LinkInvitation[]    @relation("InvitationUsedBy")
@@ -81,6 +85,20 @@ model User {
   updatedAt          DateTime            @updatedAt
 
   @@map("users")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid()) @db.VarChar(191)
+  userId    String   @db.VarChar(191)
+  tokenHash String   @unique @db.Char(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+
+  @@index([userId, usedAt])
+  @@index([expiresAt])
+  @@map("email_verification_tokens")
 }
 
 model AuthSession {
@@ -150,6 +168,7 @@ model Class {
   monthlyFee         Decimal             @db.Decimal(14, 2)
   teacherId          String?             @db.VarChar(191)
   teacher            User?               @relation("ClassTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  weeklySchedules    ClassWeeklySchedule[]
   sessions           ClassSession[]
   placements         EnrollmentPlacement[]
   assignments        Assignment[]
@@ -164,6 +183,20 @@ model Class {
   @@map("classes")
 }
 
+model ClassWeeklySchedule {
+  id        String   @id @default(cuid()) @db.VarChar(191)
+  classId   String   @db.VarChar(191)
+  weekday   Int
+  startTime String   @db.VarChar(5)
+  endTime   String   @db.VarChar(5)
+  class     Class    @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([classId, weekday])
+  @@map("class_weekly_schedules")
+}
+
 model RegistrationOrder {
   id                  String                @id @default(cuid()) @db.VarChar(191)
   type                RegistrationType
@@ -176,6 +209,8 @@ model RegistrationOrder {
   packageMonths       Int
   quotedAmount        Decimal               @db.Decimal(14, 2)
   currency            String                @default("VND") @db.VarChar(3)
+  startDate           DateTime?             @db.Date
+  endDate             DateTime?             @db.Date
   status              RegistrationStatus    @default(DRAFT)
   createdByManagerId  String                @db.VarChar(191)
   confirmedAt         DateTime?

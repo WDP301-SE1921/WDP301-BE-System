@@ -17,6 +17,9 @@ export class SafeUserDto {
   @ApiProperty({ enum: UserStatus, example: UserStatus.ACTIVE })
   status!: UserStatus;
 
+  @ApiProperty({ nullable: true, example: '2026-10-02T03:00:00.000Z' })
+  emailVerifiedAt!: Date | null;
+
   @ApiProperty({ example: '2026-09-23T03:00:00.000Z' })
   createdAt!: Date;
 
