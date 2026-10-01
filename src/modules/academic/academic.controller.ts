@@ -1,0 +1,412 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UploadedFile,
+  UseInterceptors,
+  UseFilters,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { AcademicStorageService } from '../../integrations/academic-storage.service';
+import { CatalogService } from './catalog.service';
+import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
+import { AssessmentService } from './assessment.service';
+import { GradingWorkerService } from './grading-worker.service';
+import { ReportsService } from './reports.service';
+import { AnnouncementsService } from './announcements.service';
+import { AcademicErrorsFilter } from './academic-errors.filter';
+import {
+  AnnouncementDto,
+  AssignmentDto,
+  AttendanceDto,
+  ClassDto,
+  DecisionDto,
+  FeedbackDto,
+  GradeDto,
+  LeaveDto,
+  LessonDto,
+  LessonRevisionDto,
+  SubmissionWindowDto,
+  MakeupDto,
+  PageDto,
+  ProgramDto,
+  RecipientsDto,
+  ReminderDto,
+  ReportDto,
+  ResolveFeedbackDto,
+  SessionDto,
+  SubmissionDto,
+  TransferDto,
+} from './academic.dto';
+
+@ApiTags('academic')
+@UseFilters(AcademicErrorsFilter)
+@ApiBearerAuth()
+@Controller({ path: 'academic', version: '1' })
+export class AcademicController {
+  constructor(
+    private readonly catalog: CatalogService,
+    private readonly workflows: EnrollmentWorkflowsService,
+    private readonly assessment: AssessmentService,
+    private readonly grading: GradingWorkerService,
+    private readonly reports: ReportsService,
+    private readonly storage: AcademicStorageService,
+    private readonly announcements: AnnouncementsService,
+  ) {}
+
+  @Post('programs')
+  @ApiOperation({ summary: 'Manager: create prerequisite program' })
+  program(@CurrentUser() user: AuthenticatedUser, @Body() input: ProgramDto): Promise<unknown> {
+    return this.catalog.createProgram(user, input);
+  }
+  @Patch('assignments/:id') updateAssignment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: AssignmentDto,
+  ): Promise<unknown> {
+    return this.assessment.updateDraft(user, id, input);
+  }
+
+  @Post('lessons/:id/revisions') reviseLesson(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: LessonRevisionDto,
+  ): Promise<unknown> {
+    return this.catalog.reviseLesson(user, id, input);
+  }
+  @Get('enrollments') enrollments(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.enrollments(user, page);
+  }
+  @Get('sessions/:id/roster') readRoster(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.roster(user, id, page);
+  }
+  @Get('makeups') makeups(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.workflows.makeups(user, page);
+  }
+  @Post('assignments/:id/reopen') reopen(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: SubmissionWindowDto,
+  ): Promise<unknown> {
+    return this.assessment.reopen(user, id, input);
+  }
+  @Get('programs') programs(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.programs(user, page);
+  }
+  @Post('classes') classroom(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: ClassDto,
+  ): Promise<unknown> {
+    return this.catalog.createClass(user, input);
+  }
+  @Get('classes') classes(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.classes(user, page);
+  }
+  @Post('lessons') lesson(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: LessonDto,
+  ): Promise<unknown> {
+    return this.catalog.createLesson(user, input);
+  }
+  @Get('lessons') lessons(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.lessons(user, page);
+  }
+  @Post('lessons/:id/approve') approveLesson(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.catalog.approveLesson(user, id);
+  }
+  @Post('lessons/:id/feedback') feedback(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: FeedbackDto,
+  ): Promise<unknown> {
+    return this.catalog.feedback(user, id, input);
+  }
+  @Get('feedback') feedbackList(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.listFeedback(user, page);
+  }
+  @Post('feedback/:id/resolve') resolve(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ResolveFeedbackDto,
+  ): Promise<unknown> {
+    return this.catalog.resolveFeedback(user, id, input);
+  }
+  @Post('sessions') session(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: SessionDto,
+  ): Promise<unknown> {
+    return this.catalog.createSession(user, input);
+  }
+  @Get('sessions') sessions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.catalog.sessions(user, page);
+  }
+  @Post('sessions/:id/roster') roster(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.catalog.prepareRoster(user, id);
+  }
+  @Post('sessions/:id/finalize-attendance') attendance(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: AttendanceDto,
+  ): Promise<unknown> {
+    return this.workflows.finalizeAttendance(user, id, input);
+  }
+  @Post('leaves') leave(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: LeaveDto,
+  ): Promise<unknown> {
+    return this.workflows.requestLeave(user, input);
+  }
+  @Get('leaves') leaves(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.workflows.leaves(user, page);
+  }
+  @Post('leaves/:id/decide') decide(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: DecisionDto,
+  ): Promise<unknown> {
+    return this.workflows.decideLeave(user, id, input);
+  }
+  @Post('leaves/:id/cancel') cancelLeave(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.workflows.cancelLeave(user, id);
+  }
+  @Get('participants/:id/makeup-candidates') candidates(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.workflows.makeupCandidates(user, id, page);
+  }
+  @Post('makeups') makeup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: MakeupDto,
+  ): Promise<unknown> {
+    return this.workflows.bookMakeup(user, input);
+  }
+  @Post('makeups/:id/cancel') cancelMakeup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.workflows.cancelMakeup(user, id);
+  }
+  @Post('enrollments/:id/transfer') transfer(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: TransferDto,
+  ): Promise<unknown> {
+    return this.workflows.transfer(user, id, input);
+  }
+  @Post('enrollments/:id/end') end(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.workflows.endEnrollment(user, id);
+  }
+  @Post('students/:id/end-study') endStudent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.workflows.endStudent(user, id);
+  }
+  @Post('assignments') assignment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: AssignmentDto,
+  ): Promise<unknown> {
+    return this.assessment.create(user, input);
+  }
+  @Get('assignments') assignments(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.assessment.list(user, page);
+  }
+  @Get('assignments/:id') assignmentDetail(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.detail(user, id);
+  }
+  @Post('assignments/:id/publish') publish(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: RecipientsDto,
+  ): Promise<unknown> {
+    return this.assessment.publish(user, id, input);
+  }
+  @Post('assignments/:id/close') close(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.close(user, id);
+  }
+  @Post('assignments/:id/publish-answers') answers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.publishAnswers(user, id);
+  }
+  @Get('assignments/:id/submissions') submissions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.assessment.submissions(user, id, page);
+  }
+  @Post('submissions') submit(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: SubmissionDto,
+  ): Promise<unknown> {
+    return this.assessment.submit(user, input);
+  }
+  @Post('submissions/:id/grades') grade(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: GradeDto,
+  ): Promise<unknown> {
+    return this.assessment.grade(user, id, input);
+  }
+  @Post('submissions/:id/grade-objective') objective(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.objectiveGrade(user, id);
+  }
+  @Post('submissions/:id/grade-ai') ai(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.grading.enqueue(user, id);
+  }
+  @Get('grading-jobs/:id') job(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.grading.result(user, id);
+  }
+  @Post('grades/:id/approve') approveGrade(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.approveGrade(user, id);
+  }
+  @Post('grades/:id/publish') publishGrade(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.publishGrade(user, id);
+  }
+  @Post('reports') report(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: ReportDto,
+  ): Promise<unknown> {
+    return this.reports.create(user, input);
+  }
+  @Get('reports') reportsList(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.reports.list(user, page);
+  }
+  @Get('reports/:id/download') async download(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query('format') format: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const file = await this.reports.export(user, id, format);
+    res.type(file.type).attachment(file.name).send(file.buffer);
+  }
+  @Post('files')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0 } }),
+  )
+  upload(
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<unknown> {
+    return this.storage.upload(user, file);
+  }
+  @Get('files/:id/download') file(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.storage.download(user, id);
+  }
+  @Post('announcements') announcement(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: AnnouncementDto,
+  ): Promise<unknown> {
+    return this.announcements.create(user, input);
+  }
+  @Get('announcements') announcementsList(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.announcements.list(user, page);
+  }
+  @Post('announcements/:id/send-email') sendAnnouncement(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.announcements.sendAnnouncement(user, id);
+  }
+  @Post('tuition-reminders/send-email') reminders(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: ReminderDto,
+  ): Promise<unknown> {
+    return this.announcements.reminders(user, input);
+  }
+}

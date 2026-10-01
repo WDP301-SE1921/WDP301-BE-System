@@ -1,19 +1,21 @@
 services:
-  postgres:
-    image: postgres:17-alpine
+  mysql:
+    image: mysql:8.4
+    container_name: edugrade_mysql
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: wdp301
-      POSTGRES_USER: wdp301
-      POSTGRES_PASSWORD: local_only_password
+      MYSQL_ROOT_PASSWORD: admin123
+      MYSQL_DATABASE: edugrade_db
     ports:
-      - '5432:5432'
+      - '3307:3306'
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U wdp301 -d wdp301']
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent']
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
+      start_period: 20s
 
 volumes:
-  postgres_data:
+  mysql_data:

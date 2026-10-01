@@ -24,6 +24,7 @@ Quản lý tạo đăng ký
 
 - Hệ thống chỉ có một trung tâm.
 - Chỉ `MANAGER` được tạo đăng ký và xác nhận thanh toán.
+- `CURRICULUM_DESIGNER` thiết kế tài liệu/giáo án giảng dạy để hỗ trợ `TEACHER`.
 - Phụ huynh không thanh toán hoặc tự đăng ký online.
 - `ParentAccount` là tài khoản đăng nhập; học sinh không có tài khoản riêng.
 - Một phụ huynh có thể quản lý nhiều `StudentProfile`.
@@ -72,7 +73,7 @@ erDiagram
 id
 email                  unique, luôn normalize lowercase + trim
 passwordHash           nullable trước khi tài khoản được tạo hoàn chỉnh
-role                   MANAGER | TEACHER | PARENT
+role                   MANAGER | TEACHER | CURRICULUM_DESIGNER | PARENT
 status                 ACTIVE | DISABLED
 createdAt
 updatedAt

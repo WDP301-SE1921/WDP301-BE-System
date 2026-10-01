@@ -3,13 +3,14 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
 enum UserRole {
   MANAGER
   TEACHER
+  CURRICULUM_DESIGNER
   PARENT
 }
 
@@ -61,27 +62,46 @@ enum OutboxStatus {
 }
 
 model User {
-  id                 String           @id @default(cuid())
-  email              String           @unique
-  passwordHash       String?
-  displayName        String?
+  id                 String              @id @default(cuid()) @db.VarChar(191)
+  email              String              @unique @db.VarChar(255)
+  passwordHash       String?             @db.VarChar(255)
+  displayName        String?             @db.VarChar(255)
   role               UserRole
-  status             UserStatus       @default(ACTIVE)
+  status             UserStatus          @default(ACTIVE)
   parentProfile      ParentProfile?
+  sessions           AuthSession[]
   createdOrders      RegistrationOrder[] @relation("OrderCreatedBy")
-  confirmedPayments  Payment[]        @relation("PaymentConfirmedBy")
-  usedInvitations    LinkInvitation[] @relation("InvitationUsedBy")
+  confirmedPayments  Payment[]           @relation("PaymentConfirmedBy")
+  usedInvitations    LinkInvitation[]    @relation("InvitationUsedBy")
   auditLogs          AuditLog[]
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  teachingClasses    Class[]             @relation("ClassTeacher")
+  teachingSessions   ClassSession[]      @relation("SessionTeacher")
+  designedLessons    Lesson[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@map("users")
 }
 
+model AuthSession {
+  id               String    @id @default(cuid()) @db.VarChar(191)
+  userId           String    @db.VarChar(191)
+  refreshTokenHash String    @db.Char(64)
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
 model ParentProfile {
-  id        String           @id @default(cuid())
-  userId    String           @unique
-  phone     String?
+  id        String           @id @default(cuid()) @db.VarChar(191)
+  userId    String           @unique @db.VarChar(191)
+  phone     String?          @db.VarChar(32)
   user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
   students  StudentProfile[]
   createdAt DateTime         @default(now())
@@ -91,28 +111,29 @@ model ParentProfile {
 }
 
 model StudentProfile {
-  id              String           @id @default(cuid())
-  parentProfileId String
-  fullName        String
+  id              String              @id @default(cuid()) @db.VarChar(191)
+  parentProfileId String              @db.VarChar(191)
+  fullName        String              @db.VarChar(255)
   grade           Int
-  dateOfBirth     DateTime?        @db.Date
-  status          StudentStatus    @default(ACTIVE)
-  parentProfile   ParentProfile    @relation(fields: [parentProfileId], references: [id], onDelete: Restrict)
+  dateOfBirth     DateTime?           @db.Date
+  status          StudentStatus       @default(ACTIVE)
+  parentProfile   ParentProfile       @relation(fields: [parentProfileId], references: [id], onDelete: Restrict)
   enrollments     Enrollment[]
   targetedOrders  RegistrationOrder[] @relation("TargetStudent")
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
   @@index([parentProfileId])
   @@map("student_profiles")
 }
 
 model Program {
-  id        String   @id @default(cuid())
-  name      String
-  subject   String
+  id        String   @id @default(cuid()) @db.VarChar(191)
+  name      String   @db.VarChar(255)
+  subject   String   @db.VarChar(191)
   grade     Int
   classes   Class[]
+  lessons   Lesson[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -121,12 +142,18 @@ model Program {
 }
 
 model Class {
-  id                 String              @id @default(cuid())
-  programId          String
-  name               String
+  id                 String              @id @default(cuid()) @db.VarChar(191)
+  programId          String              @db.VarChar(191)
+  name               String              @db.VarChar(255)
   capacity           Int
   isOpen             Boolean             @default(true)
   monthlyFee         Decimal             @db.Decimal(14, 2)
+  teacherId          String?             @db.VarChar(191)
+  teacher            User?               @relation("ClassTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  sessions           ClassSession[]
+  placements         EnrollmentPlacement[]
+  assignments        Assignment[]
+  announcements      Announcement[]
   program            Program             @relation(fields: [programId], references: [id], onDelete: Restrict)
   registrationOrders RegistrationOrder[]
   enrollments        Enrollment[]
@@ -138,31 +165,31 @@ model Class {
 }
 
 model RegistrationOrder {
-  id                  String             @id @default(cuid())
+  id                  String                @id @default(cuid()) @db.VarChar(191)
   type                RegistrationType
-  parentEmail         String
-  parentPhone         String?
-  studentFullName     String
+  parentEmail         String                @db.VarChar(255)
+  parentPhone         String?               @db.VarChar(32)
+  studentFullName     String                @db.VarChar(255)
   studentGrade        Int
-  targetStudentId     String?
-  classId             String
+  targetStudentId     String?               @db.VarChar(191)
+  classId             String                @db.VarChar(191)
   packageMonths       Int
-  quotedAmount        Decimal            @db.Decimal(14, 2)
-  currency            String             @default("VND") @db.VarChar(3)
-  status              RegistrationStatus @default(DRAFT)
-  createdByManagerId  String
+  quotedAmount        Decimal               @db.Decimal(14, 2)
+  currency            String                @default("VND") @db.VarChar(3)
+  status              RegistrationStatus    @default(DRAFT)
+  createdByManagerId  String                @db.VarChar(191)
   confirmedAt         DateTime?
   linkedAt            DateTime?
-  targetStudent       StudentProfile?    @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
-  class               Class              @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdByManager    User               @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
+  targetStudent       StudentProfile?       @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
+  class               Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdByManager    User                  @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
   payment             Payment?
   enrollment          Enrollment?
   invitations         LinkInvitation[]
   outboxEvents        OutboxEvent[]
   idempotencyRecords  IdempotencyRecord[]
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
 
   @@index([parentEmail])
   @@index([classId, status])
@@ -171,56 +198,398 @@ model RegistrationOrder {
 }
 
 model Payment {
-  id                     String        @id @default(cuid())
-  registrationOrderId    String        @unique
-  amount                 Decimal       @db.Decimal(14, 2)
-  currency               String        @default("VND") @db.VarChar(3)
-  status                 PaymentStatus @default(CONFIRMED)
-  confirmedByManagerId   String
-  confirmedAt            DateTime      @default(now())
-  receiptNumber          String        @unique
+  id                     String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId    String            @unique @db.VarChar(191)
+  amount                 Decimal           @db.Decimal(14, 2)
+  currency               String            @default("VND") @db.VarChar(3)
+  status                 PaymentStatus     @default(CONFIRMED)
+  confirmedByManagerId   String            @db.VarChar(191)
+  confirmedAt            DateTime          @default(now())
+  receiptNumber          String            @unique @db.VarChar(191)
   registrationOrder      RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  confirmedByManager     User          @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
-  createdAt              DateTime      @default(now())
+  confirmedByManager     User              @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
+  createdAt              DateTime          @default(now())
 
   @@index([confirmedByManagerId])
   @@map("payments")
 }
 
 model Enrollment {
-  id                  String           @id @default(cuid())
-  registrationOrderId String           @unique
-  studentProfileId    String?
-  classId             String
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId String            @unique @db.VarChar(191)
+  studentProfileId    String?           @db.VarChar(191)
+  classId             String            @db.VarChar(191)
   packageMonths       Int
-  status              EnrollmentStatus @default(PENDING_LINK)
-  startDate           DateTime?        @db.Date
-  endDate             DateTime?        @db.Date
+  status              EnrollmentStatus  @default(PENDING_LINK)
+  startDate           DateTime?         @db.Date
+  endDate             DateTime?         @db.Date
   activatedAt         DateTime?
   endedAt             DateTime?
+  placements          EnrollmentPlacement[]
+  leaveRequests       LeaveRequest[]
+  participants        SessionParticipant[]
+  recipients          AssignmentRecipient[]
+  transfers           EnrollmentTransfer[]
   registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  studentProfile      StudentProfile?  @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
-  class               Class            @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  studentProfile      StudentProfile?   @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
+  class               Class             @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   @@index([classId, status])
   @@index([studentProfileId, status])
   @@map("enrollments")
 }
 
+enum LessonStatus {
+  DRAFT
+  APPROVED
+}
+
+enum SessionStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  UNMARKED
+  PRESENT
+  ABSENT
+  EXCUSED
+}
+
+enum ParticipantKind {
+  REGULAR
+  MAKEUP
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum LeaveKind {
+  SINGLE_ABSENCE
+  PERIOD_PAUSE
+}
+
+enum MakeupStatus {
+  BOOKED
+  COMPLETED
+  MISSED
+  CANCELLED
+}
+
+enum AssignmentStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
+enum QuestionKind {
+  MULTIPLE_CHOICE
+  ESSAY
+}
+
+enum GradeStatus {
+  DRAFT
+  APPROVED
+  PUBLISHED
+  SUPERSEDED
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+enum FeedbackStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  DECLINED
+}
+
+model Lesson {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  programId    String @db.VarChar(191)
+  designerId   String @db.VarChar(191)
+  title        String @db.VarChar(255)
+  content      String @db.LongText
+  sequence     Int
+  basedOnId    String? @db.VarChar(191)
+  basedOn      Lesson? @relation("LessonRevision", fields: [basedOnId], references: [id], onDelete: Restrict)
+  revisions    Lesson[] @relation("LessonRevision")
+  resolvedFeedback CurriculumFeedback[] @relation("FeedbackResolution")
+  status       LessonStatus @default(DRAFT)
+  program      Program @relation(fields: [programId], references: [id], onDelete: Restrict)
+  designer     User @relation(fields: [designerId], references: [id], onDelete: Restrict)
+  sessions     ClassSession[]
+  feedback     CurriculumFeedback[]
+  createdAt    DateTime @default(now())
+  @@index([programId, sequence])
+  @@map("lessons")
+}
+
+model CurriculumFeedback {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  lessonId     String @db.VarChar(191)
+  teacherId    String @db.VarChar(191)
+  content      String @db.Text
+  status       FeedbackStatus @default(OPEN)
+  response     String? @db.Text
+  resolutionLessonId String? @db.VarChar(191)
+  resolutionLesson Lesson? @relation("FeedbackResolution", fields: [resolutionLessonId], references: [id], onDelete: Restrict)
+  lesson       Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  @@index([lessonId, status])
+  @@map("curriculum_feedback")
+}
+
+model EnrollmentPlacement {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  enrollmentId String @db.VarChar(191)
+  classId      String @db.VarChar(191)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+  @@index([classId, effectiveFrom, effectiveTo])
+  @@index([enrollmentId, effectiveFrom])
+  @@map("enrollment_placements")
+}
+
+model EnrollmentTransfer {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  enrollmentId String @db.VarChar(191)
+  fromClassId  String @db.VarChar(191)
+  toClassId    String @db.VarChar(191)
+  effectiveAt  DateTime
+  managerId    String @db.VarChar(191)
+  reason       String @db.Text
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  @@index([enrollmentId, effectiveAt])
+  @@map("enrollment_transfers")
+}
+
+model ClassSession {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  classId      String @db.VarChar(191)
+  lessonId     String @db.VarChar(191)
+  teacherId    String @db.VarChar(191)
+  startsAt     DateTime
+  endsAt       DateTime
+  status       SessionStatus @default(SCHEDULED)
+  summary      String? @db.Text
+  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+  lesson       Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  teacher      User @relation("SessionTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  participants SessionParticipant[]
+  leaves       LeaveRequest[]
+  @@unique([classId, startsAt])
+  @@index([teacherId, startsAt])
+  @@map("class_sessions")
+}
+
+model SessionParticipant {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  sessionId    String @db.VarChar(191)
+  enrollmentId String @db.VarChar(191)
+  kind         ParticipantKind @default(REGULAR)
+  attendance   AttendanceStatus @default(UNMARKED)
+  cancelled    Boolean @default(false)
+  session      ClassSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  sourceBookings MakeupBooking[] @relation("OriginalParticipant")
+  replacementBooking MakeupBooking? @relation("ReplacementParticipant")
+  @@unique([sessionId, enrollmentId])
+  @@map("session_participants")
+}
+
+model MakeupBooking {
+  id                    String @id @default(cuid()) @db.VarChar(191)
+  originalParticipantId String @db.VarChar(191)
+  activeOriginalId      String? @unique @db.VarChar(191)
+  replacementParticipantId String @unique @db.VarChar(191)
+  managerId             String @db.VarChar(191)
+  status                MakeupStatus @default(BOOKED)
+  original              SessionParticipant @relation("OriginalParticipant", fields: [originalParticipantId], references: [id], onDelete: Restrict)
+  replacement           SessionParticipant @relation("ReplacementParticipant", fields: [replacementParticipantId], references: [id], onDelete: Restrict)
+  createdAt             DateTime @default(now())
+  @@index([originalParticipantId])
+  @@map("makeup_bookings")
+}
+
+model LeaveRequest {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  enrollmentId String @db.VarChar(191)
+  sessionId    String? @db.VarChar(191)
+  kind         LeaveKind
+  fromDate     DateTime @db.Date
+  toDate       DateTime @db.Date
+  reason       String @db.Text
+  requestedById String @db.VarChar(191)
+  decidedById  String? @db.VarChar(191)
+  decisionNote String? @db.Text
+  status       RequestStatus @default(PENDING)
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  session      ClassSession? @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  @@index([enrollmentId, status, fromDate, toDate])
+  @@map("leave_requests")
+}
+
+model Assignment {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  classId      String @db.VarChar(191)
+  teacherId    String @db.VarChar(191)
+  title        String @db.VarChar(255)
+  instructions String @db.Text
+  dueAt        DateTime
+  maxAttempts  Int @default(1)
+  status       AssignmentStatus @default(DRAFT)
+  answersPublishedAt DateTime?
+  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+  questions    AssignmentQuestion[]
+  recipients   AssignmentRecipient[]
+  createdAt    DateTime @default(now())
+  @@index([classId, status])
+  @@map("assignments")
+}
+
+model AssignmentQuestion {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  assignmentId String @db.VarChar(191)
+  position     Int
+  kind         QuestionKind
+  prompt       String @db.Text
+  choices      Json?
+  correctAnswer String? @db.Text
+  rubric       String? @db.Text
+  maxScore     Float
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  @@unique([assignmentId, position])
+  @@map("assignment_questions")
+}
+
+model AssignmentRecipient {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  assignmentId String @db.VarChar(191)
+  enrollmentId String @db.VarChar(191)
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  submissions  Submission[]
+  @@unique([assignmentId, enrollmentId])
+  @@map("assignment_recipients")
+}
+
+model Submission {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  recipientId  String @db.VarChar(191)
+  attemptNo    Int
+  answers      Json
+  submittedAt  DateTime @default(now())
+  recipient    AssignmentRecipient @relation(fields: [recipientId], references: [id], onDelete: Restrict)
+  grades       GradeReview[]
+  jobs         GradingJob[]
+  files        SubmissionFile[]
+  @@unique([recipientId, attemptNo])
+  @@map("submissions")
+}
+
+model GradeReview {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  submissionId String @db.VarChar(191)
+  revision     Int
+  reviewerId   String @db.VarChar(191)
+  status       GradeStatus @default(DRAFT)
+  scores       Json
+  totalScore   Float
+  feedback     String @db.Text
+  publishedAt  DateTime?
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  @@unique([submissionId, revision])
+  @@map("grade_reviews")
+}
+
+model GradingJob {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  submissionId String @db.VarChar(191)
+  status       JobStatus @default(QUEUED)
+  result       Json?
+  error        String? @db.Text
+  startedAt    DateTime?
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  @@index([status, createdAt])
+  @@map("grading_jobs")
+}
+
+model FileAsset {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  ownerId      String @db.VarChar(191)
+  storageKey   String @unique @db.VarChar(255)
+  name         String @db.VarChar(255)
+  mimeType     String @db.VarChar(128)
+  size         Int
+  submissions  SubmissionFile[]
+  createdAt    DateTime @default(now())
+  @@index([ownerId])
+  @@map("file_assets")
+}
+
+model SubmissionFile {
+  submissionId String @db.VarChar(191)
+  fileId       String @db.VarChar(191)
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  file         FileAsset @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  @@id([submissionId, fileId])
+  @@map("submission_files")
+}
+
+model LearningReport {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  teacherId    String @db.VarChar(191)
+  classId      String @db.VarChar(191)
+  snapshot     Json
+  aiSummary    String? @db.Text
+  createdAt    DateTime @default(now())
+  @@index([teacherId, createdAt])
+  @@map("learning_reports")
+}
+
+model Announcement {
+  id           String @id @default(cuid()) @db.VarChar(191)
+  classId      String @db.VarChar(191)
+  managerId    String @db.VarChar(191)
+  title        String @db.VarChar(255)
+  content      String @db.Text
+  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  @@index([classId, createdAt])
+  @@map("announcements")
+}
+
 model LinkInvitation {
-  id                    String           @id @default(cuid())
-  registrationOrderId   String
-  tokenHash             String           @unique @db.Char(64)
-  expectedParentEmail   String
-  status                InvitationStatus @default(ACTIVE)
+  id                    String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId   String            @db.VarChar(191)
+  tokenHash             String            @unique @db.Char(64)
+  expectedParentEmail   String            @db.VarChar(255)
+  status                InvitationStatus  @default(ACTIVE)
   expiresAt             DateTime
   usedAt                DateTime?
-  usedByUserId          String?
+  usedByUserId          String?           @db.VarChar(191)
   registrationOrder     RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  usedByUser             User?            @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
-  createdAt             DateTime           @default(now())
+  usedByUser             User?             @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
+  createdAt             DateTime          @default(now())
 
   @@index([registrationOrderId, status])
   @@index([expectedParentEmail])
@@ -228,16 +597,16 @@ model LinkInvitation {
 }
 
 model OutboxEvent {
-  id                  String       @id @default(cuid())
-  eventType           String
-  aggregateId         String
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  eventType           String            @db.VarChar(191)
+  aggregateId         String            @db.VarChar(191)
   payload             Json
-  status              OutboxStatus @default(PENDING)
-  attemptCount        Int          @default(0)
-  nextAttemptAt       DateTime     @default(now())
-  lastError           String?
+  status              OutboxStatus      @default(PENDING)
+  attemptCount        Int               @default(0)
+  nextAttemptAt       DateTime          @default(now())
+  lastError           String?           @db.Text
   registrationOrder   RegistrationOrder @relation(fields: [aggregateId], references: [id], onDelete: Restrict)
-  createdAt           DateTime     @default(now())
+  createdAt           DateTime          @default(now())
   sentAt              DateTime?
 
   @@index([status, nextAttemptAt])
@@ -246,15 +615,15 @@ model OutboxEvent {
 }
 
 model AuditLog {
-  id          String   @id @default(cuid())
-  actorUserId String
-  action      String
-  entityType  String
-  entityId    String
+  id          String   @id @default(cuid()) @db.VarChar(191)
+  actorUserId String   @db.VarChar(191)
+  action      String   @db.VarChar(191)
+  entityType  String   @db.VarChar(191)
+  entityId    String   @db.VarChar(191)
   beforeData  Json?
   afterData   Json?
-  ipAddress   String?
-  userAgent   String?
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.Text
   actor       User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
   createdAt   DateTime @default(now())
 
@@ -264,13 +633,13 @@ model AuditLog {
 }
 
 model IdempotencyRecord {
-  id                  String   @id @default(cuid())
-  scope               String
-  key                 String
-  registrationOrderId String
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  scope               String            @db.VarChar(191)
+  key                 String            @db.VarChar(191)
+  registrationOrderId String            @db.VarChar(191)
   response            Json
   registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  createdAt           DateTime @default(now())
+  createdAt           DateTime          @default(now())
 
   @@unique([scope, key])
   @@index([registrationOrderId])
