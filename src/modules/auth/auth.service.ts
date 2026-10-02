@@ -1,11 +1,13 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import * as bcrypt from 'bcrypt';
+import { createTransport } from 'nodemailer';
 
 import { AppError } from '../../common/errors/app.error';
 import type { AppConfiguration } from '../../config/configuration';
+import { DatabaseService } from '../../database/orm/database.service';
 import { UsersService } from '../users/users.service';
 import type { SafeUser } from '../users/users.repository';
 import { AuthSessionsRepository } from './auth-sessions.repository';
@@ -15,12 +17,14 @@ import type { JwtPayload } from './jwt-payload';
 const PASSWORD_HASH_ROUNDS = 12;
 const BCRYPT_MAX_BYTES = 72;
 const PENDING_REFRESH_TOKEN_HASH = '0'.repeat(64);
+const VERIFY_EMAIL_TTL_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly authSessionsRepository: AuthSessionsRepository,
     private readonly config: ConfigService<AppConfiguration, true>,
+    private readonly db: DatabaseService,
     private readonly jwtService: JwtService,
     private readonly usersService: UsersService,
   ) {}
@@ -39,7 +43,36 @@ export class AuthService {
       displayName: input.displayName,
       phone: input.phone,
     });
+    await this.issueEmailVerification(user.id, user.email);
     return this.createAuthenticatedSession(user);
+  }
+
+  async resendVerification(email: string): Promise<{ sent: boolean }> {
+    const user = await this.usersService.findByEmailWithPassword(email);
+    if (!user || user.role !== 'PARENT') return { sent: false };
+    if (user.emailVerifiedAt) return { sent: true };
+    return this.issueEmailVerification(user.id, user.email);
+  }
+
+  async verifyEmail(token: string): Promise<{ verified: true }> {
+    const tokenHash = this.hashToken(token);
+    const now = new Date();
+    const record = await this.db.emailVerificationToken.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
+    if (!record || record.usedAt || record.expiresAt <= now) {
+      throw new AppError(
+        'AUTH_INVALID_EMAIL_TOKEN',
+        'Verification token is invalid or expired',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    await this.db.$transaction([
+      this.db.emailVerificationToken.update({ where: { id: record.id }, data: { usedAt: now } }),
+      this.db.user.update({ where: { id: record.userId }, data: { emailVerifiedAt: now } }),
+    ]);
+    return { verified: true };
   }
 
   async login(email: string, password: string): Promise<AuthResponseDto> {
@@ -180,6 +213,38 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
+  private async issueEmailVerification(userId: string, email: string): Promise<{ sent: boolean }> {
+    const token = randomBytes(32).toString('base64url');
+    await this.db.emailVerificationToken.create({
+      data: {
+        userId,
+        tokenHash: this.hashToken(token),
+        expiresAt: new Date(Date.now() + VERIFY_EMAIL_TTL_MS),
+      },
+    });
+    const academicConfig = this.config.get('academic', { infer: true });
+    if (!academicConfig.smtpUrl || !academicConfig.mailFrom) return { sent: false };
+    const transport = createTransport(
+      {
+        url: academicConfig.smtpUrl,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+      },
+      { from: academicConfig.mailFrom },
+    );
+    try {
+      await transport.sendMail({
+        to: email,
+        subject: 'EduGrade - Verify your email',
+        text: `Use this verification token to activate your EduGrade account: ${token}`,
+      });
+      return { sent: true };
+    } finally {
+      transport.close();
+    }
   }
 
   private hashesMatch(storedHash: string, presentedHash: string): boolean {

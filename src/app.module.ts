@@ -9,6 +9,7 @@ import { DatabaseModule } from './database/orm/database.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { AcademicModule } from './modules/academic/academic.module';
+import { RegistrationFlowModule } from './modules/registration-flow/registration-flow.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { AcademicModule } from './modules/academic/academic.module';
     AuthModule,
     HealthModule,
     AcademicModule,
+    RegistrationFlowModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
