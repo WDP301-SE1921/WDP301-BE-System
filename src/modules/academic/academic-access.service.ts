@@ -29,7 +29,7 @@ export function inTerm(
     !!enrollment.startDate &&
     !!enrollment.endDate &&
     enrollment.startDate <= day &&
-    enrollment.endDate >= day
+    enrollment.endDate > day
   );
 }
 
@@ -58,7 +58,7 @@ export class AcademicAccessService {
     id: string,
     tx: Prisma.TransactionClient = this.repo.db,
   ): Promise<void> {
-    roles(user, 'MANAGER', 'PARENT');
+    roles(user, 'MANAGER', 'STAFF', 'PARENT');
     const enrollment = await tx.enrollment.findUnique({
       where: { id },
       include: { studentProfile: { include: { parentProfile: true } } },
@@ -66,6 +66,7 @@ export class AcademicAccessService {
     assertRule(enrollment, 'ENROLLMENT_NOT_FOUND', 'Enrollment not found', HttpStatus.NOT_FOUND);
     assertRule(
       user.role === 'MANAGER' ||
+        user.role === 'STAFF' ||
         (enrollment.status !== 'PENDING_LINK' &&
           enrollment.studentProfile?.parentProfile.userId === user.id),
       'FORBIDDEN',

@@ -17,7 +17,10 @@ import * as bcrypt from 'bcrypt';
 import { Workbook } from 'exceljs';
 
 const DB_NAME = 'edugrade_academic_test';
-const DB_URL = `mysql://root:admin123@localhost:3306/${DB_NAME}`;
+const DB_SERVER = new URL(
+  process.env.ACADEMIC_TEST_DATABASE_URL ?? 'mysql://root:admin123@localhost:3306',
+);
+const DB_URL = `mysql://${DB_SERVER.username}:${DB_SERVER.password}@${DB_SERVER.host}/${DB_NAME}`;
 type Envelope<T> = { data: T };
 interface WithId {
   id: string;
@@ -48,10 +51,10 @@ describe('Academic workflows (database + HTTP)', () => {
       JWT_REFRESH_SECRET: 'academic-test-refresh-secret-at-least-32-characters',
     });
     const connection = await mysql.createConnection({
-      host: 'localhost',
-      port: 3306,
-      user: 'root',
-      password: 'admin123',
+      host: DB_SERVER.hostname,
+      port: Number(DB_SERVER.port || 3306),
+      user: decodeURIComponent(DB_SERVER.username),
+      password: decodeURIComponent(DB_SERVER.password),
     });
     await connection.query('DROP DATABASE IF EXISTS ??', [DB_NAME]);
     await connection.query('CREATE DATABASE ?? CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci', [
@@ -162,10 +165,10 @@ describe('Academic workflows (database + HTTP)', () => {
   afterAll(async () => {
     if (app) await app.close();
     const connection = await mysql.createConnection({
-      host: 'localhost',
-      port: 3306,
-      user: 'root',
-      password: 'admin123',
+      host: DB_SERVER.hostname,
+      port: Number(DB_SERVER.port || 3306),
+      user: decodeURIComponent(DB_SERVER.username),
+      password: decodeURIComponent(DB_SERVER.password),
     });
     await connection.query('DROP DATABASE IF EXISTS ??', [DB_NAME]);
     await connection.end();

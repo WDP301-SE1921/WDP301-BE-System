@@ -1,4 +1,5 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
+import type { UserStatus } from '@prisma/client';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMaxSize,
@@ -7,6 +8,7 @@ import {
   IsBoolean,
   IsDateString,
   IsEmail,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
@@ -81,6 +83,43 @@ export class ParentLookupDto {
   email!: string;
 }
 
+export class ParentSearchDto {
+  @ApiProperty({
+    example: 'ng',
+    minLength: 2,
+    maxLength: 255,
+    description: 'Partial email, trimmed and lowercased; a complete email is not required.',
+  })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  @IsString()
+  @MinLength(2)
+  @MaxLength(255)
+  email!: string;
+
+  @ApiPropertyOptional({ default: 10, minimum: 1, maximum: 10 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  limit = 10;
+}
+
+export class ParentSuggestionDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  email!: string;
+
+  @ApiProperty({ nullable: true, type: String })
+  displayName!: string | null;
+
+  @ApiProperty({ enum: ['ACTIVE', 'DISABLED'] })
+  status!: UserStatus;
+}
+
 export class ProgramDto {
   @ApiProperty()
   @IsString()
@@ -99,6 +138,29 @@ export class ProgramDto {
   @Min(6)
   @Max(9)
   grade!: number;
+}
+
+export class UpdateProgramDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  name?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  subject?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(6)
+  @Max(9)
+  grade?: number;
 }
 
 export class ClassDto {
@@ -246,4 +308,95 @@ export class ConfirmPaymentDto {
   @IsString()
   @MaxLength(191)
   receiptNumber?: string;
+}
+
+export class ListRegistrationsDto extends PageDto {
+  @ApiPropertyOptional({ enum: ['DRAFT', 'COMPLETED', 'CANCELLED'] })
+  @IsOptional()
+  @IsIn(['DRAFT', 'COMPLETED', 'CANCELLED'])
+  status?: 'DRAFT' | 'COMPLETED' | 'CANCELLED';
+
+  @ApiPropertyOptional({ enum: ['me'], description: 'Only drafts created by the caller.' })
+  @IsOptional()
+  @IsIn(['me'])
+  createdBy?: 'me';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  classId?: string;
+
+  @ApiPropertyOptional({ description: 'Parent email, student name or receipt number.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  search?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-10-01',
+    description: 'Created on/after, center local date.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  fromDate?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-10-31',
+    description: 'Created on/before, center local date.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  toDate?: string;
+}
+
+export class ListPaymentsDto extends PageDto {
+  @ApiPropertyOptional({ description: 'Receipt number, parent email or student name.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  search?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-10-01',
+    description: 'Confirmed on/after, center local date.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  fromDate?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-10-31',
+    description: 'Confirmed on/before, center local date.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  toDate?: string;
+}
+
+export class ListStudentsDto extends PageDto {
+  @ApiPropertyOptional({ description: 'Student name or parent email.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  search?: string;
+
+  @ApiPropertyOptional({ enum: ['ACTIVE', 'INACTIVE'] })
+  @IsOptional()
+  @IsIn(['ACTIVE', 'INACTIVE'])
+  status?: 'ACTIVE' | 'INACTIVE';
+
+  @ApiPropertyOptional({ example: 8 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(6)
+  @Max(9)
+  grade?: number;
+
+  @ApiPropertyOptional({ description: 'Parent user id.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  parentUserId?: string;
 }

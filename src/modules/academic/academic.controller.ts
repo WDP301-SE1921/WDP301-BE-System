@@ -33,6 +33,8 @@ import {
   FeedbackDto,
   GradeDto,
   LeaveDto,
+  LeaveFilterDto,
+  MakeupSourceFilterDto,
   LessonDto,
   LessonRevisionDto,
   SubmissionWindowDto,
@@ -198,9 +200,15 @@ export class AcademicController {
   }
   @Get('leaves') leaves(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() query: LeaveFilterDto,
   ): Promise<unknown> {
-    return this.workflows.leaves(user, page);
+    return this.workflows.leaves(user, query);
+  }
+  @Get('makeup-sources') makeupSources(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: MakeupSourceFilterDto,
+  ): Promise<unknown> {
+    return this.workflows.makeupSources(user, query);
   }
   @Post('leaves/:id/decide') decide(
     @CurrentUser() user: AuthenticatedUser,

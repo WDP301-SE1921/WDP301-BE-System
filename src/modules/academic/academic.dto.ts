@@ -18,11 +18,47 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { AttendanceStatus, FeedbackStatus, LeaveKind, QuestionKind } from '@prisma/client';
+import {
+  AttendanceStatus,
+  FeedbackStatus,
+  LeaveKind,
+  QuestionKind,
+  RequestStatus,
+} from '@prisma/client';
 
 export class PageDto {
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) page = 1;
   @ApiPropertyOptional({ default: 20 }) @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
+}
+export class LeaveFilterDto extends PageDto {
+  @ApiPropertyOptional({ enum: RequestStatus })
+  @IsOptional()
+  @IsEnum(RequestStatus)
+  status?: RequestStatus;
+  @ApiPropertyOptional({ enum: LeaveKind }) @IsOptional() @IsEnum(LeaveKind) kind?: LeaveKind;
+  @ApiPropertyOptional({ description: 'Student profile id.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  studentId?: string;
+  @ApiPropertyOptional({ example: '2026-10-01', description: 'Leaves ending on/after this day.' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  fromDate?: string;
+  @ApiPropertyOptional({
+    example: '2026-10-31',
+    description: 'Leaves starting on/before this day.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  toDate?: string;
+}
+export class MakeupSourceFilterDto extends PageDto {
+  @ApiPropertyOptional({ description: 'Student profile id.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  studentId?: string;
 }
 export class ProgramDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) name!: string;
