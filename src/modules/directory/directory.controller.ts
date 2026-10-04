@@ -1,0 +1,126 @@
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { DirectoryService } from './directory.service';
+import {
+  CreateStaffAccountDto,
+  DashboardQueryDto,
+  ListAccountsDto,
+  UpdateParentAccountDto,
+  UpdateStaffAccountDto,
+} from './dto/directory.dto';
+
+@ApiBearerAuth()
+@ApiTags('directory')
+@Controller({ version: '1' })
+export class DirectoryController {
+  constructor(private readonly directory: DirectoryService) {}
+
+  @Get('staff')
+  @ApiOperation({ summary: 'Manager: list staff accounts' })
+  listStaff(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListAccountsDto,
+  ): Promise<unknown> {
+    return this.directory.listAccounts(user, 'STAFF', query);
+  }
+
+  @Post('staff')
+  @ApiOperation({ summary: 'Manager: create a staff account with an initial password' })
+  createStaff(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CreateStaffAccountDto,
+  ): Promise<unknown> {
+    return this.directory.createAccount(user, 'STAFF', input);
+  }
+
+  @Get('staff/:id')
+  @ApiOperation({ summary: 'Manager: read a staff account' })
+  getStaff(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.directory.getAccount(user, 'STAFF', id);
+  }
+
+  @Patch('staff/:id')
+  @ApiOperation({
+    summary: 'Manager: rename or disable/enable a staff account (never hard-deleted)',
+  })
+  updateStaff(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateStaffAccountDto,
+  ): Promise<unknown> {
+    return this.directory.updateAccount(user, 'STAFF', id, input);
+  }
+
+  @Get('teachers')
+  @ApiOperation({ summary: 'Manager/staff: list teachers, e.g. ?status=ACTIVE&search=nguyen' })
+  listTeachers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListAccountsDto,
+  ): Promise<unknown> {
+    return this.directory.listAccounts(user, 'TEACHER', query);
+  }
+
+  @Post('teachers')
+  @ApiOperation({ summary: 'Manager: create a teacher account with an initial password' })
+  createTeacher(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CreateStaffAccountDto,
+  ): Promise<unknown> {
+    return this.directory.createAccount(user, 'TEACHER', input);
+  }
+
+  @Get('teachers/:id')
+  @ApiOperation({ summary: 'Manager/staff: read a teacher account' })
+  getTeacher(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.directory.getAccount(user, 'TEACHER', id);
+  }
+
+  @Patch('teachers/:id')
+  @ApiOperation({
+    summary: 'Manager: rename or disable/enable a teacher account (never hard-deleted)',
+  })
+  updateTeacher(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateStaffAccountDto,
+  ): Promise<unknown> {
+    return this.directory.updateAccount(user, 'TEACHER', id, input);
+  }
+
+  @Get('parents')
+  @ApiOperation({ summary: 'Manager: list parent accounts' })
+  listParents(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListAccountsDto,
+  ): Promise<unknown> {
+    return this.directory.listParents(user, query);
+  }
+
+  @Get('parents/:id')
+  @ApiOperation({ summary: 'Manager: read a parent account with children' })
+  getParent(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.directory.getParent(user, id);
+  }
+
+  @Patch('parents/:id')
+  @ApiOperation({ summary: 'Manager: update parent name, phone or status (no password/email)' })
+  updateParent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateParentAccountDto,
+  ): Promise<unknown> {
+    return this.directory.updateParent(user, id, input);
+  }
+
+  @Get('dashboard')
+  @ApiOperation({ summary: 'Manager: confirmed tuition and active account counts' })
+  dashboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: DashboardQueryDto,
+  ): Promise<unknown> {
+    return this.directory.dashboard(user, query);
+  }
+}

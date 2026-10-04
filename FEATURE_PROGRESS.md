@@ -165,8 +165,19 @@ voi `refreshToken`, sau do thay ca access token va refresh token bang cap moi.
 
 ## Pending P0 / Lam Sau
 
-- Tao API quan ly giao vien do manager/admin tao.
 - Seed tai khoan manager dau tien neu can dang nhap bang role quan ly.
 - Tich hop invitation/link enrollment cho parent theo flow dang ky hoc.
 - Them forgot password / reset password neu can.
-- Them email verification neu can.
+- Doi/quen mat khau va sua ho so nhan su.
+- Phan trang co `total` cho `GET /programs` va `GET /classes` (dang tra mang thuan).
+
+## Cap nhat 2026-10-04: STAFF/MANAGER web (BE_FIX_REQUESTS)
+
+- Done: email verification cho phu huynh (`/auth/verify-email`, `/auth/resend-verification`); phu huynh chi tao con sau khi xac minh.
+- Done: `GET /parents/search` (STAFF); registration create/get/cancel/confirm/receipt chi cho STAFF.
+- Done: cancel nhap 404/409/idempotent; `Idempotency-Key` cho tao nhap (migration `20261004000000_registration_idempotency_and_listing`); key xac nhan thanh toan gan voi nhan vien + body; nhap qua ngay bat dau bi `INVALID_START_DATE`; so cho tinh theo peak occupancy; `GET /classes` tra `availableSeats/isEligible/ineligibleReason` khi co `startDate` + `packageMonths`; nhan ky hoc trong bien lai theo endDate/trang thai enrollment.
+- Done: `GET /registrations`, `GET /payments` (tong tien that), `GET /classes/:id`, `PATCH/DELETE /programs/:id`, `GET /students`, `GET /students/:id/enrollments|schedule`; lich theo placement, chi ACTIVE va chua het han.
+- Done: module `directory` — `/staff`, `/teachers` (CRUD, disable thay vi xoa), `/parents` (xem/sua ten, phone, status), `/dashboard`.
+- Done: STAFF duoc doc/ghi academic enrollments, sessions, classes, leaves (tao ho se duoc duyet ngay), makeups, transfer, end enrollment/study (co audit + impact); `GET /academic/makeup-sources`; ngay het han academic la exclusive.
+- Verify: `pnpm typecheck`, `pnpm lint`, `pnpm test:e2e` (dat `REGISTRATION_TEST_DATABASE_URL` va `ACADEMIC_TEST_DATABASE_URL` neu MySQL khong o cong 3306).
+- Done: seed tai khoan mac dinh — dat `SEED_DEFAULT_PASSWORD` (va tuy chon `SEED_<ROLE>_EMAIL`) trong `.env`, chay `pnpm db:seed` (hoac `pnpm db:seed:prod` sau build). Tao 5 tai khoan (MANAGER, STAFF, TEACHER, CURRICULUM_DESIGNER, PARENT) da xac minh email; email da ton tai thi bo qua, khong doi mat khau.

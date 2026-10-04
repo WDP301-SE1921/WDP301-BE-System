@@ -215,6 +215,8 @@ model RegistrationOrder {
   createdByManagerId  String                @db.VarChar(191)
   confirmedAt         DateTime?
   linkedAt            DateTime?
+  createIdempotencyKey String?              @db.VarChar(191)
+  createRequestHash   String?               @db.Char(64)
   targetStudent       StudentProfile?       @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
   class               Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
   createdByManager    User                  @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
@@ -226,7 +228,9 @@ model RegistrationOrder {
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
 
+  @@unique([createdByManagerId, createIdempotencyKey])
   @@index([parentEmail])
+  @@index([status, createdAt])
   @@index([classId, status])
   @@index([targetStudentId])
   @@map("registration_orders")
@@ -246,6 +250,7 @@ model Payment {
   createdAt              DateTime          @default(now())
 
   @@index([confirmedByManagerId])
+  @@index([confirmedAt])
   @@map("payments")
 }
 
@@ -672,6 +677,8 @@ model IdempotencyRecord {
   scope               String            @db.VarChar(191)
   key                 String            @db.VarChar(191)
   registrationOrderId String            @db.VarChar(191)
+  actorUserId         String?             @db.VarChar(191)
+  requestHash         String?             @db.Char(64)
   response            Json
   registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
   createdAt           DateTime          @default(now())

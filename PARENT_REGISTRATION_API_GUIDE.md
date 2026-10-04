@@ -181,13 +181,15 @@ Màn hình danh sách con gọi GET khi mở trang và tải lại sau khi tạo
 
 ## 5. Nhân viên đăng ký học tại quầy
 
-Dùng phiên `STAFF` hoặc `MANAGER` cho tất cả bước ghi danh và thu tiền.
+Chỉ phiên `STAFF` được tạo nháp, hủy nháp, xác nhận thu tiền và đọc đăng ký/biên lai quầy. `MANAGER`, `TEACHER`, `CURRICULUM_DESIGNER` nhận 403 `FORBIDDEN`; `MANAGER` chỉ xem lịch sử qua `GET /registrations` và `GET /payments`.
 
 ### 5.1. Tìm phụ huynh và chọn con
 
 `GET /parents/lookup?email=parent%40example.com`
 
-Encode query bằng `URLSearchParams`. Đây là tra cứu email chính xác, không phải tìm kiếm gần đúng.
+Encode query bằng `URLSearchParams`. Đây là tra cứu email chính xác.
+
+Để gợi ý khi gõ dở email dùng `GET /parents/search?email=ng&limit=10` (chỉ STAFF): `email` 2–255 ký tự, không phân biệt hoa thường, khớp từng phần; `limit` 1–10, mặc định 10; sắp theo email tăng dần. `data` là mảng `{ id, email, displayName, status }` (mảng rỗng khi không có kết quả). Sau khi chọn, gọi lookup bằng email đã chọn để lấy danh sách con.
 
 Response `data` chứa `id`, `email`, `displayName`, `status`, `emailVerifiedAt`, `parentProfile`. Danh sách con đang hoạt động nằm ở `data.parentProfile.students`.
 
@@ -203,9 +205,9 @@ Lấy chương trình qua `GET /programs`, hiển thị các môn theo khối c�
 GET /api/v1/classes?studentId=<studentId>&subject=To%C3%A1n&page=1&limit=20
 ```
 
-Response là mảng lớp, có `program`, `weeklySchedules`, `monthlyFee`, `capacity`, `isOpen`, `_count.enrollments`. Frontend hiển thị tên lớp, môn/khối, lịch tuần và học phí tháng; chỉ cho chọn lớp mở có lịch.
+Response là mảng lớp, có `program`, `weeklySchedules`, `monthlyFee`, `capacity`, `isOpen`, `_count.enrollments`. Frontend hiển thị tên lớp, môn/khối, lịch tuần và học phí tháng.
 
-**Giới hạn hiện tại:** DTO nhận `startDate` và `packageMonths` nhưng service danh sách lớp chưa dùng hai trường này để lọc theo kỳ học, sĩ số hay trùng giờ. `_count.enrollments` đếm tất cả ghi danh, không phải số chỗ đã dùng trong kỳ đang chọn. Không dùng giá trị này để khẳng định lớp còn chỗ. Backend kiểm tra điều kiện khi tạo bản nháp và xác nhận thanh toán.
+Truyền thêm `startDate=2026-10-05&packageMonths=3` (phải đi cùng nhau, nếu không trả 400 `VALIDATION_ERROR`) để mỗi lớp có thêm `availableSeats` (sức chứa trừ số chỗ **đồng thời tối đa** trong `[startDate, endDate)`), `isEligible`, `ineligibleReason` (mã lỗi giống lúc tạo nháp, ví dụ `CLASS_FULL`) và `ineligibleMessage`. Khi có `studentId` còn kiểm tra khối, trạng thái con/phụ huynh, trùng lớp và trùng giờ. `_count.enrollments` vẫn đếm mọi ghi danh, không dùng để kết luận còn chỗ. Danh sách vẫn là mảng thuần (chưa có `total`) và phân trang bằng `page`/`limit` ≤ 100.
 
 ### 5.3. Chọn kỳ học và lập bản nháp
 
@@ -228,12 +230,14 @@ Response `data` là đăng ký có `id`, `status: "DRAFT"`, `quotedAmount`, `cur
 
 Ngày hết hạn = ngày bắt đầu cộng số tháng, cắt về cuối tháng nếu thiếu ngày tương ứng. Khoảng học là `[startDate, endDate)`, không bao gồm ngày hết hạn. Ví dụ 05/10/2026 + 3 tháng hết hạn 05/01/2027.
 
-**Bản nháp chưa giữ chỗ và chưa tạo thanh toán/ghi danh.** Không tự động retry POST tạo bản nháp khi mất response vì API này chưa có idempotency. Giữ `registrationId` sau khi nhận được để tiếp tục cùng bản nháp.
+**Bản nháp chưa giữ chỗ và chưa tạo thanh toán/ghi danh.** Có thể gửi header `Idempotency-Key` (≤ 191 ký tự) khi tạo nháp: cùng key và cùng body trả lại đúng nháp cũ (không tạo bản ghi thứ hai); cùng key nhưng body khác trả 409 `IDEMPOTENCY_KEY_CONFLICT`. Key chỉ có hiệu lực trong phạm vi nhân viên đã tạo. Để khôi phục khi mất response mà không có key, gọi `GET /registrations?status=DRAFT&createdBy=me`.
+
+`GET /registrations` (STAFF/MANAGER) hỗ trợ `status`, `createdBy=me`, `classId`, `search` (email phụ huynh, tên con hoặc số biên lai), `fromDate`, `toDate` (ngày tạo, giờ trung tâm UTC+7), `page`, `limit`; trả `{ items, page, limit, total }`. `GET /payments` (STAFF/MANAGER) hỗ trợ `search`, `fromDate`, `toDate` (ngày xác nhận), `page`, `limit`; trả `{ items, page, limit, total, totalAmount }` với `totalAmount` là tổng tiền thật theo bộ lọc (chuỗi Decimal).
 
 ### 5.4. Đọc lại hoặc hủy bản nháp
 
 - `GET /registrations/<registrationId>`: lấy lại chi tiết. STAFF/MANAGER được đọc; PARENT chỉ đọc đăng ký thuộc mình theo kiểm tra email của backend.
-- `POST /registrations/<registrationId>/cancel`: STAFF/MANAGER hủy DRAFT, không cần body; chuyển sang CANCELLED.
+- `POST /registrations/<registrationId>/cancel`: STAFF hủy DRAFT, không cần body; chuyển sang CANCELLED. Hủy lặp lại trả lại đăng ký CANCELLED; ID không tồn tại trả 404 `REGISTRATION_NOT_FOUND`; đăng ký đã COMPLETED trả 409 `REGISTRATION_NOT_DRAFT`.
 
 Nếu muốn đổi con/lớp/kỳ học, hủy nháp cũ rồi tạo nháp mới. Luồng này chưa có API sửa bản nháp. Không dùng cancel để hủy một đăng ký đã thanh toán.
 
@@ -256,7 +260,9 @@ Idempotency-Key: <uuid-cua-lan-xac-nhan>
 
 Frontend tạo một UUID cho thao tác xác nhận, lưu cùng `registrationId` và giữ nguyên key/body khi retry do timeout hoặc mất mạng. Khóa nút khi đang gửi. Không tạo key mới mỗi lần retry.
 
-Backend kiểm tra lại tài khoản/con/lớp/lịch/sĩ số, rồi trong một transaction tạo Payment, Enrollment ACTIVE, cập nhật đăng ký COMPLETED và ghi audit/idempotency. Response là dữ liệu biên lai. Chỉ chuyển UI sang thành công khi nhận kết quả thành công hoặc đọc lại thấy COMPLETED.
+Key được gắn với đăng ký, nhân viên và body (`receiptNumber`): cùng key + cùng body trả lại đúng biên lai cũ; cùng key khác body hoặc khác nhân viên trả 409 `IDEMPOTENCY_KEY_CONFLICT`; đăng ký đã COMPLETED hoặc CANCELLED với key mới trả 409 `REGISTRATION_NOT_DRAFT`. Nếu nháp đã qua ngày bắt đầu, backend trả 409 `INVALID_START_DATE`: hủy nháp và tạo nháp mới.
+
+Backend kiểm tra lại tài khoản/con/lớp/lịch/sĩ số (đếm số chỗ đồng thời lớn nhất trong kỳ, nên hai gói liên tiếp không chặn nhau), rồi trong một transaction tạo Payment, Enrollment ACTIVE, cập nhật đăng ký COMPLETED và ghi audit/idempotency. Response là dữ liệu biên lai. Chỉ chuyển UI sang thành công khi nhận kết quả thành công hoặc đọc lại thấy COMPLETED.
 
 Nếu timeout, có thể gọi `GET /registrations/<registrationId>`: COMPLETED thì lấy biên lai; còn DRAFT thì retry xác nhận với key đã lưu. Nếu HTTP lỗi nghiệp vụ như CLASS_FULL, hiển thị lỗi và cho chọn phương án khác, không tự xác nhận lại liên tục.
 
@@ -342,7 +348,9 @@ Code schedule hiện lấy các ghi danh khác PENDING_LINK, có thể bao gồm
 | `CLASS_SCHEDULE_LOCKED` | Lớp đã có ghi danh; không sửa lịch bằng API này |
 | `INVALID_TEACHER` | Chọn giáo viên đang hoạt động |
 | `IDEMPOTENCY_KEY_REQUIRED` | Bổ sung header cho xác nhận thanh toán |
-| `REGISTRATION_NOT_DRAFT` | Đọc lại đăng ký; không tiếp tục xác nhận nháp đã hủy |
+| `REGISTRATION_NOT_DRAFT` | Đọc lại đăng ký; không tiếp tục xác nhận nháp đã hủy hoặc đã thu tiền |
+| `IDEMPOTENCY_KEY_CONFLICT` | Key đã dùng cho body/nhân viên khác; dùng key mới cho thao tác mới |
+| `PROGRAM_IN_USE`, `ACCOUNT_NOT_FOUND`, `AUTH_EMAIL_EXISTS` | Chương trình đang có lớp/bài học; tài khoản không thuộc loại này; email đã tồn tại |
 | `RECEIPT_NOT_FOUND` | Chưa có biên lai hoặc ID không tồn tại |
 | 400 | Kiểm tra dữ liệu form và `error.details` nếu có |
 | 409 | Xung đột nghiệp vụ; đọc `error.code` để đưa thông báo phù hợp |

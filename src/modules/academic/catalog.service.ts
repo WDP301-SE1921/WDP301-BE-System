@@ -27,7 +27,7 @@ export class CatalogService {
   }
 
   async programs(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
+    roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER');
     return this.repo.db.program.findMany({
       skip: (page.page - 1) * page.limit,
       take: page.limit,
@@ -45,7 +45,7 @@ export class CatalogService {
   }
 
   async classes(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'TEACHER');
+    roles(user, 'MANAGER', 'STAFF', 'TEACHER');
     return this.repo.db.class.findMany({
       where: user.role === 'TEACHER' ? { teacherId: user.id } : {},
       skip: (page.page - 1) * page.limit,
@@ -132,7 +132,7 @@ export class CatalogService {
 
   async sessions(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
     const where: Prisma.ClassSessionWhereInput =
-      user.role === 'MANAGER'
+      user.role === 'MANAGER' || user.role === 'STAFF'
         ? {}
         : user.role === 'TEACHER'
           ? { teacherId: user.id }
@@ -147,7 +147,7 @@ export class CatalogService {
                 },
               },
             };
-    roles(user, 'MANAGER', 'TEACHER', 'PARENT');
+    roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     return this.repo.db.classSession.findMany({
       where,
       select: {
@@ -184,7 +184,7 @@ export class CatalogService {
           status: 'ACTIVE',
           studentProfileId: { not: null },
           startDate: { lte: day },
-          endDate: { gte: day },
+          endDate: { gt: day },
           OR: [
             {
               placements: {
@@ -324,10 +324,10 @@ export class CatalogService {
   }
 
   async enrollments(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'TEACHER', 'PARENT');
+    roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const now = new Date();
     const where: Prisma.EnrollmentWhereInput =
-      user.role === 'MANAGER'
+      user.role === 'MANAGER' || user.role === 'STAFF'
         ? {}
         : user.role === 'PARENT'
           ? {
@@ -356,7 +356,9 @@ export class CatalogService {
         status: true,
         startDate: true,
         endDate: true,
-        studentProfile: { select: { id: true, fullName: true } },
+        packageMonths: true,
+        class: { select: { id: true, name: true } },
+        studentProfile: { select: { id: true, fullName: true, grade: true } },
         placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
       },
       take: page.limit,
@@ -366,7 +368,8 @@ export class CatalogService {
   }
 
   async roster(user: AuthenticatedUser, id: string, page: PageDto): Promise<unknown> {
-    await this.access.session(user, id);
+    // Staff only read rosters for scheduling; marking attendance stays with teachers and managers.
+    if (user.role !== 'STAFF') await this.access.session(user, id);
     return this.repo.db.sessionParticipant.findMany({
       where: { sessionId: id, cancelled: false },
       select: {

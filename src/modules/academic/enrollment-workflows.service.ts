@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { Enrollment, Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import {
   AcademicAccessService,
@@ -13,7 +13,9 @@ import {
   AttendanceDto,
   DecisionDto,
   LeaveDto,
+  LeaveFilterDto,
   MakeupDto,
+  MakeupSourceFilterDto,
   PageDto,
   TransferDto,
 } from './academic.dto';
@@ -25,23 +27,50 @@ export class EnrollmentWorkflowsService {
     private readonly access: AcademicAccessService,
   ) {}
 
-  async leaves(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'PARENT');
+  async leaves(user: AuthenticatedUser, query: LeaveFilterDto): Promise<unknown> {
+    roles(user, 'MANAGER', 'STAFF', 'PARENT');
+    const where: Prisma.LeaveRequestWhereInput = {
+      ...(user.role === 'PARENT'
+        ? { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } }
+        : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.kind ? { kind: query.kind } : {}),
+      ...(query.studentId
+        ? {
+            enrollment: {
+              studentProfileId: query.studentId,
+              ...(user.role === 'PARENT'
+                ? { studentProfile: { parentProfile: { userId: user.id } } }
+                : {}),
+            },
+          }
+        : {}),
+      // Overlap with [fromDate, toDate]; leave dates are inclusive calendar days.
+      ...(query.toDate ? { fromDate: { lte: new Date(query.toDate) } } : {}),
+      ...(query.fromDate ? { toDate: { gte: new Date(query.fromDate) } } : {}),
+    };
     return this.repo.db.leaveRequest.findMany({
-      where:
-        user.role === 'MANAGER'
-          ? {}
-          : { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } },
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
+      where,
+      include: {
+        enrollment: {
+          select: {
+            id: true,
+            status: true,
+            studentProfile: { select: { id: true, fullName: true, grade: true } },
+            class: { select: { id: true, name: true } },
+          },
+        },
+      },
+      take: query.limit,
+      skip: (query.page - 1) * query.limit,
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async makeups(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'TEACHER', 'PARENT');
+    roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const where: Prisma.MakeupBookingWhereInput =
-      user.role === 'MANAGER'
+      user.role === 'MANAGER' || user.role === 'STAFF'
         ? {}
         : user.role === 'TEACHER'
           ? { replacement: { session: { teacherId: user.id } } }
@@ -86,7 +115,7 @@ export class EnrollmentWorkflowsService {
         enrollment.startDate &&
         enrollment.endDate &&
         from >= enrollment.startDate &&
-        to <= enrollment.endDate,
+        to < enrollment.endDate,
       'OUTSIDE_ENROLLMENT',
       'Leave must fall inside active enrollment',
     );
@@ -117,14 +146,23 @@ export class EnrollmentWorkflowsService {
         'Single absence must match the session date',
       );
     }
-    return this.repo.db.leaveRequest.create({
-      data: { ...input, fromDate: from, toDate: to, requestedById: user.id },
+    const data = { ...input, fromDate: from, toDate: to, requestedById: user.id };
+    if (user.role !== 'STAFF') return this.repo.db.leaveRequest.create({ data });
+    // Staff record leave on behalf of the parent (SRS 6.4/6.7), so it is approved in the same step.
+    return this.repo.transaction(async (tx) => {
+      const leave = await tx.leaveRequest.create({ data });
+      return this.decideLeave(user, leave.id, { approve: true, reason: input.reason }, tx);
     });
   }
 
-  async decideLeave(user: AuthenticatedUser, id: string, input: DecisionDto): Promise<unknown> {
-    roles(user, 'MANAGER');
-    return this.repo.transaction(async (tx) => {
+  async decideLeave(
+    user: AuthenticatedUser,
+    id: string,
+    input: DecisionDto,
+    outer?: Prisma.TransactionClient,
+  ): Promise<unknown> {
+    roles(user, 'MANAGER', 'STAFF');
+    const run = async (tx: Prisma.TransactionClient): Promise<unknown> => {
       const leave = await tx.leaveRequest.findUniqueOrThrow({ where: { id } });
       assertRule(leave.status === 'PENDING', 'REQUEST_DECIDED', 'Request has already been decided');
       if (input.approve) {
@@ -184,11 +222,12 @@ export class EnrollmentWorkflowsService {
           decisionNote: input.reason,
         },
       });
-    });
+    };
+    return outer ? run(outer) : this.repo.transaction(run);
   }
 
   async cancelLeave(user: AuthenticatedUser, id: string): Promise<unknown> {
-    roles(user, 'MANAGER');
+    roles(user, 'MANAGER', 'STAFF');
     return this.repo.transaction(async (tx) => {
       const leave = await tx.leaveRequest.findUniqueOrThrow({ where: { id } });
       assertRule(
@@ -221,12 +260,50 @@ export class EnrollmentWorkflowsService {
     });
   }
 
+  async makeupSources(user: AuthenticatedUser, query: MakeupSourceFilterDto): Promise<unknown> {
+    roles(user, 'MANAGER', 'STAFF');
+    return this.repo.db.sessionParticipant.findMany({
+      where: {
+        cancelled: false,
+        kind: 'REGULAR',
+        attendance: { notIn: ['PRESENT', 'EXCUSED'] },
+        session: { status: { not: 'CANCELLED' } },
+        sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
+        enrollment: {
+          status: 'ACTIVE',
+          ...(query.studentId ? { studentProfileId: query.studentId } : {}),
+        },
+      },
+      select: {
+        id: true,
+        attendance: true,
+        enrollmentId: true,
+        enrollment: {
+          select: { studentProfile: { select: { id: true, fullName: true, grade: true } } },
+        },
+        session: {
+          select: {
+            id: true,
+            startsAt: true,
+            endsAt: true,
+            status: true,
+            lesson: { select: { id: true, title: true } },
+            class: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { session: { startsAt: 'desc' } },
+      take: query.limit,
+      skip: (query.page - 1) * query.limit,
+    });
+  }
+
   async makeupCandidates(
     user: AuthenticatedUser,
     participantId: string,
     page: PageDto,
   ): Promise<unknown> {
-    roles(user, 'MANAGER');
+    roles(user, 'MANAGER', 'STAFF');
     const original = await this.repo.db.sessionParticipant.findUniqueOrThrow({
       where: { id: participantId },
       include: { session: true },
@@ -251,7 +328,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async bookMakeup(user: AuthenticatedUser, input: MakeupDto): Promise<unknown> {
-    roles(user, 'MANAGER');
+    roles(user, 'MANAGER', 'STAFF');
     return this.repo.transaction(async (tx) => {
       const source = await tx.sessionParticipant.findUniqueOrThrow({
         where: { id: input.originalParticipantId },
@@ -349,7 +426,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async cancelMakeup(user: AuthenticatedUser, id: string): Promise<unknown> {
-    roles(user, 'MANAGER');
+    roles(user, 'MANAGER', 'STAFF');
     return this.repo.transaction(async (tx) => {
       const booking = await tx.makeupBooking.findUniqueOrThrow({
         where: { id },
@@ -440,7 +517,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async transfer(user: AuthenticatedUser, id: string, input: TransferDto): Promise<unknown> {
-    roles(user, 'MANAGER');
+    roles(user, 'MANAGER', 'STAFF');
     return this.repo.transaction(async (tx) => {
       const enrollment = await tx.enrollment.findUniqueOrThrow({
         where: { id },
@@ -609,25 +686,72 @@ export class EnrollmentWorkflowsService {
   }
 
   async endEnrollment(user: AuthenticatedUser, id: string): Promise<unknown> {
-    roles(user, 'MANAGER');
-    return this.repo.transaction((tx) => this.endOne(tx, id));
+    roles(user, 'MANAGER', 'STAFF');
+    return this.repo.transaction(async (tx) => {
+      const { enrollment, impact } = await this.endOne(tx, id);
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'ENROLLMENT_END',
+          entityType: 'Enrollment',
+          entityId: id,
+          afterData: impact,
+        },
+      });
+      return { ...enrollment, impact };
+    });
   }
 
   async endStudent(user: AuthenticatedUser, studentId: string): Promise<unknown> {
-    roles(user, 'MANAGER');
+    roles(user, 'MANAGER', 'STAFF');
     return this.repo.transaction(async (tx) => {
       const enrollments = await tx.enrollment.findMany({
         where: { studentProfileId: studentId, status: { not: 'ENDED' } },
       });
-      for (const enrollment of enrollments) await this.endOne(tx, enrollment.id);
-      return tx.studentProfile.update({ where: { id: studentId }, data: { status: 'INACTIVE' } });
+      const impact = {
+        enrollmentIds: [] as string[],
+        pendingLeavesCancelled: 0,
+        makeupsCancelled: 0,
+        futureSessionsCancelled: 0,
+      };
+      for (const enrollment of enrollments) {
+        const result = await this.endOne(tx, enrollment.id);
+        impact.enrollmentIds.push(enrollment.id);
+        impact.pendingLeavesCancelled += result.impact.pendingLeavesCancelled;
+        impact.makeupsCancelled += result.impact.makeupsCancelled;
+        impact.futureSessionsCancelled += result.impact.futureSessionsCancelled;
+      }
+      const student = await tx.studentProfile.update({
+        where: { id: studentId },
+        data: { status: 'INACTIVE' },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'STUDENT_END_STUDY',
+          entityType: 'StudentProfile',
+          entityId: studentId,
+          afterData: impact,
+        },
+      });
+      return { ...student, impact };
     });
   }
 
-  private async endOne(tx: Prisma.TransactionClient, id: string): Promise<unknown> {
+  private async endOne(
+    tx: Prisma.TransactionClient,
+    id: string,
+  ): Promise<{
+    enrollment: Enrollment;
+    impact: {
+      pendingLeavesCancelled: number;
+      makeupsCancelled: number;
+      futureSessionsCancelled: number;
+    };
+  }> {
     const now = new Date();
     const enrollment = await tx.enrollment.findUniqueOrThrow({ where: { id } });
-    await tx.leaveRequest.updateMany({
+    const cancelledLeaves = await tx.leaveRequest.updateMany({
       where: { enrollmentId: id, status: 'PENDING' },
       data: { status: 'CANCELLED', decisionNote: 'Enrollment ended' },
     });
@@ -659,15 +783,25 @@ export class EnrollmentWorkflowsService {
       where: { id: { in: bookings.map((b) => b.id) } },
       data: { status: 'CANCELLED', activeOriginalId: null },
     });
-    await tx.sessionParticipant.updateMany({
-      where: { enrollmentId: id, session: { startsAt: { gt: now } } },
+    const cancelledSessions = await tx.sessionParticipant.updateMany({
+      where: { enrollmentId: id, cancelled: false, session: { startsAt: { gt: now } } },
       data: { cancelled: true },
     });
     await tx.linkInvitation.updateMany({
       where: { registrationOrderId: enrollment.registrationOrderId, status: 'ACTIVE' },
       data: { status: 'REVOKED' },
     });
-    return tx.enrollment.update({ where: { id }, data: { status: 'ENDED', endedAt: now } });
+    return {
+      enrollment: await tx.enrollment.update({
+        where: { id },
+        data: { status: 'ENDED', endedAt: now },
+      }),
+      impact: {
+        pendingLeavesCancelled: cancelledLeaves.count,
+        makeupsCancelled: bookings.length,
+        futureSessionsCancelled: cancelledSessions.count,
+      },
+    };
   }
 
   private async reservations(
@@ -679,7 +813,7 @@ export class EnrollmentWorkflowsService {
     return tx.enrollment.count({
       where: {
         status: { in: ['ACTIVE', 'PENDING_LINK'] },
-        OR: [{ endDate: null }, { endDate: { gte: day } }],
+        OR: [{ endDate: null }, { endDate: { gt: day } }],
         AND: [
           { OR: [{ startDate: null }, { startDate: { lte: day } }] },
           {

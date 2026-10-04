@@ -6,6 +6,7 @@ export interface AppConfiguration {
   databaseUrl: string;
   corsOrigins: string[];
   swaggerEnabled: boolean;
+  throttleLimitPerMinute: number;
   academic: {
     aiUrl: string;
     aiKey: string;
@@ -94,6 +95,7 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
     databaseUrl: required(environment, 'DATABASE_URL'),
     corsOrigins,
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
+    throttleLimitPerMinute: parsePositiveInteger(environment, 'THROTTLE_LIMIT_PER_MINUTE', 120),
     academic: {
       aiUrl: environment.AI_CHAT_URL?.trim() || '',
       aiKey: environment.AI_API_KEY?.trim() || '',
