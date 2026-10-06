@@ -13,6 +13,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AcademicModule } from './modules/academic/academic.module';
 import { DirectoryModule } from './modules/directory/directory.module';
 import { RegistrationFlowModule } from './modules/registration-flow/registration-flow.module';
+import { CurriculumSchedulingModule } from './modules/curriculum-scheduling/curriculum-scheduling.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { RegistrationFlowModule } from './modules/registration-flow/registration
     AuthModule,
     HealthModule,
     AcademicModule,
+    CurriculumSchedulingModule,
     RegistrationFlowModule,
     // After RegistrationFlowModule so static parents/search and parents/lookup win over parents/:id.
     DirectoryModule,

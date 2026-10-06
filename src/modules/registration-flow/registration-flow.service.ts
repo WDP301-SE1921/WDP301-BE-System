@@ -178,11 +178,22 @@ export class RegistrationFlowService {
     this.requireRoles(user, 'MANAGER');
     await this.assertTeacher(input.teacherId ?? undefined);
     return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${id} FOR UPDATE`;
       const classroom = await tx.class.findUnique({
         where: { id },
         include: { weeklySchedules: true },
       });
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      if (input.teacherId !== undefined && input.teacherId !== classroom.teacherId) {
+        const scheduled = await tx.classSession.count({
+          where: { classId: id, status: 'SCHEDULED', startsAt: { gte: new Date() } },
+        });
+        this.assert(
+          !scheduled,
+          'CLASS_TEACHER_LOCKED',
+          'Cannot change teacher while future sessions are scheduled',
+        );
+      }
       if (input.isOpen === true) {
         this.assert(
           classroom.weeklySchedules.length > 0,
@@ -292,6 +303,7 @@ export class RegistrationFlowService {
     }
     this.assertNoScheduleOverlaps(schedules);
     return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
       const active = await tx.enrollment.count({
         where: { classId, status: { not: 'ENDED' } },
       });
@@ -299,6 +311,14 @@ export class RegistrationFlowService {
         !active,
         'CLASS_SCHEDULE_LOCKED',
         'Cannot change schedule while class has enrollments',
+      );
+      const futureSessions = await tx.classSession.count({
+        where: { classId, status: 'SCHEDULED', startsAt: { gte: new Date() } },
+      });
+      this.assert(
+        !futureSessions,
+        'CLASS_SCHEDULE_LOCKED',
+        'Cannot change schedule while future sessions exist',
       );
       await tx.class.findUniqueOrThrow({ where: { id: classId } });
       await tx.classWeeklySchedule.deleteMany({ where: { classId } });
