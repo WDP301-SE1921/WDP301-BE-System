@@ -81,6 +81,8 @@ model User {
   teachingClasses    Class[]             @relation("ClassTeacher")
   teachingSessions   ClassSession[]      @relation("SessionTeacher")
   designedLessons    Lesson[]
+  designedUnits      CurriculumUnit[]
+  scheduleGenerations ScheduleGeneration[]
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 
@@ -152,6 +154,7 @@ model Program {
   grade     Int
   classes   Class[]
   lessons   Lesson[]
+  curriculumUnits CurriculumUnit[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -170,6 +173,7 @@ model Class {
   teacher            User?               @relation("ClassTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
   weeklySchedules    ClassWeeklySchedule[]
   sessions           ClassSession[]
+  scheduleGenerations ScheduleGeneration[]
   placements         EnrollmentPlacement[]
   assignments        Assignment[]
   announcements      Announcement[]
@@ -286,6 +290,55 @@ enum LessonStatus {
   APPROVED
 }
 
+enum CurriculumUnitStatus {
+  DRAFT
+  APPROVED
+}
+
+enum CurriculumItemKind {
+  LESSON
+  MONTHLY_TEST
+}
+
+model CurriculumTrack {
+  id         String           @id @default(cuid()) @db.VarChar(191)
+  grade      Int
+  subjectKey String           @db.VarChar(191)
+  subject    String           @db.VarChar(191)
+  units      CurriculumUnit[]
+  createdAt  DateTime         @default(now())
+
+  @@unique([grade, subjectKey])
+  @@map("curriculum_tracks")
+}
+
+model CurriculumUnit {
+  id          String               @id @default(cuid()) @db.VarChar(191)
+  trackId     String               @db.VarChar(191)
+  programId   String               @db.VarChar(191)
+  designerId  String               @db.VarChar(191)
+  basedOnId   String?              @db.VarChar(191)
+  version     Int                  @default(1)
+  title       String               @db.VarChar(255)
+  fromDate    DateTime             @db.Date
+  toDate      DateTime             @db.Date
+  status      CurriculumUnitStatus @default(DRAFT)
+  approvedAt  DateTime?
+  track       CurriculumTrack      @relation(fields: [trackId], references: [id], onDelete: Restrict)
+  program     Program              @relation(fields: [programId], references: [id], onDelete: Restrict)
+  designer    User                 @relation(fields: [designerId], references: [id], onDelete: Restrict)
+  basedOn     CurriculumUnit?      @relation("CurriculumUnitVersion", fields: [basedOnId], references: [id], onDelete: Restrict)
+  revisions   CurriculumUnit[]     @relation("CurriculumUnitVersion")
+  lessons     Lesson[]
+  generations ScheduleGeneration[]
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@unique([trackId, fromDate, toDate, version])
+  @@index([trackId, status])
+  @@map("curriculum_units")
+}
+
 enum SessionStatus {
   SCHEDULED
   COMPLETED
@@ -362,17 +415,23 @@ model Lesson {
   title        String @db.VarChar(255)
   content      String @db.LongText
   sequence     Int
+  unitId       String? @db.VarChar(191)
+  kind         CurriculumItemKind @default(LESSON)
+  monthKey     String? @db.VarChar(7)
   basedOnId    String? @db.VarChar(191)
   basedOn      Lesson? @relation("LessonRevision", fields: [basedOnId], references: [id], onDelete: Restrict)
   revisions    Lesson[] @relation("LessonRevision")
   resolvedFeedback CurriculumFeedback[] @relation("FeedbackResolution")
   status       LessonStatus @default(DRAFT)
   program      Program @relation(fields: [programId], references: [id], onDelete: Restrict)
+  unit         CurriculumUnit? @relation(fields: [unitId], references: [id], onDelete: Restrict)
   designer     User @relation(fields: [designerId], references: [id], onDelete: Restrict)
   sessions     ClassSession[]
   feedback     CurriculumFeedback[]
   createdAt    DateTime @default(now())
   @@index([programId, sequence])
+  @@unique([unitId, kind, sequence])
+  @@unique([unitId, kind, monthKey])
   @@map("lessons")
 }
 
@@ -424,6 +483,7 @@ model ClassSession {
   classId      String @db.VarChar(191)
   lessonId     String @db.VarChar(191)
   teacherId    String @db.VarChar(191)
+  generationId String? @db.VarChar(191)
   startsAt     DateTime
   endsAt       DateTime
   status       SessionStatus @default(SCHEDULED)
@@ -431,11 +491,33 @@ model ClassSession {
   class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
   lesson       Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
   teacher      User @relation("SessionTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  generation   ScheduleGeneration? @relation(fields: [generationId], references: [id], onDelete: Restrict)
   participants SessionParticipant[]
   leaves       LeaveRequest[]
   @@unique([classId, startsAt])
   @@index([teacherId, startsAt])
+  @@index([generationId])
   @@map("class_sessions")
+}
+
+model ScheduleGeneration {
+  id          String         @id @default(cuid()) @db.VarChar(191)
+  classId     String         @db.VarChar(191)
+  unitId      String         @db.VarChar(191)
+  actorUserId String         @db.VarChar(191)
+  key         String         @db.VarChar(191)
+  requestHash String         @db.Char(64)
+  fromDate    DateTime       @db.Date
+  toDate      DateTime       @db.Date
+  class       Class          @relation(fields: [classId], references: [id], onDelete: Restrict)
+  unit        CurriculumUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  actor       User           @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  sessions    ClassSession[]
+  createdAt   DateTime       @default(now())
+
+  @@unique([classId, key])
+  @@index([unitId])
+  @@map("schedule_generations")
 }
 
 model SessionParticipant {

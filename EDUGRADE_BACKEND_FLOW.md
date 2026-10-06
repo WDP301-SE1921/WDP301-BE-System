@@ -30,7 +30,7 @@ Luồng cũ dùng mã/link liên kết sau thanh toán không còn là luồng �
 - Giáo viên không được xác nhận thu tiền.
 - Thanh toán offline chỉ ghi nhận khi đã thu đủ tiền.
 - Trả góp, hoàn tiền, gia hạn và đổi lớp không thuộc phiên bản này.
-- Soạn giáo trình chi tiết và phân bài theo từng buổi thuộc workflow riêng.
+- Soạn giáo trình và sinh buổi học theo lịch tuần được mô tả trong `CURRICULUM_SCHEDULING_API.md`.
 
 ## 3. Role
 
@@ -46,6 +46,7 @@ MANAGER
   - Quản lý chương trình theo khối/môn.
   - Quản lý lớp, sĩ số, học phí tháng, trạng thái mở đăng ký.
   - Quản lý lịch học cố định hằng tuần của lớp.
+  - Duyệt học phần đã đủ bài và sinh buổi học theo lịch tuần.
 
 PARENT
   - Đăng ký tài khoản, xác minh email.
@@ -57,7 +58,7 @@ TEACHER
   - Không được tạo đăng ký hoặc xác nhận thu tiền.
 
 CURRICULUM_DESIGNER
-  - Thiết kế tài liệu/giáo án theo workflow học vụ riêng.
+  - Tạo học phần dùng chung theo môn/khối, bài học và nội dung kiểm tra tháng.
 ```
 
 ## 4. Luồng nghiệp vụ chính
