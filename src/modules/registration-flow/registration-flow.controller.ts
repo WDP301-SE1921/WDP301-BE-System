@@ -36,6 +36,29 @@ import { RegistrationFlowService } from './registration-flow.service';
 export class RegistrationFlowController {
   constructor(private readonly flow: RegistrationFlowService) {}
 
+  @Get('me/bills')
+  @ApiOperation({ summary: 'Parent: list own registration bills, including unpaid drafts' })
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            items: { type: 'array', items: { type: 'object' } },
+            page: { type: 'integer' },
+            limit: { type: 'integer' },
+            total: { type: 'integer' },
+          },
+        },
+      },
+    },
+  })
+  myBills(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
+    return this.flow.myBills(user, page);
+  }
+
   @Get('me/students')
   @ApiOperation({ summary: 'Parent: list own student profiles' })
   myStudents(@CurrentUser() user: AuthenticatedUser): Promise<unknown> {
@@ -255,6 +278,39 @@ export class RegistrationFlowController {
   @ApiOperation({ summary: 'Staff or owning parent: read a registration' })
   registration(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
     return this.flow.registration(user, id);
+  }
+
+  @Get('registrations/:id/bill')
+  @ApiOperation({
+    summary: 'Staff or owning parent: view a registration bill before or after payment',
+    description:
+      'The bill has no QR. Pricing and registration details come from the order snapshot. Payment is null until staff confirms collection.',
+  })
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            billNumber: { type: 'string' },
+            registrationId: { type: 'string' },
+            status: { type: 'string', enum: ['UNPAID', 'PAID', 'CANCELLED'] },
+            issuedAt: { type: 'string', format: 'date-time' },
+            parent: { type: 'object' },
+            student: { type: 'object' },
+            class: { type: 'object' },
+            term: { type: 'object' },
+            pricing: { type: 'object' },
+            payment: { type: 'object', nullable: true },
+          },
+        },
+      },
+    },
+  })
+  bill(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.flow.bill(user, id);
   }
 
   @Post('registrations/:id/cancel')

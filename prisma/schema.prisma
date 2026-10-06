@@ -212,6 +212,7 @@ model RegistrationOrder {
   classId             String                @db.VarChar(191)
   packageMonths       Int
   quotedAmount        Decimal               @db.Decimal(14, 2)
+  billSnapshot         Json?
   currency            String                @default("VND") @db.VarChar(3)
   startDate           DateTime?             @db.Date
   endDate             DateTime?             @db.Date
