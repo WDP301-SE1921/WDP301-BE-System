@@ -394,6 +394,26 @@ export class RegistrationFlowService {
             classId: classroom.id,
             packageMonths: input.packageMonths,
             quotedAmount,
+            billSnapshot: {
+              parent: {
+                displayName: student.parentProfile.user.displayName,
+                email: student.parentProfile.user.email,
+                phone: student.parentProfile.phone,
+              },
+              student: { id: student.id, fullName: student.fullName, grade: student.grade },
+              class: {
+                id: classroom.id,
+                name: classroom.name,
+                subject: classroom.program.subject,
+                grade: classroom.program.grade,
+                schedules: classroom.weeklySchedules.map((slot) => ({
+                  weekday: slot.weekday,
+                  startTime: slot.startTime,
+                  endTime: slot.endTime,
+                })),
+              },
+              monthlyFee: classroom.monthlyFee.toString(),
+            },
             startDate,
             endDate,
             status: 'DRAFT',
@@ -546,6 +566,42 @@ export class RegistrationFlowService {
     return order;
   }
 
+  async myBills(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+    this.requireRoles(user, 'PARENT');
+    const where: Prisma.RegistrationOrderWhereInput = {
+      targetStudent: { is: { parentProfile: { is: { userId: user.id } } } },
+    };
+    const [orders, total] = await Promise.all([
+      this.db.registrationOrder.findMany({
+        where,
+        include: billInclude,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+      }),
+      this.db.registrationOrder.count({ where }),
+    ]);
+    return { items: orders.map(billResponse), page: page.page, limit: page.limit, total };
+  }
+
+  async bill(user: AuthenticatedUser, id: string): Promise<unknown> {
+    this.requireRoles(user, 'STAFF', 'PARENT');
+    const order = await this.db.registrationOrder.findUnique({
+      where: { id },
+      include: billInclude,
+    });
+    this.assert(order, 'BILL_NOT_FOUND', 'Bill not found', HttpStatus.NOT_FOUND);
+    if (user.role === 'PARENT') {
+      this.assert(
+        order.targetStudent?.parentProfile.userId === user.id,
+        'FORBIDDEN',
+        'Bill does not belong to this parent',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    return billResponse(order);
+  }
+
   async cancelRegistration(user: AuthenticatedUser, id: string): Promise<unknown> {
     this.requireRoles(user, 'STAFF');
     return this.transaction(async (tx) => {
@@ -646,6 +702,12 @@ export class RegistrationFlowService {
       );
       await tx.$queryRaw`SELECT id FROM student_profiles WHERE id = ${order.targetStudentId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM classes WHERE id = ${order.classId} FOR UPDATE`;
+      const billSnapshot = order.billSnapshot as BillSnapshot | null;
+      this.assert(
+        !billSnapshot || billClassMatches(billSnapshot.class, order.class),
+        'BILL_CLASS_CHANGED',
+        'Class details changed after bill creation; cancel and recreate the registration',
+      );
       await this.assertRegistrationAllowed(
         tx,
         order.targetStudent,
@@ -1120,7 +1182,12 @@ interface StudentForRegistration {
   status: string;
   parentProfile: {
     phone: string | null;
-    user: { email: string; status: string; emailVerifiedAt: Date | null };
+    user: {
+      email: string;
+      displayName: string | null;
+      status: string;
+      emailVerifiedAt: Date | null;
+    };
   };
 }
 
@@ -1215,6 +1282,94 @@ const registrationInclude = {
   payment: true,
   enrollment: true,
 } satisfies Prisma.RegistrationOrderInclude;
+
+const billInclude = {
+  targetStudent: {
+    include: {
+      parentProfile: {
+        include: { user: { select: { displayName: true, email: true } } },
+      },
+    },
+  },
+  class: { include: { program: true, weeklySchedules: true } },
+  payment: true,
+} satisfies Prisma.RegistrationOrderInclude;
+
+type BillOrder = Prisma.RegistrationOrderGetPayload<{ include: typeof billInclude }>;
+
+type BillSnapshot = {
+  parent: { displayName: string | null; email: string; phone: string | null };
+  student: { id: string; fullName: string; grade: number };
+  class: {
+    id: string;
+    name: string;
+    subject: string;
+    grade: number;
+    schedules: { weekday: number; startTime: string; endTime: string }[];
+  };
+  monthlyFee: string;
+};
+
+function billClassMatches(snapshot: BillSnapshot['class'], classroom: BillOrder['class']): boolean {
+  const slots = (schedules: BillSnapshot['class']['schedules']): string[] =>
+    schedules.map((slot) => `${slot.weekday}:${slot.startTime}-${slot.endTime}`).sort();
+  return (
+    snapshot.id === classroom.id &&
+    snapshot.name === classroom.name &&
+    snapshot.subject === classroom.program.subject &&
+    snapshot.grade === classroom.program.grade &&
+    JSON.stringify(slots(snapshot.schedules)) === JSON.stringify(slots(classroom.weeklySchedules))
+  );
+}
+
+function billResponse(order: BillOrder): Record<string, unknown> {
+  const snapshot = order.billSnapshot as BillSnapshot | null;
+  return {
+    billNumber: order.id,
+    registrationId: order.id,
+    status: order.payment ? 'PAID' : order.status === 'CANCELLED' ? 'CANCELLED' : 'UNPAID',
+    issuedAt: order.createdAt.toISOString(),
+    parent: snapshot?.parent ?? {
+      displayName: order.targetStudent?.parentProfile.user.displayName ?? null,
+      email: order.parentEmail,
+      phone: order.parentPhone,
+    },
+    student: snapshot?.student ?? {
+      id: order.targetStudentId,
+      fullName: order.studentFullName,
+      grade: order.studentGrade,
+    },
+    class: snapshot?.class ?? {
+      id: order.class.id,
+      name: order.class.name,
+      subject: order.class.program.subject,
+      grade: order.class.program.grade,
+      schedules: order.class.weeklySchedules.map((slot) => ({
+        weekday: slot.weekday,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+      })),
+    },
+    term: {
+      packageMonths: order.packageMonths,
+      startDate: dateOnly(order.startDate),
+      endDate: dateOnly(order.endDate),
+    },
+    pricing: {
+      monthlyFee: snapshot?.monthlyFee ?? order.quotedAmount.div(order.packageMonths).toFixed(2),
+      packageMonths: order.packageMonths,
+      total: order.quotedAmount.toFixed(2),
+      currency: order.currency,
+    },
+    payment: order.payment
+      ? {
+          receiptNumber: order.payment.receiptNumber,
+          paidAmount: order.payment.amount.toFixed(2),
+          confirmedAt: order.payment.confirmedAt.toISOString(),
+        }
+      : null,
+  };
+}
 
 function normalizeProgram(input: ProgramDto): ProgramDto {
   return { name: input.name.trim(), subject: input.subject.trim(), grade: input.grade };

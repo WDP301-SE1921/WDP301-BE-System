@@ -236,6 +236,8 @@ Ngày hết hạn = ngày bắt đầu cộng số tháng, cắt về cuối th�
 
 ### 5.4. Đọc lại hoặc hủy bản nháp
 
+Bill phụ huynh cho đơn đã lập: `GET /me/bills` và `GET /registrations/<registrationId>/bill`. Bill có thông tin phụ huynh, học sinh, lớp, kỳ học và học phí snapshot; trạng thái `UNPAID` trước khi thu tiền, `PAID` sau khi xác nhận, `CANCELLED` nếu hủy. Bill không chứa QR. Xem hợp đồng chi tiết trong `PAYMENT_BILL_API.md`.
+
 - `GET /registrations/<registrationId>`: lấy lại chi tiết. STAFF/MANAGER được đọc; PARENT chỉ đọc đăng ký thuộc mình theo kiểm tra email của backend.
 - `POST /registrations/<registrationId>/cancel`: STAFF hủy DRAFT, không cần body; chuyển sang CANCELLED. Hủy lặp lại trả lại đăng ký CANCELLED; ID không tồn tại trả 404 `REGISTRATION_NOT_FOUND`; đăng ký đã COMPLETED trả 409 `REGISTRATION_NOT_DRAFT`.
 
