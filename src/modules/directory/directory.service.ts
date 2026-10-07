@@ -148,7 +148,7 @@ export class DirectoryService {
   }
 
   async listParents(user: AuthenticatedUser, query: ListAccountsDto): Promise<unknown> {
-    this.requireRoles(user, 'MANAGER');
+    this.requireRoles(user, 'MANAGER', 'STAFF');
     const where = this.accountWhere('PARENT', query);
     const [items, total] = await Promise.all([
       this.db.user.findMany({

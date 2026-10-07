@@ -91,7 +91,7 @@ export class DirectoryController {
   }
 
   @Get('parents')
-  @ApiOperation({ summary: 'Manager: list parent accounts' })
+  @ApiOperation({ summary: 'Manager/staff: list parent accounts' })
   listParents(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListAccountsDto,
