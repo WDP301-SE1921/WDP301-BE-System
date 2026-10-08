@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -11,6 +22,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import {
   ClassDto,
+  ClassScheduleSlotDto,
   ClassFilterDto,
   ConfirmPaymentDto,
   CreateRegistrationDto,
@@ -23,6 +35,7 @@ import {
   ParentSearchDto,
   ParentSuggestionDto,
   ProgramDto,
+  ProgramFilterDto,
   ReplaceClassSchedulesDto,
   UpdateClassDto,
   UpdateProgramDto,
@@ -179,8 +192,16 @@ export class RegistrationFlowController {
 
   @Get('programs')
   @ApiOperation({ summary: 'List grade/subject programs' })
-  programs(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
-    return this.flow.listPrograms(user, page);
+  programs(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() filter: ProgramFilterDto,
+  ): Promise<unknown> {
+    return this.flow.listPrograms(user, filter);
+  }
+
+  @Get('programs/:id')
+  programDetail(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.flow.getProgram(user, id);
   }
 
   @Patch('programs/:id')
@@ -232,6 +253,47 @@ export class RegistrationFlowController {
     @Query() page: PageDto,
   ): Promise<unknown> {
     return this.flow.getClass(user, id, page);
+  }
+
+  @Delete('classes/:id')
+  deleteClass(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.flow.deleteClass(user, id);
+  }
+
+  @Get('classes/:id/schedules')
+  classSchedules(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.flow.classSchedules(user, id);
+  }
+
+  @Put('classes/:id/schedules')
+  putClassSchedules(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ReplaceClassSchedulesDto,
+  ): Promise<unknown> {
+    return this.flow.replaceClassSchedules(user, id, input);
+  }
+
+  @Patch('classes/:id/schedules/:scheduleId')
+  patchClassSchedule(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('scheduleId') scheduleId: string,
+    @Body() input: ClassScheduleSlotDto,
+  ): Promise<unknown> {
+    return this.flow.updateClassSchedule(user, id, scheduleId, input);
+  }
+
+  @Delete('classes/:id/schedules/:scheduleId')
+  deleteClassSchedule(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('scheduleId') scheduleId: string,
+  ): Promise<unknown> {
+    return this.flow.deleteClassSchedule(user, id, scheduleId);
   }
 
   @Post('classes/:id/schedules')

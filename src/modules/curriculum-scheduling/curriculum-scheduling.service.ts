@@ -11,8 +11,12 @@ import {
   MonthlyTestDto,
   ScheduleRangeDto,
   SessionQueryDto,
+  SessionRescheduleDto,
+  ImportCommitDto,
+  ImportRowDto,
   UpdateCurriculumUnitDto,
 } from './curriculum-scheduling.dto';
+import { parseCurriculumCsv } from './curriculum-csv';
 
 const DAY_MS = 86_400_000;
 const HCM_OFFSET_MS = 7 * 3_600_000;
@@ -23,7 +27,7 @@ const unitInclude = {
 
 type UnitWithLessons = Prisma.CurriculumUnitGetPayload<{ include: typeof unitInclude }>;
 type ClassWithSchedule = Prisma.ClassGetPayload<{
-  include: { program: true; weeklySchedules: true; teacher: true };
+  include: { program: { include: { subjectRecord: true } }; weeklySchedules: true; teacher: true };
 }>;
 type PlannedSlot = {
   date: string;
@@ -44,6 +48,11 @@ export class CurriculumSchedulingService {
     this.assertRange(input.fromDate, input.toDate);
     const program = await this.db.program.findUnique({ where: { id: input.programId } });
     this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    this.assert(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
+    if (program.subjectId) {
+      const subject = await this.db.subject.findUnique({ where: { id: program.subjectId } });
+      this.assert(subject?.isActive, 'SUBJECT_INACTIVE', 'Subject is inactive');
+    }
     const key = subjectKey(program.subject);
     const track = await this.db.curriculumTrack.upsert({
       where: { grade_subjectKey: { grade: program.grade, subjectKey: key } },
@@ -65,37 +74,58 @@ export class CurriculumSchedulingService {
 
   async listUnits(user: AuthenticatedUser, filter: CurriculumUnitFilterDto): Promise<unknown> {
     this.requireRole(user, 'CURRICULUM_DESIGNER', 'MANAGER', 'TEACHER');
-    const teacherTracks =
+    const teacherPrograms =
       user.role === 'TEACHER'
         ? (
             await this.db.class.findMany({
               where: { teacherId: user.id },
               include: { program: true },
             })
-          ).map((row) => ({
-            grade: row.program.grade,
-            subjectKey: subjectKey(row.program.subject),
-          }))
+          ).map((row) => row.programId)
         : [];
-    if (user.role === 'TEACHER' && !teacherTracks.length) return [];
+    if (user.role === 'TEACHER' && !teacherPrograms.length) return [];
     const program = filter.programId
       ? await this.db.program.findUnique({ where: { id: filter.programId } })
       : null;
     if (filter.programId)
       this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
-    return this.db.curriculumUnit.findMany({
-      where: {
-        ...(user.role === 'CURRICULUM_DESIGNER' ? { designerId: user.id } : {}),
-        ...(user.role === 'TEACHER' ? { status: 'APPROVED' as const } : {}),
-        ...(user.role === 'TEACHER' ? { OR: teacherTracks.map((track) => ({ track })) } : {}),
-        track: {
-          ...(program ? { grade: program.grade, subjectKey: subjectKey(program.subject) } : {}),
-          ...(filter.grade ? { grade: filter.grade } : {}),
-          ...(filter.subject ? { subjectKey: subjectKey(filter.subject) } : {}),
-        },
+    if (user.role === 'TEACHER' && program && !teacherPrograms.includes(program.id)) return [];
+    const where: Prisma.CurriculumUnitWhereInput = {
+      ...(user.role === 'CURRICULUM_DESIGNER' ? { designerId: user.id } : {}),
+      ...(user.role === 'TEACHER' ? { status: 'APPROVED' as const } : {}),
+      ...(filter.status && user.role !== 'TEACHER' ? { status: filter.status } : {}),
+      ...(user.role === 'TEACHER' ? { programId: { in: teacherPrograms } } : {}),
+      ...(program ? { programId: program.id } : {}),
+      track: {
+        ...(filter.grade ? { grade: filter.grade } : {}),
+        ...(filter.subject ? { subjectKey: subjectKey(filter.subject) } : {}),
       },
-      include: { track: true, _count: { select: { lessons: true } } },
-      orderBy: { createdAt: 'desc' },
+      ...(filter.search ? { title: { contains: filter.search.trim() } } : {}),
+    };
+    const include = {
+      track: true,
+      program: { select: { id: true, name: true, subject: true, grade: true } },
+      _count: { select: { lessons: true } },
+    } as const;
+    const page = filter.page ?? 1;
+    const limit = filter.limit ?? 20;
+    if (filter.paginated) {
+      const [items, total] = await Promise.all([
+        this.db.curriculumUnit.findMany({
+          where,
+          include,
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        this.db.curriculumUnit.count({ where }),
+      ]);
+      return { items, page, limit, total };
+    }
+    return this.db.curriculumUnit.findMany({
+      where,
+      include,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
     });
   }
 
@@ -112,6 +142,7 @@ export class CurriculumSchedulingService {
   ): Promise<unknown> {
     return this.transaction(async (tx) => {
       const unit = await this.lockEditableUnit(tx, user, id);
+      this.checkRevision(unit, input.expectedRevision);
       const from = input.fromDate ?? dateOnly(unit.fromDate);
       const to = input.toDate ?? dateOnly(unit.toDate);
       this.assertRange(from, to);
@@ -132,6 +163,7 @@ export class CurriculumSchedulingService {
           ...(input.title === undefined ? {} : { title: input.title.trim() }),
           fromDate: localDate(from),
           toDate: localDate(to),
+          revision: { increment: 1 },
         },
         include: unitInclude,
       });
@@ -145,7 +177,8 @@ export class CurriculumSchedulingService {
   ): Promise<unknown> {
     return this.transaction(async (tx) => {
       const unit = await this.lockEditableUnit(tx, user, id);
-      return tx.lesson.create({
+      this.checkRevision(unit, input.expectedRevision);
+      const created = await tx.lesson.create({
         data: {
           unitId: id,
           programId: unit.programId,
@@ -156,6 +189,8 @@ export class CurriculumSchedulingService {
           content: input.content.trim(),
         },
       });
+      await tx.curriculumUnit.update({ where: { id }, data: { revision: { increment: 1 } } });
+      return created;
     });
   }
 
@@ -167,6 +202,7 @@ export class CurriculumSchedulingService {
   ): Promise<unknown> {
     return this.transaction(async (tx) => {
       const unit = await this.lockEditableUnit(tx, user, unitId);
+      this.checkRevision(unit, input.expectedRevision);
       const lesson = unit.lessons.find((item) => item.id === lessonId && item.kind === 'LESSON');
       this.assert(
         lesson,
@@ -174,7 +210,7 @@ export class CurriculumSchedulingService {
         'Lesson not found in this unit',
         HttpStatus.NOT_FOUND,
       );
-      return tx.lesson.update({
+      const updated = await tx.lesson.update({
         where: { id: lessonId },
         data: {
           title: input.title.trim(),
@@ -182,6 +218,11 @@ export class CurriculumSchedulingService {
           sequence: input.sequence,
         },
       });
+      await tx.curriculumUnit.update({
+        where: { id: unitId },
+        data: { revision: { increment: 1 } },
+      });
+      return updated;
     });
   }
 
@@ -192,6 +233,7 @@ export class CurriculumSchedulingService {
   ): Promise<unknown> {
     return this.transaction(async (tx) => {
       const unit = await this.lockEditableUnit(tx, user, id);
+      this.checkRevision(unit, input.expectedRevision);
       this.assert(
         input.monthKey >= dateOnly(unit.fromDate).slice(0, 7) &&
           input.monthKey <= dateOnly(unit.toDate).slice(0, 7),
@@ -199,7 +241,7 @@ export class CurriculumSchedulingService {
         'Test month is outside the curriculum unit',
       );
       const monthIndex = monthOrdinal(input.monthKey);
-      return tx.lesson.upsert({
+      const result = await tx.lesson.upsert({
         where: {
           unitId_kind_monthKey: { unitId: id, kind: 'MONTHLY_TEST', monthKey: input.monthKey },
         },
@@ -215,7 +257,450 @@ export class CurriculumSchedulingService {
         },
         update: { title: input.title.trim(), content: input.content.trim() },
       });
+      await tx.curriculumUnit.update({ where: { id }, data: { revision: { increment: 1 } } });
+      return result;
     });
+  }
+
+  async deleteLesson(user: AuthenticatedUser, unitId: string, lessonId: string): Promise<unknown> {
+    return this.transaction(async (tx) => {
+      const unit = await this.lockEditableUnit(tx, user, unitId);
+      const lesson = unit.lessons.find((row) => row.id === lessonId);
+      this.assert(
+        lesson,
+        'LESSON_NOT_FOUND',
+        'Lesson not found in this unit',
+        HttpStatus.NOT_FOUND,
+      );
+      const [sessions, feedback] = await Promise.all([
+        tx.classSession.count({ where: { lessonId } }),
+        tx.curriculumFeedback.count({
+          where: { OR: [{ lessonId }, { resolutionLessonId: lessonId }] },
+        }),
+      ]);
+      this.assert(!sessions && !feedback, 'LESSON_IN_USE', 'Lesson has dependent history');
+      await tx.lesson.delete({ where: { id: lessonId } });
+      if (lesson.kind === 'LESSON') {
+        const ordered = unit.lessons
+          .filter((row) => row.kind === 'LESSON' && row.id !== lessonId)
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((row) => row.id);
+        await this.writeLessonOrder(tx, ordered);
+      }
+      await tx.curriculumUnit.update({
+        where: { id: unitId },
+        data: { revision: { increment: 1 } },
+      });
+      return { id: lessonId, deleted: true };
+    });
+  }
+
+  async reorderLessons(
+    user: AuthenticatedUser,
+    unitId: string,
+    orderedIds: string[],
+    expectedRevision?: number,
+  ): Promise<unknown> {
+    return this.transaction(async (tx) => {
+      const unit = await this.lockEditableUnit(tx, user, unitId);
+      this.checkRevision(unit, expectedRevision);
+      const existing = unit.lessons.filter((row) => row.kind === 'LESSON').map((row) => row.id);
+      this.assert(
+        orderedIds.length === existing.length &&
+          new Set(orderedIds).size === existing.length &&
+          orderedIds.every((id) => existing.includes(id)),
+        'INVALID_LESSON_ORDER',
+        'Order must contain each lesson once',
+      );
+      await this.writeLessonOrder(tx, orderedIds);
+      await tx.curriculumUnit.update({
+        where: { id: unitId },
+        data: { revision: { increment: 1 } },
+      });
+      return tx.curriculumUnit.findUniqueOrThrow({ where: { id: unitId }, include: unitInclude });
+    });
+  }
+
+  private async writeLessonOrder(tx: Prisma.TransactionClient, ids: string[]): Promise<void> {
+    for (let index = 0; index < ids.length; index++)
+      await tx.lesson.update({ where: { id: ids[index] }, data: { sequence: -(index + 1) } });
+    for (let index = 0; index < ids.length; index++)
+      await tx.lesson.update({ where: { id: ids[index] }, data: { sequence: index + 1 } });
+  }
+
+  async importPreview(
+    user: AuthenticatedUser,
+    id: string,
+    file: Express.Multer.File | undefined,
+    mode: string,
+  ): Promise<unknown> {
+    const unit = await this.loadUnit(id);
+    this.assertEditable(user, unit);
+    this.assert(
+      mode === 'APPEND' || mode === 'REPLACE',
+      'INVALID_IMPORT_MODE',
+      'Use APPEND or REPLACE',
+      HttpStatus.BAD_REQUEST,
+    );
+    this.assert(
+      file?.buffer && file.buffer.length > 0,
+      'CSV_REQUIRED',
+      'Upload a CSV file',
+      HttpStatus.BAD_REQUEST,
+    );
+    let rows;
+    try {
+      rows = parseCurriculumCsv(file.buffer);
+    } catch (error) {
+      throw new AppError(
+        'CSV_INVALID',
+        error instanceof Error ? error.message : 'Invalid CSV',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const errors = this.importErrors(unit, rows, mode);
+    const preview = await this.db.curriculumImportPreview.create({
+      data: {
+        unitId: id,
+        actorUserId: user.id,
+        expectedRevision: unit.revision,
+        mode,
+        rows,
+        expiresAt: new Date(Date.now() + 30 * 60_000),
+      },
+    });
+    return {
+      previewId: preview.id,
+      unitId: id,
+      expectedRevision: unit.revision,
+      expiresAt: preview.expiresAt,
+      summary: {
+        rows: rows.length,
+        validRows: rows.length - new Set(errors.map((item) => item.rowNumber)).size,
+        invalidRows: new Set(errors.map((item) => item.rowNumber)).size,
+      },
+      rows: rows.map((row) => ({
+        ...row,
+        errors: errors.filter((error) => error.rowNumber === row.rowNumber),
+      })),
+    };
+  }
+
+  async importCommit(
+    user: AuthenticatedUser,
+    id: string,
+    input: ImportCommitDto,
+    key: string | undefined,
+  ): Promise<unknown> {
+    this.requireRole(user, 'CURRICULUM_DESIGNER');
+    const idempotencyKey = key?.trim();
+    this.assert(
+      idempotencyKey && idempotencyKey.length <= 191,
+      'IDEMPOTENCY_KEY_REQUIRED',
+      'Idempotency-Key is required',
+      HttpStatus.BAD_REQUEST,
+    );
+    const hash = createHash('sha256')
+      .update(JSON.stringify({ actorId: user.id, id, input }))
+      .digest('hex');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM curriculum_units WHERE id = ${id} FOR UPDATE`;
+      const prior = await tx.curriculumImportCommit.findUnique({
+        where: { unitId_key: { unitId: id, key: idempotencyKey } },
+      });
+      if (prior) {
+        this.assert(
+          prior.actorUserId === user.id && prior.requestHash === hash,
+          'IDEMPOTENCY_CONFLICT',
+          'Key was used for another import',
+        );
+        return prior.response;
+      }
+      const unit = await tx.curriculumUnit.findUnique({ where: { id }, include: unitInclude });
+      this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
+      this.assertEditable(user, unit);
+      this.assert(
+        unit.revision === input.expectedRevision,
+        'REVISION_CONFLICT',
+        'Draft changed; preview it again',
+      );
+      const preview = await tx.curriculumImportPreview.findUnique({
+        where: { id: input.previewId },
+      });
+      this.assert(
+        preview &&
+          preview.unitId === id &&
+          preview.actorUserId === user.id &&
+          preview.mode === input.mode &&
+          preview.expectedRevision === input.expectedRevision &&
+          preview.expiresAt > new Date(),
+        'IMPORT_PREVIEW_STALE',
+        'Import preview is expired or does not match the draft',
+      );
+      this.assert(
+        input.rows.length > 0 && input.rows.length <= 1000,
+        'INVALID_IMPORT',
+        'Import must have 1 to 1000 rows',
+      );
+      const previewRows = preview.rows as unknown as Array<{
+        rowNumber: number;
+        kind: string;
+        sequence: number | null;
+        title: string;
+        content: string;
+        monthKey: string | null;
+      }>;
+      const rowValues = (row: {
+        rowNumber: number;
+        kind: string;
+        sequence?: number | null;
+        title: string;
+        content: string;
+        monthKey?: string | null;
+      }): unknown[] => [
+        row.rowNumber,
+        row.kind,
+        row.sequence ?? null,
+        row.title,
+        row.content,
+        row.monthKey ?? null,
+      ];
+      this.assert(
+        JSON.stringify(previewRows.map(rowValues)) === JSON.stringify(input.rows.map(rowValues)),
+        'IMPORT_PREVIEW_STALE',
+        'Import rows differ from the preview; preview again',
+      );
+      const errors = this.importErrors(unit, input.rows, input.mode);
+      this.assert(
+        !errors.length,
+        'INVALID_IMPORT',
+        `Import has ${errors.length} validation errors`,
+        HttpStatus.BAD_REQUEST,
+      );
+      if (input.mode === 'REPLACE') {
+        const [sessions, feedback, revisions] = await Promise.all([
+          tx.classSession.count({ where: { lesson: { unitId: id } } }),
+          tx.curriculumFeedback.count({
+            where: { OR: [{ lesson: { unitId: id } }, { resolutionLesson: { unitId: id } }] },
+          }),
+          tx.lesson.count({ where: { basedOn: { unitId: id } } }),
+        ]);
+        this.assert(
+          !sessions && !feedback && !revisions,
+          'UNIT_IN_USE',
+          'Draft lessons have dependent sessions, feedback or revisions',
+        );
+        await tx.lesson.deleteMany({ where: { unitId: id } });
+      }
+      await tx.lesson.createMany({
+        data: input.rows.map((row) => ({
+          unitId: id,
+          programId: unit.programId,
+          designerId: user.id,
+          kind: row.kind,
+          sequence: row.kind === 'MONTHLY_TEST' ? monthOrdinal(row.monthKey!) : row.sequence!,
+          monthKey: row.kind === 'MONTHLY_TEST' ? row.monthKey : null,
+          title: row.title.trim(),
+          content: row.content.trim(),
+        })),
+      });
+      const updated = await tx.curriculumUnit.update({
+        where: { id },
+        data: { revision: { increment: 1 } },
+      });
+      const response = {
+        unitId: id,
+        revision: updated.revision,
+        createdCount: input.rows.length,
+        lessonCount: await tx.lesson.count({ where: { unitId: id, kind: 'LESSON' } }),
+        testCount: await tx.lesson.count({ where: { unitId: id, kind: 'MONTHLY_TEST' } }),
+      };
+      await tx.curriculumImportCommit.create({
+        data: {
+          unitId: id,
+          actorUserId: user.id,
+          key: idempotencyKey,
+          requestHash: hash,
+          response,
+        },
+      });
+      return response;
+    });
+  }
+
+  private importErrors(
+    unit: UnitWithLessons,
+    rows: Array<ImportRowDto | ReturnType<typeof parseCurriculumCsv>[number]>,
+    mode: string,
+  ): Array<{ rowNumber: number; field: string; code: string }> {
+    const errors: Array<{ rowNumber: number; field: string; code: string }> = [];
+    const lessonStart =
+      mode === 'APPEND' ? unit.lessons.filter((row) => row.kind === 'LESSON').length + 1 : 1;
+    const months = new Set(
+      mode === 'APPEND'
+        ? unit.lessons.filter((row) => row.kind === 'MONTHLY_TEST').map((row) => row.monthKey)
+        : [],
+    );
+    let expected = lessonStart;
+    for (const row of rows) {
+      if (row.kind !== 'LESSON' && row.kind !== 'MONTHLY_TEST')
+        errors.push({ rowNumber: row.rowNumber, field: 'kind', code: 'INVALID_KIND' });
+      if (!row.title?.trim() || row.title.length > 255)
+        errors.push({ rowNumber: row.rowNumber, field: 'title', code: 'INVALID_TITLE' });
+      if (!row.content?.trim() || row.content.length > 50000)
+        errors.push({ rowNumber: row.rowNumber, field: 'content', code: 'INVALID_CONTENT' });
+      if (row.kind === 'LESSON') {
+        if (row.sequence !== expected)
+          errors.push({ rowNumber: row.rowNumber, field: 'sequence', code: 'INVALID_SEQUENCE' });
+        expected++;
+      } else if (row.kind === 'MONTHLY_TEST') {
+        if (
+          !row.monthKey ||
+          !/^\d{4}-(0[1-9]|1[0-2])$/.test(row.monthKey) ||
+          row.monthKey < dateOnly(unit.fromDate).slice(0, 7) ||
+          row.monthKey > dateOnly(unit.toDate).slice(0, 7) ||
+          months.has(row.monthKey)
+        )
+          errors.push({ rowNumber: row.rowNumber, field: 'monthKey', code: 'INVALID_MONTH' });
+        if (row.monthKey) months.add(row.monthKey);
+      }
+    }
+    return errors;
+  }
+
+  async submitUnit(user: AuthenticatedUser, id: string): Promise<unknown> {
+    return this.transaction(async (tx) => {
+      const unit = await this.lockEditableUnit(tx, user, id);
+      this.validateDraft(unit);
+      const result = await tx.curriculumUnit.update({
+        where: { id },
+        data: { status: 'PENDING_REVIEW', submittedAt: new Date(), reviewNote: null },
+        include: unitInclude,
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'CURRICULUM_UNIT_SUBMITTED',
+          entityType: 'CurriculumUnit',
+          entityId: id,
+        },
+      });
+      return result;
+    });
+  }
+
+  async validation(user: AuthenticatedUser, id: string): Promise<unknown> {
+    const unit = await this.loadUnit(id);
+    await this.canReadUnit(user, unit);
+    const errors = this.draftErrors(unit);
+    return {
+      unitId: id,
+      revision: unit.revision,
+      ready: errors.length === 0,
+      errors,
+      lessonCount: unit.lessons.filter((row) => row.kind === 'LESSON').length,
+      monthlyTestCount: unit.lessons.filter((row) => row.kind === 'MONTHLY_TEST').length,
+    };
+  }
+
+  async requestChanges(user: AuthenticatedUser, id: string, reason: string): Promise<unknown> {
+    this.requireRole(user, 'MANAGER');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM curriculum_units WHERE id = ${id} FOR UPDATE`;
+      const unit = await tx.curriculumUnit.findUnique({ where: { id } });
+      this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
+      this.assert(
+        unit.status === 'PENDING_REVIEW',
+        'UNIT_NOT_PENDING',
+        'Unit is not pending review',
+      );
+      const result = await tx.curriculumUnit.update({
+        where: { id },
+        data: {
+          status: 'DRAFT',
+          reviewedAt: new Date(),
+          reviewedById: user.id,
+          reviewNote: reason.trim(),
+          revision: { increment: 1 },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'CURRICULUM_UNIT_CHANGES_REQUESTED',
+          entityType: 'CurriculumUnit',
+          entityId: id,
+          afterData: { reason: reason.trim() },
+        },
+      });
+      return result;
+    });
+  }
+
+  async deleteUnit(user: AuthenticatedUser, id: string): Promise<unknown> {
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM curriculum_units WHERE id = ${id} FOR UPDATE`;
+      const unit = await tx.curriculumUnit.findUnique({ where: { id } });
+      this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
+      if (unit.status === 'APPROVED' || unit.status === 'ARCHIVED') {
+        this.requireRole(user, 'MANAGER');
+        if (unit.status === 'ARCHIVED') return unit;
+        return tx.curriculumUnit.update({ where: { id }, data: { status: 'ARCHIVED' } });
+      }
+      this.assertEditable(user, unit as UnitWithLessons);
+      const [generations, revisions] = await Promise.all([
+        tx.scheduleGeneration.count({ where: { unitId: id } }),
+        tx.curriculumUnit.count({ where: { basedOnId: id } }),
+      ]);
+      this.assert(!generations && !revisions, 'UNIT_IN_USE', 'Unit has dependent history');
+      const feedback = await tx.curriculumFeedback.count({ where: { lesson: { unitId: id } } });
+      this.assert(!feedback, 'UNIT_IN_USE', 'Unit has teacher feedback');
+      await tx.curriculumImportPreview.deleteMany({ where: { unitId: id } });
+      await tx.curriculumImportCommit.deleteMany({ where: { unitId: id } });
+      await tx.lesson.deleteMany({ where: { unitId: id } });
+      await tx.curriculumUnit.delete({ where: { id } });
+      return { id, deleted: true };
+    });
+  }
+
+  private validateDraft(unit: UnitWithLessons): void {
+    const first = this.draftErrors(unit)[0];
+    if (first) this.assert(false, first.code, first.message);
+  }
+
+  private checkRevision(unit: UnitWithLessons, expectedRevision?: number): void {
+    if (expectedRevision !== undefined)
+      this.assert(
+        unit.revision === expectedRevision,
+        'REVISION_CONFLICT',
+        'Draft changed; reload it',
+      );
+  }
+
+  private draftErrors(unit: UnitWithLessons): Array<{ code: string; message: string }> {
+    const errors: Array<{ code: string; message: string }> = [];
+    const regular = unit.lessons
+      .filter((lesson) => lesson.kind === 'LESSON')
+      .sort((a, b) => a.sequence - b.sequence);
+    if (!regular.length)
+      errors.push({ code: 'EMPTY_CURRICULUM', message: 'Add at least one lesson' });
+    if (!regular.every((lesson, index) => lesson.sequence === index + 1))
+      errors.push({
+        code: 'LESSON_SEQUENCE_GAP',
+        message: 'Lessons must be numbered consecutively',
+      });
+    if (
+      !unit.lessons
+        .filter((lesson) => lesson.kind === 'MONTHLY_TEST')
+        .every(
+          (lesson) =>
+            !!lesson.monthKey &&
+            lesson.monthKey >= dateOnly(unit.fromDate).slice(0, 7) &&
+            lesson.monthKey <= dateOnly(unit.toDate).slice(0, 7),
+        )
+    )
+      errors.push({ code: 'TEST_OUTSIDE_UNIT', message: 'Monthly test is outside the unit range' });
+    return errors;
   }
 
   async approveUnit(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -225,39 +710,18 @@ export class CurriculumSchedulingService {
         await tx.$queryRaw`SELECT id FROM curriculum_units WHERE id = ${id} FOR UPDATE`;
         const unit = await tx.curriculumUnit.findUnique({ where: { id }, include: unitInclude });
         this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
-        this.assert(unit.status === 'DRAFT', 'UNIT_LOCKED', 'Only a draft unit can be approved');
-        const classes = await tx.class.findMany({
-          where: { program: { grade: unit.track.grade } },
-          include: { program: true, weeklySchedules: true },
-        });
-        const matching = classes.filter(
-          (row) =>
-            subjectKey(row.program.subject) === unit.track.subjectKey && row.weeklySchedules.length,
-        );
         this.assert(
-          matching.length,
-          'NO_SCHEDULED_CLASS',
-          'Configure at least one class weekly schedule before approval',
+          unit.status === 'PENDING_REVIEW',
+          'UNIT_NOT_PENDING',
+          'Submit the unit before approval',
         );
-        let maxRegular = 0;
-        const requiredMonths = new Set<string>();
-        for (const classroom of matching) {
-          const slots = slotsForRange(
-            classroom.weeklySchedules,
-            dateOnly(unit.fromDate),
-            dateOnly(unit.toDate),
-          );
-          const tests = lastMonthlySlots(slots);
-          maxRegular = Math.max(maxRegular, slots.length - tests.size);
-          for (const month of tests.keys()) requiredMonths.add(month);
-        }
         const regular = unit.lessons
           .filter((lesson) => lesson.kind === 'LESSON')
           .sort((a, b) => a.sequence - b.sequence);
         this.assert(
-          regular.length >= maxRegular,
-          'INSUFFICIENT_LESSONS',
-          'Curriculum does not cover all scheduled lessons',
+          regular.length > 0,
+          'EMPTY_CURRICULUM',
+          'Add at least one lesson before approval',
         );
         this.assert(
           regular.every((lesson, i) => lesson.sequence === i + 1),
@@ -265,18 +729,26 @@ export class CurriculumSchedulingService {
           'Lesson sequence must start at 1 without gaps',
         );
         this.assert(
-          [...requiredMonths].every((month) =>
-            unit.lessons.some(
-              (lesson) => lesson.kind === 'MONTHLY_TEST' && lesson.monthKey === month,
+          unit.lessons
+            .filter((lesson) => lesson.kind === 'MONTHLY_TEST')
+            .every(
+              (lesson) =>
+                !!lesson.monthKey &&
+                lesson.monthKey >= dateOnly(unit.fromDate).slice(0, 7) &&
+                lesson.monthKey <= dateOnly(unit.toDate).slice(0, 7),
             ),
-          ),
-          'MISSING_MONTHLY_TEST',
-          'Add one monthly test for each month with scheduled sessions',
+          'TEST_OUTSIDE_UNIT',
+          'Monthly test is outside the unit range',
         );
         await tx.lesson.updateMany({ where: { unitId: id }, data: { status: 'APPROVED' } });
         const approved = await tx.curriculumUnit.update({
           where: { id },
-          data: { status: 'APPROVED', approvedAt: new Date() },
+          data: {
+            status: 'APPROVED',
+            approvedAt: new Date(),
+            reviewedAt: new Date(),
+            reviewedById: user.id,
+          },
           include: unitInclude,
         });
         await tx.auditLog.create({
@@ -311,7 +783,7 @@ export class CurriculumSchedulingService {
           'Only an approved unit can be revised',
         );
         const latest = await tx.curriculumUnit.aggregate({
-          where: { trackId: unit.trackId, fromDate: unit.fromDate, toDate: unit.toDate },
+          where: { programId: unit.programId, fromDate: unit.fromDate, toDate: unit.toDate },
           _max: { version: true },
         });
         const copy = await tx.curriculumUnit.create({
@@ -359,6 +831,17 @@ export class CurriculumSchedulingService {
     ]);
     const slots = this.plan(unit, classroom, input);
     const conflicts = await this.findConflicts(this.db, classroom, slots);
+    const savedPreview = await this.db.schedulePreview.create({
+      data: {
+        classId,
+        unitId: unit.id,
+        actorUserId: user.id,
+        fromDate: localDate(input.fromDate),
+        toDate: localDate(input.toDate),
+        snapshotHash: this.scheduleSnapshot(unit, classroom),
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      },
+    });
     const existingMatching = slots.length
       ? await this.db.classSession.findMany({
           where: {
@@ -371,10 +854,18 @@ export class CurriculumSchedulingService {
         })
       : [];
     return {
+      previewId: savedPreview.id,
+      expiresAt: savedPreview.expiresAt,
       classId,
       curriculumUnitId: unit.id,
       fromDate: input.fromDate,
       toDate: input.toDate,
+      summary: {
+        total: slots.length,
+        lessons: slots.filter((slot) => slot.kind === 'LESSON').length,
+        monthlyTests: slots.filter((slot) => slot.kind === 'MONTHLY_TEST').length,
+        conflicts: conflicts.length,
+      },
       slots: slots.map((slot) => ({
         ...slot,
         conflicts: conflicts.filter((conflict) => overlaps(slot, conflict)),
@@ -416,7 +907,7 @@ export class CurriculumSchedulingService {
       });
       if (prior) {
         this.assert(
-          prior.requestHash === requestHash,
+          prior.requestHash === requestHash && prior.actorUserId === user.id,
           'IDEMPOTENCY_CONFLICT',
           'Key was used with a different request',
         );
@@ -429,11 +920,30 @@ export class CurriculumSchedulingService {
         }),
         tx.class.findUnique({
           where: { id: classId },
-          include: { program: true, weeklySchedules: true, teacher: true },
+          include: {
+            program: { include: { subjectRecord: true } },
+            weeklySchedules: true,
+            teacher: true,
+          },
         }),
       ]);
       this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      if (input.previewId) {
+        const preview = await tx.schedulePreview.findUnique({ where: { id: input.previewId } });
+        this.assert(
+          preview &&
+            preview.actorUserId === user.id &&
+            preview.classId === classId &&
+            preview.unitId === unit.id &&
+            dateOnly(preview.fromDate) === input.fromDate &&
+            dateOnly(preview.toDate) === input.toDate &&
+            preview.expiresAt > new Date() &&
+            preview.snapshotHash === this.scheduleSnapshot(unit, classroom),
+          'PREVIEW_STALE',
+          'Schedule preview is stale; preview again',
+        );
+      }
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${classroom.teacherId} FOR UPDATE`;
       const slots = this.plan(unit, classroom, input);
       const conflicts = await this.findConflicts(tx, classroom, slots);
@@ -573,6 +1083,424 @@ export class CurriculumSchedulingService {
       .slice((query.page - 1) * query.limit, query.page * query.limit);
   }
 
+  async sessionDetail(user: AuthenticatedUser, id: string, studentId?: string): Promise<unknown> {
+    this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
+    const row = await this.db.classSession.findUnique({
+      where: { id },
+      include: {
+        class: { include: { program: true } },
+        teacher: { select: { id: true, displayName: true } },
+        lesson: {
+          select: {
+            id: true,
+            title: true,
+            content: true,
+            sequence: true,
+            kind: true,
+            monthKey: true,
+            unitId: true,
+          },
+        },
+      },
+    });
+    this.assert(row, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+    if (user.role === 'TEACHER')
+      this.assert(
+        row.teacherId === user.id,
+        'FORBIDDEN',
+        'Session is not assigned to this teacher',
+        HttpStatus.FORBIDDEN,
+      );
+    if (user.role === 'PARENT') {
+      this.assert(studentId, 'STUDENT_ID_REQUIRED', 'Select a student', HttpStatus.BAD_REQUEST);
+      const enrollments = await this.db.enrollment.findMany({
+        where: {
+          studentProfile: { id: studentId, parentProfile: { userId: user.id } },
+        },
+        select: {
+          classId: true,
+          startDate: true,
+          endDate: true,
+          placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
+        },
+      });
+      const participant = await this.db.sessionParticipant.findFirst({
+        where: {
+          sessionId: id,
+          enrollment: { studentProfile: { id: studentId, parentProfile: { userId: user.id } } },
+        },
+        select: {
+          id: true,
+          enrollmentId: true,
+          kind: true,
+          attendance: true,
+          cancelled: true,
+          enrollment: { select: { studentProfileId: true } },
+        },
+      });
+      const day = localDate(
+        new Date(row.startsAt.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10),
+      );
+      const entitled = enrollments.some(
+        (enrollment) =>
+          enrollment.startDate &&
+          enrollment.endDate &&
+          enrollment.startDate <= day &&
+          enrollment.endDate > day &&
+          (enrollment.placements.length
+            ? enrollment.placements.some(
+                (placement) =>
+                  placement.classId === row.classId &&
+                  placement.effectiveFrom <= row.startsAt &&
+                  (!placement.effectiveTo || placement.effectiveTo > row.startsAt),
+              )
+            : enrollment.classId === row.classId),
+      );
+      this.assert(
+        entitled || participant,
+        'FORBIDDEN',
+        'Session does not belong to this parent',
+        HttpStatus.FORBIDDEN,
+      );
+      return {
+        ...row,
+        participation: participant
+          ? {
+              participantId: participant.id,
+              enrollmentId: participant.enrollmentId,
+              studentId: participant.enrollment.studentProfileId,
+              kind: participant.kind,
+              attendance: participant.attendance,
+              cancelled: participant.cancelled,
+            }
+          : null,
+      };
+    }
+    return row;
+  }
+
+  async generationList(user: AuthenticatedUser, classId: string): Promise<unknown> {
+    this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER');
+    if (user.role === 'TEACHER') {
+      const classroom = await this.db.class.findUnique({ where: { id: classId } });
+      this.assert(
+        classroom?.teacherId === user.id,
+        'FORBIDDEN',
+        'Class is not assigned to this teacher',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    return this.db.scheduleGeneration.findMany({
+      where: { classId },
+      include: {
+        unit: { select: { id: true, title: true, version: true, status: true } },
+        _count: { select: { sessions: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async generationDetail(user: AuthenticatedUser, id: string): Promise<unknown> {
+    this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER');
+    const row = await this.db.scheduleGeneration.findUnique({
+      where: { id },
+      include: {
+        class: true,
+        unit: true,
+        sessions: { orderBy: { startsAt: 'asc' }, include: { lesson: true } },
+      },
+    });
+    this.assert(row, 'GENERATION_NOT_FOUND', 'Generation not found', HttpStatus.NOT_FOUND);
+    if (user.role === 'TEACHER')
+      this.assert(
+        row.class.teacherId === user.id,
+        'FORBIDDEN',
+        'Class is not assigned to this teacher',
+        HttpStatus.FORBIDDEN,
+      );
+    return row;
+  }
+
+  async reschedulePreview(
+    user: AuthenticatedUser,
+    id: string,
+    input: SessionRescheduleDto,
+  ): Promise<unknown> {
+    this.requireRole(user, 'MANAGER');
+    const result = await this.validateReschedule(this.db, id, input);
+    return { sessionId: id, ...result };
+  }
+
+  async reschedule(
+    user: AuthenticatedUser,
+    id: string,
+    input: SessionRescheduleDto,
+    key: string | undefined,
+  ): Promise<unknown> {
+    this.requireRole(user, 'MANAGER');
+    const idempotencyKey = key?.trim();
+    this.assert(
+      idempotencyKey && idempotencyKey.length <= 191,
+      'IDEMPOTENCY_KEY_REQUIRED',
+      'Idempotency-Key is required',
+      HttpStatus.BAD_REQUEST,
+    );
+    const hash = createHash('sha256')
+      .update(JSON.stringify({ actorId: user.id, action: 'reschedule', id, input }))
+      .digest('hex');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM class_sessions WHERE id = ${id} FOR UPDATE`;
+      const prior = await tx.sessionMutation.findUnique({
+        where: { sessionId_key: { sessionId: id, key: idempotencyKey } },
+      });
+      if (prior) {
+        this.assert(
+          prior.actorUserId === user.id && prior.requestHash === hash,
+          'IDEMPOTENCY_CONFLICT',
+          'Key was used for another change',
+        );
+        return prior.response;
+      }
+      const { startsAt, endsAt } = await this.validateReschedule(tx, id, input);
+      const result = await tx.classSession.update({
+        where: { id },
+        data: { startsAt, endsAt, revision: { increment: 1 } },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'CLASS_SESSION_RESCHEDULED',
+          entityType: 'ClassSession',
+          entityId: id,
+          afterData: {
+            startsAt: input.startsAt,
+            endsAt: input.endsAt,
+            reason: input.reason.trim(),
+          },
+        },
+      });
+      await tx.sessionMutation.create({
+        data: {
+          sessionId: id,
+          actorUserId: user.id,
+          key: idempotencyKey,
+          requestHash: hash,
+          response: result,
+        },
+      });
+      return result;
+    });
+  }
+
+  async cancelSession(
+    user: AuthenticatedUser,
+    id: string,
+    reason: string,
+    expectedRevision: number,
+    key: string | undefined,
+  ): Promise<unknown> {
+    this.requireRole(user, 'MANAGER');
+    const idempotencyKey = key?.trim();
+    this.assert(
+      idempotencyKey && idempotencyKey.length <= 191,
+      'IDEMPOTENCY_KEY_REQUIRED',
+      'Idempotency-Key is required',
+      HttpStatus.BAD_REQUEST,
+    );
+    const hash = createHash('sha256')
+      .update(JSON.stringify({ actorId: user.id, action: 'cancel', id, reason, expectedRevision }))
+      .digest('hex');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM class_sessions WHERE id = ${id} FOR UPDATE`;
+      const prior = await tx.sessionMutation.findUnique({
+        where: { sessionId_key: { sessionId: id, key: idempotencyKey } },
+      });
+      if (prior) {
+        this.assert(
+          prior.actorUserId === user.id && prior.requestHash === hash,
+          'IDEMPOTENCY_CONFLICT',
+          'Key was used for another change',
+        );
+        return prior.response;
+      }
+      const session = await tx.classSession.findUnique({ where: { id } });
+      this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+      this.assert(
+        session.status === 'SCHEDULED' && session.startsAt > new Date(),
+        'SESSION_LOCKED',
+        'Only future scheduled sessions can be cancelled',
+      );
+      this.assert(
+        session.revision === expectedRevision,
+        'REVISION_CONFLICT',
+        'Session changed; reload it',
+      );
+      const [bookings, attendance, leaves] = await Promise.all([
+        tx.makeupBooking.count({
+          where: {
+            status: 'BOOKED',
+            OR: [{ original: { sessionId: id } }, { replacement: { sessionId: id } }],
+          },
+        }),
+        tx.sessionParticipant.count({ where: { sessionId: id, attendance: { not: 'UNMARKED' } } }),
+        tx.leaveRequest.count({
+          where: { sessionId: id, status: { in: ['PENDING', 'APPROVED'] } },
+        }),
+      ]);
+      this.assert(!bookings, 'MAKEUP_BOOKING_EXISTS', 'Resolve makeup bookings before cancelling');
+      this.assert(
+        !attendance && !leaves,
+        'SESSION_HAS_DEPENDENCIES',
+        'Resolve attendance and leave records before cancelling',
+      );
+      const result = await tx.classSession.update({
+        where: { id },
+        data: {
+          status: 'CANCELLED',
+          cancelReason: reason.trim(),
+          cancelledAt: new Date(),
+          revision: { increment: 1 },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'CLASS_SESSION_CANCELLED',
+          entityType: 'ClassSession',
+          entityId: id,
+          afterData: { reason: reason.trim() },
+        },
+      });
+      await tx.sessionMutation.create({
+        data: {
+          sessionId: id,
+          actorUserId: user.id,
+          key: idempotencyKey,
+          requestHash: hash,
+          response: result,
+        },
+      });
+      return result;
+    });
+  }
+
+  private async validateReschedule(
+    tx: Prisma.TransactionClient | DatabaseService,
+    id: string,
+    input: SessionRescheduleDto,
+  ): Promise<{ startsAt: Date; endsAt: Date; conflicts: never[] }> {
+    const session = await tx.classSession.findUnique({
+      where: { id },
+      include: {
+        lesson: { include: { unit: true } },
+        participants: { include: { enrollment: { include: { placements: true } } } },
+        leaves: true,
+      },
+    });
+    this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+    this.assert(
+      session.status === 'SCHEDULED' && session.startsAt > new Date(),
+      'SESSION_LOCKED',
+      'Only future scheduled sessions can be moved',
+    );
+    this.assert(
+      session.revision === input.expectedRevision,
+      'REVISION_CONFLICT',
+      'Session changed; reload it',
+    );
+    const startsAt = new Date(input.startsAt);
+    const endsAt = new Date(input.endsAt);
+    this.assert(
+      startsAt > new Date() && endsAt > startsAt,
+      'INVALID_SESSION_TIME',
+      'New time must be in the future and have a valid duration',
+      HttpStatus.BAD_REQUEST,
+    );
+    const local = (date: Date): string =>
+      new Date(date.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10);
+    this.assert(
+      local(startsAt).slice(0, 7) === local(session.startsAt).slice(0, 7),
+      'MONTH_CHANGE_NOT_SUPPORTED',
+      'Move the session within its original month',
+    );
+    if (session.lesson.unit)
+      this.assert(
+        local(startsAt) >= dateOnly(session.lesson.unit.fromDate) &&
+          local(startsAt) <= dateOnly(session.lesson.unit.toDate),
+        'RANGE_OUTSIDE_UNIT',
+        'New date is outside the curriculum unit',
+      );
+    const targetDay = localDate(local(startsAt));
+    this.assert(
+      session.participants
+        .filter((row) => !row.cancelled && row.kind === 'REGULAR')
+        .every((row) => {
+          const enrollment = row.enrollment;
+          if (
+            !enrollment.startDate ||
+            !enrollment.endDate ||
+            enrollment.startDate > targetDay ||
+            enrollment.endDate <= targetDay
+          )
+            return false;
+          return enrollment.placements.length
+            ? enrollment.placements.some(
+                (placement) =>
+                  placement.classId === session.classId &&
+                  placement.effectiveFrom <= startsAt &&
+                  (!placement.effectiveTo || placement.effectiveTo > startsAt),
+              )
+            : enrollment.classId === session.classId;
+        }),
+      'PARTICIPANT_OUTSIDE_TERM',
+      'A rostered student is not placed in this class at the new time',
+    );
+    this.assert(
+      session.participants.every((row) => row.attendance === 'UNMARKED') &&
+        !session.leaves.some((row) => row.status === 'PENDING' || row.status === 'APPROVED'),
+      'SESSION_HAS_DEPENDENCIES',
+      'Resolve attendance and leave records before moving',
+    );
+    const [bookings, conflicts] = await Promise.all([
+      tx.makeupBooking.count({
+        where: {
+          status: 'BOOKED',
+          OR: [{ original: { sessionId: id } }, { replacement: { sessionId: id } }],
+        },
+      }),
+      tx.classSession.findMany({
+        where: {
+          id: { not: id },
+          status: { not: 'CANCELLED' },
+          startsAt: { lt: endsAt },
+          endsAt: { gt: startsAt },
+          OR: [{ classId: session.classId }, { teacherId: session.teacherId }],
+        },
+        select: { id: true },
+      }),
+    ]);
+    this.assert(!bookings, 'MAKEUP_BOOKING_EXISTS', 'Resolve makeup bookings before moving');
+    this.assert(
+      !conflicts.length,
+      'SCHEDULE_CONFLICT',
+      'Class or teacher has an overlapping session',
+    );
+    const ordered = await tx.classSession.findMany({
+      where: { classId: session.classId, status: { not: 'CANCELLED' } },
+      select: { id: true, startsAt: true, endsAt: true },
+      orderBy: { startsAt: 'asc' },
+    });
+    const position = ordered.findIndex((row) => row.id === id);
+    const previous = ordered[position - 1];
+    const next = ordered[position + 1];
+    this.assert(
+      (!previous || startsAt >= previous.endsAt) && (!next || endsAt <= next.startsAt),
+      'SESSION_ORDER_CONFLICT',
+      'Moving this session would change lesson order',
+    );
+    return { startsAt, endsAt, conflicts: [] };
+  }
+
   private plan(
     unit: UnitWithLessons,
     classroom: ClassWithSchedule,
@@ -584,14 +1512,19 @@ export class CurriculumSchedulingService {
       'UNIT_NOT_APPROVED',
       'Curriculum unit must be approved',
     );
+    this.assert(classroom.program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
+    this.assert(
+      !classroom.program.subjectRecord || classroom.program.subjectRecord.isActive,
+      'SUBJECT_INACTIVE',
+      'Subject is inactive',
+    );
     this.assert(
       input.fromDate >= dateOnly(unit.fromDate) && input.toDate <= dateOnly(unit.toDate),
       'RANGE_OUTSIDE_UNIT',
       'Requested dates are outside the unit',
     );
     this.assert(
-      classroom.program.grade === unit.track.grade &&
-        subjectKey(classroom.program.subject) === unit.track.subjectKey,
+      classroom.programId === unit.programId,
       'CURRICULUM_MISMATCH',
       'Class and curriculum subject/grade do not match',
     );
@@ -673,6 +1606,44 @@ export class CurriculumSchedulingService {
     return rows.filter((row) => slots.some((slot) => overlaps(slot, row)));
   }
 
+  private scheduleSnapshot(unit: UnitWithLessons, classroom: ClassWithSchedule): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          unit: {
+            id: unit.id,
+            status: unit.status,
+            revision: unit.revision,
+            from: dateOnly(unit.fromDate),
+            to: dateOnly(unit.toDate),
+            lessons: unit.lessons
+              .map((row) => ({
+                id: row.id,
+                kind: row.kind,
+                sequence: row.sequence,
+                monthKey: row.monthKey,
+                status: row.status,
+              }))
+              .sort((a, b) => a.id.localeCompare(b.id)),
+          },
+          classroom: {
+            id: classroom.id,
+            programId: classroom.programId,
+            teacherId: classroom.teacherId,
+            teacherStatus: classroom.teacher?.status,
+            schedules: classroom.weeklySchedules
+              .map((row) => ({
+                weekday: row.weekday,
+                startTime: row.startTime,
+                endTime: row.endTime,
+              }))
+              .sort((a, b) => a.weekday - b.weekday || a.startTime.localeCompare(b.startTime)),
+          },
+        }),
+      )
+      .digest('hex');
+  }
+
   private async generationResult(tx: Prisma.TransactionClient, id: string): Promise<unknown> {
     return tx.scheduleGeneration.findUniqueOrThrow({
       where: { id },
@@ -694,7 +1665,11 @@ export class CurriculumSchedulingService {
   private async loadClass(id: string): Promise<ClassWithSchedule> {
     const classroom = await this.db.class.findUnique({
       where: { id },
-      include: { program: true, weeklySchedules: true, teacher: true },
+      include: {
+        program: { include: { subjectRecord: true } },
+        weeklySchedules: true,
+        teacher: true,
+      },
     });
     this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
     return classroom;
@@ -724,17 +1699,17 @@ export class CurriculumSchedulingService {
       );
     if (user.role === 'TEACHER') {
       this.assert(
-        unit.status === 'APPROVED',
+        unit.status === 'APPROVED' || unit.status === 'ARCHIVED',
         'FORBIDDEN',
         'Unit is not approved',
         HttpStatus.FORBIDDEN,
       );
       const assigned = await this.db.class.findMany({
-        where: { teacherId: user.id, program: { grade: unit.track.grade } },
+        where: { teacherId: user.id, programId: unit.programId },
         include: { program: true },
       });
       this.assert(
-        assigned.some((row) => subjectKey(row.program.subject) === unit.track.subjectKey),
+        assigned.length > 0,
         'FORBIDDEN',
         'No assigned class for this unit',
         HttpStatus.FORBIDDEN,

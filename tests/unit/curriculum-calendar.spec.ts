@@ -54,6 +54,7 @@ describe('curriculum session preview', () => {
     ];
     const unit = {
       id: 'unit-1',
+      programId: 'program-1',
       status: 'APPROVED',
       fromDate: new Date('2027-01-04T00:00:00Z'),
       toDate: new Date('2027-01-10T00:00:00Z'),
@@ -62,9 +63,10 @@ describe('curriculum session preview', () => {
     };
     const classroom = {
       id: 'class-1',
+      programId: 'program-1',
       teacherId: 'teacher-1',
       teacher: { role: 'TEACHER', status: 'ACTIVE' },
-      program: { grade: 8, subject: 'Toán' },
+      program: { grade: 8, subject: 'Toán', isActive: true },
       weeklySchedules: [1, 3, 5].map((weekday) => ({
         weekday,
         startTime: '18:00',
@@ -75,6 +77,9 @@ describe('curriculum session preview', () => {
       curriculumUnit: { findUnique: jest.fn().mockResolvedValue(unit) },
       class: { findUnique: jest.fn().mockResolvedValue(classroom) },
       classSession: { findMany: jest.fn().mockResolvedValue([]) },
+      schedulePreview: {
+        create: jest.fn().mockResolvedValue({ id: 'preview-1', expiresAt: new Date('2027-01-04') }),
+      },
     } as unknown as DatabaseService;
     const user = { id: 'manager-1', role: 'MANAGER' } as AuthenticatedUser;
     const service = new CurriculumSchedulingService(db);

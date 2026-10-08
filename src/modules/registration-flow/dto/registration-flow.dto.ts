@@ -127,11 +127,14 @@ export class ProgramDto {
   @MaxLength(255)
   name!: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
   @MinLength(1)
   @MaxLength(100)
-  subject!: string;
+  subject?: string;
+
+  @ApiPropertyOptional() @IsOptional() @IsString() subjectId?: string;
 
   @ApiProperty()
   @IsInt()
@@ -155,12 +158,29 @@ export class UpdateProgramDto {
   @MaxLength(100)
   subject?: string;
 
+  @ApiPropertyOptional() @IsOptional() @IsString() subjectId?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
   @Min(6)
   @Max(9)
   grade?: number;
+
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+export class ProgramFilterDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() search?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() subjectId?: string;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(6) @Max(9) grade?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 export class ClassDto {
@@ -227,6 +247,8 @@ export class UpdateClassDto {
   @IsOptional()
   @IsBoolean()
   isOpen?: boolean;
+
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 export class ClassScheduleSlotDto {
@@ -248,7 +270,7 @@ export class ClassScheduleSlotDto {
 export class ReplaceClassSchedulesDto {
   @ApiProperty({ type: [ClassScheduleSlotDto] })
   @IsArray()
-  @ArrayMinSize(1)
+  @ArrayMinSize(0)
   @ArrayMaxSize(14)
   @ValidateNested({ each: true })
   @Type(() => ClassScheduleSlotDto)
@@ -265,6 +287,24 @@ export class ClassFilterDto extends PageDto {
   @IsOptional()
   @IsString()
   subject?: string;
+
+  @ApiPropertyOptional() @IsOptional() @IsString() programId?: string;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(6) @Max(9) grade?: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() search?: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  isOpen?: boolean;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  isActive?: boolean;
 
   @ApiPropertyOptional({ example: '2026-10-05' })
   @IsOptional()

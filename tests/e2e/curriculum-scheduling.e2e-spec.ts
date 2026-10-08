@@ -96,8 +96,9 @@ describe('Shared curriculum and generated sessions', () => {
     ids.programB = programB.id;
     for (const [name, programId, weekdays] of [
       ['A', programA.id, [1, 3, 5]],
-      ['B', programB.id, [2, 4, 6]],
+      ['B', programA.id, [2, 4, 6]],
       ['C', programA.id, [1]],
+      ['D', programB.id, [2, 4, 6]],
     ] as const) {
       const classroom = await db.class.create({
         data: {
@@ -123,6 +124,7 @@ describe('Shared curriculum and generated sessions', () => {
     const student = await db.studentProfile.create({
       data: { parentProfileId: parent.id, fullName: 'An', grade: 8 },
     });
+    ids.student = student.id;
     const order = await db.registrationOrder.create({
       data: {
         type: 'FIRST_CHILD',
@@ -179,17 +181,15 @@ describe('Shared curriculum and generated sessions', () => {
       .send({ title: 'Bài 1', content: 'Nội dung 1', sequence: 1 })
       .expect(201);
     const lesson1 = (lesson.body as Envelope<Id>).data.id;
-    const missing = await call('MANAGER', 'post', `curriculum-units/${unitId}/approve`)
+    await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
       .send({})
-      .expect(409);
-    expect((missing.body as Envelope<never>).error?.code).toBe('INSUFFICIENT_LESSONS');
+      .expect(201);
+    await call('MANAGER', 'post', `curriculum-units/${unitId}/request-changes`)
+      .send({ reason: 'Thêm bài và kiểm tra tháng' })
+      .expect(201);
     const lesson2 = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/lessons`)
       .send({ title: 'Bài 2', content: 'Nội dung 2', sequence: 2 })
       .expect(201);
-    const missingTest = await call('MANAGER', 'post', `curriculum-units/${unitId}/approve`)
-      .send({})
-      .expect(409);
-    expect((missingTest.body as Envelope<never>).error?.code).toBe('MISSING_MONTHLY_TEST');
     const test = await call(
       'CURRICULUM_DESIGNER',
       'post',
@@ -200,6 +200,9 @@ describe('Shared curriculum and generated sessions', () => {
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/approve`)
       .send({})
       .expect(403);
+    await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
+      .send({})
+      .expect(201);
     await call('MANAGER', 'post', `curriculum-units/${unitId}/approve`).send({}).expect(201);
     await call('CURRICULUM_DESIGNER', 'patch', `curriculum-units/${unitId}/lessons/${lesson1}`)
       .send({ title: 'Sửa', content: 'Sửa', sequence: 1 })
@@ -252,6 +255,10 @@ describe('Shared curriculum and generated sessions', () => {
     expect(bSessions.map((item) => item.lessonId)).toEqual(
       previewSlots.map((item) => item.lessonId),
     );
+    const otherProgram = await call('MANAGER', 'post', `classes/${ids.D}/session-preview`)
+      .send(body)
+      .expect(409);
+    expect((otherProgram.body as Envelope<never>).error?.code).toBe('CURRICULUM_MISMATCH');
     const aPreview = await call('MANAGER', 'post', `classes/${ids.A}/session-preview`)
       .send(body)
       .expect(201);
@@ -296,5 +303,117 @@ describe('Shared curriculum and generated sessions', () => {
       status: 'DRAFT',
       version: 2,
     });
+    const sessionId = generated.sessions[0].id;
+    await call('TEACHER', 'post', `sessions/${sessionId}/roster`).send({}).expect(201);
+    await call('PARENT', 'get', `scheduled-sessions/${sessionId}?studentId=${ids.student}`).expect(
+      200,
+    );
+    await call('PARENT', 'get', `scheduled-sessions/${sessionId}?studentId=someone-else`).expect(
+      403,
+    );
+    const move = {
+      startsAt: '2027-01-04T10:00:00.000Z',
+      endsAt: '2027-01-04T11:00:00.000Z',
+      reason: 'Đổi giờ học',
+      expectedRevision: 1,
+    };
+    await call('MANAGER', 'post', `sessions/${sessionId}/reschedule-preview`)
+      .send(move)
+      .expect(201);
+    const moved = await call('MANAGER', 'post', `sessions/${sessionId}/reschedule`)
+      .set('Idempotency-Key', 'move-first-session')
+      .send(move)
+      .expect(201);
+    expect((moved.body as Envelope<{ revision: number }>).data.revision).toBe(2);
+    await call('MANAGER', 'post', `sessions/${sessionId}/reschedule`)
+      .set('Idempotency-Key', 'move-first-session')
+      .send(move)
+      .expect(201);
+    const cancelled = await call('MANAGER', 'post', `sessions/${sessionId}/cancel`)
+      .set('Idempotency-Key', 'cancel-first-session')
+      .send({ reason: 'Nghỉ học', expectedRevision: 2 })
+      .expect(201);
+    expect((cancelled.body as Envelope<{ status: string }>).data.status).toBe('CANCELLED');
+  }, 90_000);
+
+  it('previews and atomically imports a CSV draft, then allows deleting the unused draft', async () => {
+    const created = await call('CURRICULUM_DESIGNER', 'post', 'curriculum-units')
+      .send({
+        programId: ids.programB,
+        title: 'Học phần tháng 2',
+        fromDate: '2027-02-01',
+        toDate: '2027-02-28',
+      })
+      .expect(201);
+    const id = (created.body as Envelope<Id>).data.id;
+    const csv = Buffer.from(
+      'kind,sequence,title,content,monthKey\nLESSON,1,Tập hợp,Nội dung 1,\nLESSON,2,Số tự nhiên,Nội dung 2,\nMONTHLY_TEST,,Kiểm tra tháng 2,Đề kiểm tra,2027-02\n',
+    );
+    const preview = await call(
+      'CURRICULUM_DESIGNER',
+      'post',
+      `curriculum-units/${id}/import-preview`,
+    )
+      .field('mode', 'REPLACE')
+      .attach('file', csv, 'curriculum.csv')
+      .expect(201);
+    const data = (
+      preview.body as Envelope<{
+        previewId: string;
+        expectedRevision: number;
+        rows: Array<{
+          rowNumber: number;
+          kind: 'LESSON' | 'MONTHLY_TEST';
+          sequence: number | null;
+          title: string;
+          content: string;
+          monthKey: string | null;
+        }>;
+      }>
+    ).data;
+    const body = {
+      previewId: data.previewId,
+      expectedRevision: data.expectedRevision,
+      mode: 'REPLACE',
+      rows: data.rows.map(({ rowNumber, kind, sequence, title, content, monthKey }) => ({
+        rowNumber,
+        kind,
+        sequence,
+        title,
+        content,
+        monthKey,
+      })),
+    };
+    const changedRows = await call(
+      'CURRICULUM_DESIGNER',
+      'post',
+      `curriculum-units/${id}/import-commit`,
+    )
+      .set('Idempotency-Key', 'import-changed-rows')
+      .send({
+        ...body,
+        rows: [{ ...body.rows[0], title: 'Changed after preview' }, ...body.rows.slice(1)],
+      })
+      .expect(409);
+    expect(changedRows.body).toMatchObject({ error: { code: 'IMPORT_PREVIEW_STALE' } });
+    const imported = await call(
+      'CURRICULUM_DESIGNER',
+      'post',
+      `curriculum-units/${id}/import-commit`,
+    )
+      .set('Idempotency-Key', 'import-february')
+      .send(body)
+      .expect(201);
+    expect(
+      (imported.body as Envelope<{ lessonCount: number; testCount: number }>).data,
+    ).toMatchObject({ lessonCount: 2, testCount: 1 });
+    await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${id}/import-commit`)
+      .set('Idempotency-Key', 'import-february')
+      .send(body)
+      .expect(201);
+    await request(server)
+      .delete(`/api/v1/academic/curriculum-units/${id}`)
+      .set('Authorization', `Bearer ${tokens.CURRICULUM_DESIGNER}`)
+      .expect(200);
   }, 90_000);
 });
