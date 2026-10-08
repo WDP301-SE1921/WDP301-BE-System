@@ -5,11 +5,16 @@ import {
   Headers,
   Param,
   Patch,
+  Delete,
+  Put,
+  UploadedFile,
+  UseInterceptors,
   Post,
   Query,
   UseFilters,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AcademicErrorsFilter } from '../academic/academic-errors.filter';
@@ -21,6 +26,11 @@ import {
   ScheduleRangeDto,
   SessionQueryDto,
   UpdateCurriculumUnitDto,
+  ReviewNoteDto,
+  LessonOrderDto,
+  SessionRescheduleDto,
+  SessionCancelDto,
+  ImportCommitDto,
 } from './curriculum-scheduling.dto';
 import { CurriculumSchedulingService } from './curriculum-scheduling.service';
 
@@ -65,6 +75,30 @@ export class CurriculumSchedulingController {
     return this.service.updateUnit(user, id, input);
   }
 
+  @Post('curriculum-units/:id/submit')
+  submit(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.service.submitUnit(user, id);
+  }
+
+  @Post('curriculum-units/:id/validation')
+  validation(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.service.validation(user, id);
+  }
+
+  @Post('curriculum-units/:id/request-changes')
+  requestChanges(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ReviewNoteDto,
+  ): Promise<unknown> {
+    return this.service.requestChanges(user, id, input.reason);
+  }
+
+  @Delete('curriculum-units/:id')
+  deleteUnit(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.service.deleteUnit(user, id);
+  }
+
   @Post('curriculum-units/:id/lessons')
   @ApiOperation({ summary: 'Designer: add an ordered lesson to a draft unit' })
   addLesson(
@@ -84,6 +118,45 @@ export class CurriculumSchedulingController {
     @Body() input: CurriculumLessonDto,
   ): Promise<unknown> {
     return this.service.updateLesson(user, id, lessonId, input);
+  }
+
+  @Delete('curriculum-units/:id/lessons/:lessonId')
+  deleteLesson(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('lessonId') lessonId: string,
+  ): Promise<unknown> {
+    return this.service.deleteLesson(user, id, lessonId);
+  }
+
+  @Put('curriculum-units/:id/lesson-order')
+  reorderLessons(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: LessonOrderDto,
+  ): Promise<unknown> {
+    return this.service.reorderLessons(user, id, input.orderedLessonIds, input.expectedRevision);
+  }
+
+  @Post('curriculum-units/:id/import-preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  importPreview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body('mode') mode: string,
+  ): Promise<unknown> {
+    return this.service.importPreview(user, id, file, mode);
+  }
+
+  @Post('curriculum-units/:id/import-commit')
+  importCommit(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body() input: ImportCommitDto,
+  ): Promise<unknown> {
+    return this.service.importCommit(user, id, input, key);
   }
 
   @Post('curriculum-units/:id/monthly-tests')
@@ -136,5 +209,59 @@ export class CurriculumSchedulingController {
     @Query() query: SessionQueryDto,
   ): Promise<unknown> {
     return this.service.sessions(user, query);
+  }
+
+  @Get('scheduled-sessions/:id')
+  sessionDetail(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query('studentId') studentId?: string,
+  ): Promise<unknown> {
+    return this.service.sessionDetail(user, id, studentId);
+  }
+
+  @Get('classes/:id/session-generations')
+  generationList(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.service.generationList(user, id);
+  }
+
+  @Get('session-generations/:id')
+  generationDetail(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.service.generationDetail(user, id);
+  }
+
+  @Post('sessions/:id/reschedule-preview')
+  reschedulePreview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: SessionRescheduleDto,
+  ): Promise<unknown> {
+    return this.service.reschedulePreview(user, id, input);
+  }
+
+  @Post('sessions/:id/reschedule')
+  reschedule(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body() input: SessionRescheduleDto,
+  ): Promise<unknown> {
+    return this.service.reschedule(user, id, input, key);
+  }
+
+  @Post('sessions/:id/cancel')
+  cancelSession(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body() input: SessionCancelDto,
+  ): Promise<unknown> {
+    return this.service.cancelSession(user, id, input.reason, input.expectedRevision, key);
   }
 }

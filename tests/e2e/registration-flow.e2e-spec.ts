@@ -544,7 +544,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       await call('TEACHER', 'get', 'payments').expect(403);
     });
 
-    it('edits and deletes programs only while they are unused', async () => {
+    it('edits and deletes unused programs, and archives programs in use', async () => {
       const fresh = await call('MANAGER', 'post', 'programs')
         .send({ name: 'Lý 7', subject: 'Lý', grade: 7 })
         .expect(201);
@@ -560,9 +560,70 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       await call('MANAGER', 'patch', `programs/${programId}`)
         .send({ name: 'Toán 8 nâng cao' })
         .expect(200);
-      const blocked = await call('MANAGER', 'delete', `programs/${programId}`).expect(409);
-      expect(blocked.body).toMatchObject({ error: { code: 'PROGRAM_IN_USE' } });
+      const archived = await call('MANAGER', 'delete', `programs/${programId}`).expect(200);
+      expect(archived.body).toMatchObject({ data: { isActive: false } });
       await call('MANAGER', 'delete', `programs/${id}`).expect(200);
+    });
+
+    it('manages subjects, a program, a class and its weekly slots', async () => {
+      const subject = await call('MANAGER', 'post', 'subjects')
+        .send({ code: 'SCI', name: 'Khoa học' })
+        .expect(201);
+      const subjectId = (subject.body as Envelope<WithId>).data.id;
+      const program = await call('MANAGER', 'post', 'programs')
+        .send({ name: 'Khoa học 7', subjectId, grade: 7 })
+        .expect(201);
+      const programId = (program.body as Envelope<WithId>).data.id;
+      await call('MANAGER', 'get', `programs/${programId}`).expect(200);
+      const classroom = await call('MANAGER', 'post', 'classes')
+        .send({ programId, name: 'Khoa học 7A', capacity: 20, monthlyFee: 500000, isOpen: false })
+        .expect(201);
+      const classroomId = (classroom.body as Envelope<WithId>).data.id;
+      await call('MANAGER', 'patch', `classes/${classroomId}`)
+        .send({ isActive: false })
+        .expect(200);
+      const inactiveOpen = await call('MANAGER', 'patch', `classes/${classroomId}`)
+        .send({ isOpen: true })
+        .expect(409);
+      expect(inactiveOpen.body).toMatchObject({ error: { code: 'CLASS_INACTIVE' } });
+      await call('MANAGER', 'patch', `classes/${classroomId}`).send({ isActive: true }).expect(200);
+      await request(httpServer)
+        .put(`/api/v1/classes/${classroomId}/schedules`)
+        .set('Authorization', `Bearer ${tokens.MANAGER}`)
+        .send({ schedules: [{ weekday: 2, startTime: '18:00', endTime: '20:00' }] })
+        .expect(200);
+      const slots = await call('MANAGER', 'get', `classes/${classroomId}/schedules`).expect(200);
+      const slotId = (slots.body as Envelope<Array<WithId>>).data[0].id;
+      await call('MANAGER', 'patch', `classes/${classroomId}/schedules/${slotId}`)
+        .send({ weekday: 3, startTime: '18:00', endTime: '20:00' })
+        .expect(200);
+      const activeEnrollment = await db.enrollment.findFirstOrThrow({
+        where: { status: 'ACTIVE', endDate: { gt: new Date() } },
+      });
+      const placement = await db.enrollmentPlacement.create({
+        data: {
+          enrollmentId: activeEnrollment.id,
+          classId: classroomId,
+          effectiveFrom: new Date(),
+        },
+      });
+      const archiveBlocked = await call('MANAGER', 'patch', `classes/${classroomId}`)
+        .send({ isActive: false })
+        .expect(409);
+      expect(archiveBlocked.body).toMatchObject({ error: { code: 'CLASS_IN_USE' } });
+      const scheduleBlocked = await call(
+        'MANAGER',
+        'patch',
+        `classes/${classroomId}/schedules/${slotId}`,
+      )
+        .send({ weekday: 4, startTime: '18:00', endTime: '20:00' })
+        .expect(409);
+      expect(scheduleBlocked.body).toMatchObject({ error: { code: 'CLASS_SCHEDULE_LOCKED' } });
+      await db.enrollmentPlacement.delete({ where: { id: placement.id } });
+      await call('MANAGER', 'delete', `classes/${classroomId}/schedules/${slotId}`).expect(200);
+      await call('MANAGER', 'delete', `classes/${classroomId}`).expect(200);
+      await call('MANAGER', 'delete', `programs/${programId}`).expect(200);
+      await call('MANAGER', 'delete', `subjects/${subjectId}`).expect(200);
     });
   });
 
@@ -639,7 +700,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         await call(role, 'get', 'parents').expect(403);
         await call(role, 'get', 'dashboard').expect(403);
       }
-      await call('STAFF', 'get', 'parents').expect(403);
+      await call('STAFF', 'get', 'parents').expect(200);
       await call('STAFF', 'get', 'dashboard').expect(403);
       await call('MANAGER', 'post', 'staff')
         .send({ email: 'bad', password: 'short', displayName: '' })

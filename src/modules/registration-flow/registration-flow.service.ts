@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { Prisma, type ClassWeeklySchedule } from '@prisma/client';
+import { Prisma, type Class, type ClassWeeklySchedule, type Subject } from '@prisma/client';
 import { createHash } from 'node:crypto';
 
 import { AppError } from '../../common/errors/app.error';
@@ -7,6 +7,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import {
   ClassDto,
+  ClassScheduleSlotDto,
   ClassFilterDto,
   CreateRegistrationDto,
   CreateStudentDto,
@@ -17,6 +18,7 @@ import {
   ParentSearchDto,
   ParentSuggestionDto,
   ProgramDto,
+  ProgramFilterDto,
   ReplaceClassSchedulesDto,
   UpdateClassDto,
   UpdateProgramDto,
@@ -124,7 +126,63 @@ export class RegistrationFlowService {
 
   async createProgram(user: AuthenticatedUser, input: ProgramDto): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
-    return this.db.program.create({ data: normalizeProgram(input) });
+    return this.transaction(async (tx) => {
+      const subject = await this.subjectForProgram(tx, input.subject, input.subjectId);
+      return tx.program.create({
+        data: {
+          name: input.name.trim(),
+          grade: input.grade,
+          subject: subject.name,
+          subjectId: subject.id,
+        },
+      });
+    });
+  }
+
+  private async subjectForProgram(
+    tx: Prisma.TransactionClient,
+    name?: string,
+    subjectId?: string,
+  ): Promise<Subject> {
+    this.assert(
+      !!name || !!subjectId,
+      'SUBJECT_REQUIRED',
+      'Choose a subject',
+      HttpStatus.BAD_REQUEST,
+    );
+    const normalized = name?.trim();
+    const existing = !subjectId
+      ? (await tx.subject.findMany({ where: { name: normalized! } })).find(
+          (row) => row.name.toLocaleLowerCase('vi') === normalized!.toLocaleLowerCase('vi'),
+        )
+      : null;
+    const subject = subjectId
+      ? await tx.subject.findUnique({ where: { id: subjectId } })
+      : (existing ??
+        (await tx.subject.upsert({
+          where: {
+            code: createHash('sha256')
+              .update(normalized!.toLocaleLowerCase('vi'))
+              .digest('hex')
+              .slice(0, 16),
+          },
+          create: {
+            code: createHash('sha256')
+              .update(normalized!.toLocaleLowerCase('vi'))
+              .digest('hex')
+              .slice(0, 16),
+            name: normalized!,
+          },
+          update: {},
+        })));
+    this.assert(subject, 'SUBJECT_NOT_FOUND', 'Subject not found', HttpStatus.NOT_FOUND);
+    this.assert(subject.isActive, 'SUBJECT_INACTIVE', 'Subject is inactive');
+    this.assert(
+      !name || subject.name.toLocaleLowerCase('vi') === name.trim().toLocaleLowerCase('vi'),
+      'SUBJECT_MISMATCH',
+      'subject and subjectId do not match',
+    );
+    return subject;
   }
 
   async searchParents(
@@ -144,13 +202,42 @@ export class RegistrationFlowService {
     `;
   }
 
-  async listPrograms(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async listPrograms(user: AuthenticatedUser, page: ProgramFilterDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
     return this.db.program.findMany({
+      where: {
+        ...(page.search ? { name: { contains: page.search.trim() } } : {}),
+        ...(page.subjectId ? { subjectId: page.subjectId } : {}),
+        ...(page.grade ? { grade: page.grade } : {}),
+        ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
+      },
       orderBy: [{ grade: 'asc' }, { subject: 'asc' }],
       skip: (page.page - 1) * page.limit,
       take: page.limit,
     });
+  }
+
+  async getProgram(user: AuthenticatedUser, id: string): Promise<unknown> {
+    this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
+    const program = await this.db.program.findUnique({
+      where: { id },
+      include: {
+        subjectRecord: true,
+        curriculumUnits: {
+          select: {
+            id: true,
+            title: true,
+            version: true,
+            status: true,
+            fromDate: true,
+            toDate: true,
+          },
+        },
+        classes: { select: { id: true, name: true, isActive: true, isOpen: true } },
+      },
+    });
+    this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    return program;
   }
 
   async createClass(user: AuthenticatedUser, input: ClassDto): Promise<unknown> {
@@ -161,6 +248,17 @@ export class RegistrationFlowService {
       'Create schedules before opening registration for a class',
     );
     await this.assertTeacher(input.teacherId);
+    const program = await this.db.program.findUnique({
+      where: { id: input.programId },
+      include: { subjectRecord: true },
+    });
+    this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    this.assert(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
+    this.assert(
+      !program.subjectRecord || program.subjectRecord.isActive,
+      'SUBJECT_INACTIVE',
+      'Subject is inactive',
+    );
     return this.db.class.create({
       data: {
         programId: input.programId,
@@ -196,9 +294,38 @@ export class RegistrationFlowService {
       }
       if (input.isOpen === true) {
         this.assert(
+          input.isActive !== false && (classroom.isActive || input.isActive === true),
+          'CLASS_INACTIVE',
+          'Activate the class before opening registration',
+        );
+        this.assert(
           classroom.weeklySchedules.length > 0,
           'CLASS_NEEDS_SCHEDULE',
           'Class must have at least one weekly schedule before opening registration',
+        );
+      }
+      if (input.isActive === false && classroom.isActive) {
+        const now = new Date();
+        const [enrollments, placements, orders, sessions] = await Promise.all([
+          tx.enrollment.count({ where: { classId: id, status: { not: 'ENDED' } } }),
+          tx.enrollmentPlacement.count({
+            where: {
+              classId: id,
+              enrollment: { status: 'ACTIVE', endDate: { gt: todayLocalDate() } },
+              OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+            },
+          }),
+          tx.registrationOrder.count({
+            where: { classId: id, status: { in: ['DRAFT', 'PAYMENT_CONFIRMED'] } },
+          }),
+          tx.classSession.count({
+            where: { classId: id, status: 'SCHEDULED', startsAt: { gte: now } },
+          }),
+        ]);
+        this.assert(
+          !enrollments && !placements && !orders && !sessions,
+          'CLASS_IN_USE',
+          'Resolve enrollments, registrations and future sessions before archiving',
         );
       }
       return tx.class.update({
@@ -209,6 +336,9 @@ export class RegistrationFlowService {
           ...(input.capacity === undefined ? {} : { capacity: input.capacity }),
           ...(input.monthlyFee === undefined ? {} : { monthlyFee: input.monthlyFee }),
           ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
+          ...(input.isActive === undefined
+            ? {}
+            : { isActive: input.isActive, ...(input.isActive ? {} : { isOpen: false }) }),
         },
         include: { program: true, weeklySchedules: true },
       });
@@ -230,11 +360,16 @@ export class RegistrationFlowService {
     const programWhere: Prisma.ProgramWhereInput = {
       ...(student ? { grade: student.grade } : {}),
       ...(input.subject ? { subject: input.subject.trim() } : {}),
+      ...(input.programId ? { id: input.programId } : {}),
+      ...(input.grade ? { grade: input.grade } : {}),
     };
     const rows = await this.db.class.findMany({
       where: {
         ...(user.role === 'TEACHER' ? { teacherId: user.id } : {}),
         ...(Object.keys(programWhere).length ? { program: programWhere } : {}),
+        ...(input.search ? { name: { contains: input.search.trim() } } : {}),
+        ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
+        ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
       },
       include: { program: true, weeklySchedules: true, _count: { select: { enrollments: true } } },
       orderBy: [{ isOpen: 'desc' }, { name: 'asc' }],
@@ -312,15 +447,18 @@ export class RegistrationFlowService {
         'CLASS_SCHEDULE_LOCKED',
         'Cannot change schedule while class has enrollments',
       );
-      const futureSessions = await tx.classSession.count({
-        where: { classId, status: 'SCHEDULED', startsAt: { gte: new Date() } },
-      });
+      const futureSessions = await tx.classSession.count({ where: { classId } });
       this.assert(
         !futureSessions,
         'CLASS_SCHEDULE_LOCKED',
-        'Cannot change schedule while future sessions exist',
+        'Cannot change weekly schedule after sessions have been generated',
       );
-      await tx.class.findUniqueOrThrow({ where: { id: classId } });
+      const classroom = await tx.class.findUniqueOrThrow({ where: { id: classId } });
+      this.assert(
+        schedules.length > 0 || !classroom.isOpen,
+        'CLASS_NEEDS_SCHEDULE',
+        'Close registration before removing all weekly slots',
+      );
       await tx.classWeeklySchedule.deleteMany({ where: { classId } });
       await tx.classWeeklySchedule.createMany({
         data: schedules.map((schedule) => ({ ...schedule, classId })),
@@ -332,6 +470,117 @@ export class RegistrationFlowService {
           weeklySchedules: { orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }] },
         },
       });
+    });
+  }
+
+  async classSchedules(user: AuthenticatedUser, classId: string): Promise<unknown> {
+    await this.getClass(user, classId, { page: 1, limit: 1 });
+    return this.db.classWeeklySchedule.findMany({
+      where: { classId },
+      orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }],
+    });
+  }
+
+  async updateClassSchedule(
+    user: AuthenticatedUser,
+    classId: string,
+    scheduleId: string,
+    input: ClassScheduleSlotDto,
+  ): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+      const rows = await tx.classWeeklySchedule.findMany({ where: { classId } });
+      this.assert(
+        rows.some((row) => row.id === scheduleId),
+        'SCHEDULE_NOT_FOUND',
+        'Weekly slot not found',
+        HttpStatus.NOT_FOUND,
+      );
+      await this.assertScheduleEditable(tx, classId);
+      this.assert(
+        timeToMinutes(input.startTime) < timeToMinutes(input.endTime),
+        'INVALID_SCHEDULE_TIME',
+        'Start must be before end',
+      );
+      this.assertNoScheduleOverlaps(rows.map((row) => (row.id === scheduleId ? input : row)));
+      return tx.classWeeklySchedule.update({ where: { id: scheduleId }, data: input });
+    });
+  }
+
+  async deleteClassSchedule(
+    user: AuthenticatedUser,
+    classId: string,
+    scheduleId: string,
+  ): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+      const rows = await tx.classWeeklySchedule.findMany({ where: { classId } });
+      this.assert(
+        rows.some((row) => row.id === scheduleId),
+        'SCHEDULE_NOT_FOUND',
+        'Weekly slot not found',
+        HttpStatus.NOT_FOUND,
+      );
+      const classroom = await this.assertScheduleEditable(tx, classId);
+      this.assert(
+        rows.length > 1 || !classroom.isOpen,
+        'CLASS_NEEDS_SCHEDULE',
+        'Close registration before deleting the last weekly slot',
+      );
+      await tx.classWeeklySchedule.delete({ where: { id: scheduleId } });
+      return { id: scheduleId, deleted: true };
+    });
+  }
+
+  private async assertScheduleEditable(
+    tx: Prisma.TransactionClient,
+    classId: string,
+  ): Promise<Class> {
+    const classroom = await tx.class.findUnique({ where: { id: classId } });
+    this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+    const [enrollments, placements, sessions] = await Promise.all([
+      tx.enrollment.count({ where: { classId, status: { not: 'ENDED' } } }),
+      tx.enrollmentPlacement.count({
+        where: { classId, enrollment: { status: { not: 'ENDED' } } },
+      }),
+      tx.classSession.count({ where: { classId } }),
+    ]);
+    this.assert(
+      !enrollments && !placements && !sessions,
+      'CLASS_SCHEDULE_LOCKED',
+      'Weekly schedule is locked by enrollment or generated sessions',
+    );
+    return classroom;
+  }
+
+  async deleteClass(user: AuthenticatedUser, id: string): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${id} FOR UPDATE`;
+      const classroom = await tx.class.findUnique({ where: { id } });
+      this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      const [enrollments, orders, sessions, generations, placements, assignments, announcements] =
+        await Promise.all([
+          tx.enrollment.count({ where: { classId: id } }),
+          tx.registrationOrder.count({ where: { classId: id } }),
+          tx.classSession.count({ where: { classId: id } }),
+          tx.scheduleGeneration.count({ where: { classId: id } }),
+          tx.enrollmentPlacement.count({ where: { classId: id } }),
+          tx.assignment.count({ where: { classId: id } }),
+          tx.announcement.count({ where: { classId: id } }),
+        ]);
+      this.assert(
+        ![enrollments, orders, sessions, generations, placements, assignments, announcements].some(
+          Boolean,
+        ),
+        'CLASS_IN_USE',
+        'Class has dependent history; archive it instead',
+      );
+      await tx.classWeeklySchedule.deleteMany({ where: { classId: id } });
+      await tx.class.delete({ where: { id } });
+      return { id, deleted: true };
     });
   }
 
@@ -905,16 +1154,21 @@ export class RegistrationFlowService {
     return this.transaction(async (tx) => {
       const program = await tx.program.findUnique({ where: { id } });
       this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+      const subject =
+        input.subject !== undefined || input.subjectId !== undefined
+          ? await this.subjectForProgram(tx, input.subject, input.subjectId)
+          : null;
       const changesIdentity =
         (input.grade !== undefined && input.grade !== program.grade) ||
-        (input.subject !== undefined && input.subject.trim() !== program.subject);
+        (subject !== null && subject.id !== program.subjectId);
       if (changesIdentity) {
-        const [classes, lessons] = await Promise.all([
+        const [classes, lessons, units] = await Promise.all([
           tx.class.count({ where: { programId: id } }),
           tx.lesson.count({ where: { programId: id } }),
+          tx.curriculumUnit.count({ where: { programId: id } }),
         ]);
         this.assert(
-          !classes && !lessons,
+          !classes && !lessons && !units,
           'PROGRAM_IN_USE',
           'Cannot change grade or subject while the program has classes or lessons',
         );
@@ -923,8 +1177,9 @@ export class RegistrationFlowService {
         where: { id },
         data: {
           ...(input.name === undefined ? {} : { name: input.name.trim() }),
-          ...(input.subject === undefined ? {} : { subject: input.subject.trim() }),
+          ...(subject === null ? {} : { subject: subject.name, subjectId: subject.id }),
           ...(input.grade === undefined ? {} : { grade: input.grade }),
+          ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
         },
       });
     });
@@ -935,15 +1190,13 @@ export class RegistrationFlowService {
     return this.transaction(async (tx) => {
       const program = await tx.program.findUnique({ where: { id } });
       this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
-      const [classes, lessons] = await Promise.all([
+      const [classes, lessons, units] = await Promise.all([
         tx.class.count({ where: { programId: id } }),
         tx.lesson.count({ where: { programId: id } }),
+        tx.curriculumUnit.count({ where: { programId: id } }),
       ]);
-      this.assert(
-        !classes && !lessons,
-        'PROGRAM_IN_USE',
-        'Cannot delete a program that has classes or lessons',
-      );
+      if (classes || lessons || units)
+        return tx.program.update({ where: { id }, data: { isActive: false } });
       await tx.program.delete({ where: { id } });
       await tx.auditLog.create({
         data: {
@@ -1194,6 +1447,7 @@ interface StudentForRegistration {
 interface ClassForRegistration {
   id: string;
   isOpen: boolean;
+  isActive: boolean;
   capacity: number;
   program: { grade: number };
   weeklySchedules: ClassWeeklySchedule[];
@@ -1251,6 +1505,7 @@ function registrationProblem(input: {
     if (!student.parentProfile.user.emailVerifiedAt)
       return fail('PARENT_EMAIL_UNVERIFIED', 'Parent email must be verified first');
   }
+  if (!classroom.isActive) return fail('CLASS_INACTIVE', 'Class is inactive');
   if (!classroom.isOpen) return fail('CLASS_CLOSED', 'Class is not open for registration');
   if (student && classroom.program.grade !== student.grade)
     return fail('CLASS_GRADE_MISMATCH', 'Class grade does not match student grade');
@@ -1369,10 +1624,6 @@ function billResponse(order: BillOrder): Record<string, unknown> {
         }
       : null,
   };
-}
-
-function normalizeProgram(input: ProgramDto): ProgramDto {
-  return { name: input.name.trim(), subject: input.subject.trim(), grade: input.grade };
 }
 
 function receiptResponse(order: {
