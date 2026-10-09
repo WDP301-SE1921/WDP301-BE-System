@@ -579,6 +579,8 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .send({ programId, name: 'Khoa học 7A', capacity: 20, monthlyFee: 500000, isOpen: false })
         .expect(201);
       const classroomId = (classroom.body as Envelope<WithId>).data.id;
+      const unlocked = await call('MANAGER', 'get', `classes/${classroomId}`).expect(200);
+      expect(unlocked.body).toMatchObject({ data: { scheduleLocked: false } });
       await call('MANAGER', 'patch', `classes/${classroomId}`)
         .send({ isActive: false })
         .expect(200);
@@ -619,6 +621,18 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .send({ weekday: 4, startTime: '18:00', endTime: '20:00' })
         .expect(409);
       expect(scheduleBlocked.body).toMatchObject({ error: { code: 'CLASS_SCHEDULE_LOCKED' } });
+      const locked = await call('MANAGER', 'get', `classes/${classroomId}`).expect(200);
+      expect(locked.body).toMatchObject({ data: { scheduleLocked: true } });
+      const replacementBlocked = await request(httpServer)
+        .put(`/api/v1/classes/${classroomId}/schedules`)
+        .set('Authorization', `Bearer ${tokens.MANAGER}`)
+        .send({ schedules: [{ weekday: 5, startTime: '18:00', endTime: '20:00' }] })
+        .expect(409);
+      expect(replacementBlocked.body).toMatchObject({ error: { code: 'CLASS_SCHEDULE_LOCKED' } });
+      const preserved = await call('MANAGER', 'get', `classes/${classroomId}/schedules`).expect(
+        200,
+      );
+      expect(preserved.body).toMatchObject({ data: [{ id: slotId, weekday: 3 }] });
       await db.enrollmentPlacement.delete({ where: { id: placement.id } });
       await call('MANAGER', 'delete', `classes/${classroomId}/schedules/${slotId}`).expect(200);
       await call('MANAGER', 'delete', `classes/${classroomId}`).expect(200);
