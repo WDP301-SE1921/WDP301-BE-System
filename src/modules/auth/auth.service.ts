@@ -18,6 +18,7 @@ const PASSWORD_HASH_ROUNDS = 12;
 const BCRYPT_MAX_BYTES = 72;
 const PENDING_REFRESH_TOKEN_HASH = '0'.repeat(64);
 const VERIFY_EMAIL_TTL_MS = 24 * 60 * 60 * 1000;
+const RESET_PASSWORD_TTL_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -124,6 +125,117 @@ export class AuthService {
   async logout(sessionId: string): Promise<{ revoked: true }> {
     await this.authSessionsRepository.revoke(sessionId);
     return { revoked: true };
+  }
+
+  async updateProfile(
+    user: SafeUser,
+    input: { displayName?: string; phone?: string },
+  ): Promise<SafeUser> {
+    if (input.phone !== undefined && user.role !== 'PARENT') {
+      throw new AppError(
+        'PROFILE_PHONE_NOT_ALLOWED',
+        'Only parent profiles have a phone number',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const updated = await this.db.$transaction(async (tx) => {
+      const account = await tx.user.update({
+        where: { id: user.id },
+        data: input.displayName === undefined ? {} : { displayName: input.displayName },
+      });
+      if (input.phone !== undefined) {
+        await tx.parentProfile.update({
+          where: { userId: user.id },
+          data: { phone: input.phone || null },
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'PROFILE_UPDATED',
+          entityType: 'User',
+          entityId: user.id,
+        },
+      });
+      return account;
+    });
+    return this.usersService.toSafeUser(updated);
+  }
+
+  async changePassword(
+    user: SafeUser & { sessionId?: string },
+    input: { currentPassword: string; newPassword: string },
+  ): Promise<{ changed: true }> {
+    this.assertPasswordWithinBcryptLimit(input.currentPassword);
+    this.assertPasswordWithinBcryptLimit(input.newPassword);
+    const account = await this.usersService.findByEmailWithPassword(user.email);
+    if (
+      !account?.passwordHash ||
+      !(await bcrypt.compare(input.currentPassword, account.passwordHash))
+    ) {
+      throw this.invalidCredentialsError();
+    }
+    const passwordHash = await bcrypt.hash(input.newPassword, PASSWORD_HASH_ROUNDS);
+    await this.db.$transaction([
+      this.db.user.update({ where: { id: user.id }, data: { passwordHash } }),
+      this.db.authSession.updateMany({
+        where: { userId: user.id, id: { not: user.sessionId }, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+      this.db.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'PASSWORD_CHANGED',
+          entityType: 'User',
+          entityId: user.id,
+        },
+      }),
+    ]);
+    return { changed: true };
+  }
+
+  async forgotPassword(email: string): Promise<{ accepted: true }> {
+    const user = await this.usersService.findByEmailWithPassword(email);
+    if (!user || user.status !== 'ACTIVE') return { accepted: true };
+    const token = randomBytes(32).toString('base64url');
+    await this.db.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.hashToken(token),
+        expiresAt: new Date(Date.now() + RESET_PASSWORD_TTL_MS),
+      },
+    });
+    await this.sendAccountEmail(
+      user.email,
+      'EduGrade - Reset your password',
+      `Use this password reset token: ${token}`,
+    );
+    return { accepted: true };
+  }
+
+  async resetPassword(input: { token: string; newPassword: string }): Promise<{ reset: true }> {
+    this.assertPasswordWithinBcryptLimit(input.newPassword);
+    const record = await this.db.passwordResetToken.findUnique({
+      where: { tokenHash: this.hashToken(input.token) },
+    });
+    const now = new Date();
+    if (!record || record.usedAt || record.expiresAt <= now) {
+      throw new AppError(
+        'AUTH_INVALID_RESET_TOKEN',
+        'Reset token is invalid or expired',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const passwordHash = await bcrypt.hash(input.newPassword, PASSWORD_HASH_ROUNDS);
+    await this.db.$transaction([
+      this.db.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: now } }),
+      this.db.user.update({ where: { id: record.userId }, data: { passwordHash } }),
+      this.db.authSession.updateMany({
+        where: { userId: record.userId, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+    ]);
+    return { reset: true };
   }
 
   async validateAccessPayload(payload: JwtPayload): Promise<SafeUser | null> {
@@ -242,6 +354,28 @@ export class AuthService {
         text: `Use this verification token to activate your EduGrade account: ${token}`,
       });
       return { sent: true };
+    } finally {
+      transport.close();
+    }
+  }
+
+  private async sendAccountEmail(email: string, subject: string, text: string): Promise<boolean> {
+    const academicConfig = this.config.get('academic', { infer: true });
+    if (!academicConfig.smtpUrl || !academicConfig.mailFrom) return false;
+    const transport = createTransport(
+      {
+        url: academicConfig.smtpUrl,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+      },
+      { from: academicConfig.mailFrom },
+    );
+    try {
+      await transport.sendMail({ to: email, subject, text });
+      return true;
+    } catch {
+      return false;
     } finally {
       transport.close();
     }

@@ -55,7 +55,7 @@ export class CatalogService {
   }
 
   async createLesson(user: AuthenticatedUser, input: LessonDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'CURRICULUM_DESIGNER');
+    roles(user, 'CURRICULUM_DESIGNER');
     assertRule(
       user.role === 'MANAGER' || input.designerId === user.id,
       'FORBIDDEN',
@@ -65,7 +65,7 @@ export class CatalogService {
       where: { id: input.designerId, role: 'CURRICULUM_DESIGNER', status: 'ACTIVE' },
     });
     assertRule(designer, 'INVALID_DESIGNER', 'An active designer is required');
-    return this.repo.db.lesson.create({ data: input });
+    return this.repo.db.lesson.create({ data: { ...input, designerId: user.id } });
   }
 
   async approveLesson(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -167,6 +167,7 @@ export class CatalogService {
   }
 
   async prepareRoster(user: AuthenticatedUser, id: string): Promise<unknown> {
+    roles(user, 'TEACHER');
     await this.access.session(user, id);
     return this.repo.transaction(async (tx) => {
       const session = await tx.classSession.findUniqueOrThrow({
@@ -214,9 +215,9 @@ export class CatalogService {
           where: { sessionId_enrollmentId: { sessionId: id, enrollmentId: enrollment.id } },
         });
         assertRule(
-          !existing || existing.kind === 'REGULAR',
+          !existing || existing.kind === 'REGULAR' || existing.cancelled,
           'ROSTER_MAKEUP_CONFLICT',
-          'Resolve a makeup seat before adding this student as a regular participant',
+          'Resolve the active makeup seat before adding this student as a regular participant',
         );
         await tx.sessionParticipant.upsert({
           where: { sessionId_enrollmentId: { sessionId: id, enrollmentId: enrollment.id } },
@@ -226,6 +227,7 @@ export class CatalogService {
             attendance: enrollment.leaveRequests.length ? 'EXCUSED' : 'UNMARKED',
           },
           update: {
+            kind: 'REGULAR',
             cancelled: false,
             ...(enrollment.leaveRequests.length ? { attendance: 'EXCUSED' as const } : {}),
           },

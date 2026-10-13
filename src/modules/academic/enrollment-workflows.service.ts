@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import type { Enrollment, Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import {
@@ -11,12 +11,16 @@ import {
 import { AcademicRepository } from './academic.repository';
 import {
   AttendanceDto,
+  AttendanceQueryDto,
   DecisionDto,
+  EndLeaveEarlyDto,
   LeaveDto,
   LeaveFilterDto,
   MakeupDto,
   MakeupSourceFilterDto,
   PageDto,
+  ReactivateStudentDto,
+  RescheduleMakeupDto,
   TransferDto,
 } from './academic.dto';
 
@@ -98,6 +102,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async requestLeave(user: AuthenticatedUser, input: LeaveDto): Promise<unknown> {
+    roles(user, 'STAFF', 'PARENT');
     await this.access.enrollment(user, input.enrollmentId);
     const from = new Date(input.fromDate),
       to = new Date(input.toDate);
@@ -107,50 +112,75 @@ export class EnrollmentWorkflowsService {
       'Use YYYY-MM-DD dates',
     );
     assertRule(from <= to, 'INVALID_DATE_RANGE', 'Start must not follow end');
-    const enrollment = await this.repo.db.enrollment.findUniqueOrThrow({
-      where: { id: input.enrollmentId },
-    });
-    assertRule(
-      enrollment.status === 'ACTIVE' &&
-        enrollment.startDate &&
-        enrollment.endDate &&
-        from >= enrollment.startDate &&
-        to < enrollment.endDate,
-      'OUTSIDE_ENROLLMENT',
-      'Leave must fall inside active enrollment',
-    );
     assertRule(
       (input.kind === 'SINGLE_ABSENCE') === !!input.sessionId,
       'INVALID_LEAVE',
       'Single absence requires a session; period pause must omit it',
     );
-    if (input.sessionId) {
-      const participant = await this.repo.db.sessionParticipant.findUnique({
-        where: {
-          sessionId_enrollmentId: { sessionId: input.sessionId, enrollmentId: input.enrollmentId },
-        },
-        include: { session: true },
+    const data = { ...input, fromDate: from, toDate: to, requestedById: user.id };
+    return this.repo.transaction(async (tx) => {
+      const enrollment = await tx.enrollment.findUniqueOrThrow({
+        where: { id: input.enrollmentId },
+        include: { studentProfile: true, placements: true },
       });
       assertRule(
-        participant &&
-          !participant.cancelled &&
-          participant.kind === 'REGULAR' &&
-          participant.session.status === 'SCHEDULED',
-        'INVALID_SESSION',
-        'Select a scheduled regular session',
+        enrollment.status === 'ACTIVE' &&
+          enrollment.studentProfile?.status === 'ACTIVE' &&
+          enrollment.startDate &&
+          enrollment.endDate &&
+          from >= enrollment.startDate &&
+          to < enrollment.endDate,
+        'OUTSIDE_ENROLLMENT',
+        'Leave must fall inside an active student enrollment',
       );
-      assertRule(
-        from.getTime() === studyDate(participant.session.startsAt).getTime() &&
-          from.getTime() === to.getTime(),
-        'INVALID_LEAVE_DATE',
-        'Single absence must match the session date',
-      );
-    }
-    const data = { ...input, fromDate: from, toDate: to, requestedById: user.id };
-    if (user.role !== 'STAFF') return this.repo.db.leaveRequest.create({ data });
-    // Staff record leave on behalf of the parent (SRS 6.4/6.7), so it is approved in the same step.
-    return this.repo.transaction(async (tx) => {
+      if (input.sessionId) {
+        const session = await tx.classSession.findUniqueOrThrow({ where: { id: input.sessionId } });
+        const placed = enrollment.placements.length
+          ? enrollment.placements.some(
+              (placement) =>
+                placement.classId === session.classId &&
+                placement.effectiveFrom <= session.startsAt &&
+                (!placement.effectiveTo || placement.effectiveTo > session.startsAt),
+            )
+          : enrollment.classId === session.classId;
+        assertRule(
+          placed && session.status === 'SCHEDULED' && inTerm(enrollment, session.startsAt),
+          'INVALID_SESSION',
+          'Select a scheduled regular session inside the enrollment placement',
+        );
+        assertRule(
+          from.getTime() === studyDate(session.startsAt).getTime() &&
+            from.getTime() === to.getTime(),
+          'INVALID_LEAVE_DATE',
+          'Single absence must match the session date',
+        );
+        const existing = await tx.sessionParticipant.findUnique({
+          where: {
+            sessionId_enrollmentId: {
+              sessionId: input.sessionId,
+              enrollmentId: input.enrollmentId,
+            },
+          },
+        });
+        assertRule(
+          !existing || existing.kind === 'REGULAR' || existing.cancelled,
+          'INVALID_SESSION',
+          'An active makeup seat cannot be used as the regular absence source',
+        );
+        await tx.sessionParticipant.upsert({
+          where: {
+            sessionId_enrollmentId: {
+              sessionId: input.sessionId,
+              enrollmentId: input.enrollmentId,
+            },
+          },
+          create: { sessionId: input.sessionId, enrollmentId: input.enrollmentId },
+          update: { kind: 'REGULAR', cancelled: false },
+        });
+      }
       const leave = await tx.leaveRequest.create({ data });
+      if (user.role !== 'STAFF') return leave;
+      // Staff record leave on behalf of the parent, so it is approved in the same transaction.
       return this.decideLeave(user, leave.id, { approve: true, reason: input.reason }, tx);
     });
   }
@@ -161,7 +191,7 @@ export class EnrollmentWorkflowsService {
     input: DecisionDto,
     outer?: Prisma.TransactionClient,
   ): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     const run = async (tx: Prisma.TransactionClient): Promise<unknown> => {
       const leave = await tx.leaveRequest.findUniqueOrThrow({ where: { id } });
       assertRule(leave.status === 'PENDING', 'REQUEST_DECIDED', 'Request has already been decided');
@@ -196,14 +226,16 @@ export class EnrollmentWorkflowsService {
           },
           include: {
             session: true,
-            replacementBooking: true,
+            replacementBookings: { where: { status: 'BOOKED' } },
             sourceBookings: { where: { status: 'BOOKED' } },
           },
         });
         assertRule(
           rows.every(
             (r) =>
-              r.session.status === 'SCHEDULED' && !r.replacementBooking && !r.sourceBookings.length,
+              r.session.status === 'SCHEDULED' &&
+              !r.replacementBookings.length &&
+              !r.sourceBookings.length,
           ),
           'LEAVE_HAS_ACTIVITY',
           'Cancel makeups or resolve completed sessions before approving leave',
@@ -227,7 +259,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async cancelLeave(user: AuthenticatedUser, id: string): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const leave = await tx.leaveRequest.findUniqueOrThrow({ where: { id } });
       assertRule(
@@ -257,6 +289,52 @@ export class EnrollmentWorkflowsService {
         where: { id },
         data: { status: 'CANCELLED', decidedById: user.id },
       });
+    });
+  }
+
+  async endLeaveEarly(
+    user: AuthenticatedUser,
+    id: string,
+    input: EndLeaveEarlyDto,
+  ): Promise<unknown> {
+    roles(user, 'STAFF');
+    return this.repo.transaction(async (tx) => {
+      const leave = await tx.leaveRequest.findUniqueOrThrow({ where: { id } });
+      assertRule(
+        leave.kind === 'PERIOD_PAUSE' && leave.status === 'APPROVED',
+        'INVALID_LEAVE_STATE',
+        'Only an approved period pause can end early',
+      );
+      const effective = new Date(`${input.effectiveDate}T00:00:00.000Z`);
+      assertRule(
+        effective > leave.fromDate && effective <= leave.toDate,
+        'INVALID_EFFECTIVE_DATE',
+        'Effective date must fall inside the pause',
+      );
+      const shortenedTo = new Date(effective.getTime() - 86_400_000);
+      await tx.sessionParticipant.updateMany({
+        where: {
+          enrollmentId: leave.enrollmentId,
+          attendance: 'EXCUSED',
+          session: { status: 'SCHEDULED', startsAt: { gte: effective } },
+        },
+        data: { attendance: 'UNMARKED' },
+      });
+      const updated = await tx.leaveRequest.update({
+        where: { id },
+        data: { toDate: shortenedTo, decisionNote: input.reason, decidedById: user.id },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'LEAVE_END_EARLY',
+          entityType: 'LeaveRequest',
+          entityId: id,
+          beforeData: { toDate: leave.toDate },
+          afterData: { toDate: shortenedTo, reason: input.reason },
+        },
+      });
+      return updated;
     });
   }
 
@@ -304,116 +382,70 @@ export class EnrollmentWorkflowsService {
     page: PageDto,
   ): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
-    const original = await this.repo.db.sessionParticipant.findUniqueOrThrow({
-      where: { id: participantId },
-      include: { session: true },
-    });
-    return this.repo.db.classSession.findMany({
-      where: {
-        id: { not: original.sessionId },
-        lessonId: original.session.lessonId,
-        startsAt: { gt: new Date() },
-        status: 'SCHEDULED',
-      },
-      include: {
-        class: { select: { name: true, capacity: true } },
-        _count: {
-          select: { participants: { where: { cancelled: false, attendance: { not: 'EXCUSED' } } } },
+    return this.repo.transaction(async (tx) => {
+      const original = await tx.sessionParticipant.findUniqueOrThrow({
+        where: { id: participantId },
+        include: { session: true },
+      });
+      const targets = await tx.classSession.findMany({
+        where: {
+          id: { not: original.sessionId },
+          lessonId: original.session.lessonId,
+          startsAt: { gt: new Date() },
+          status: 'SCHEDULED',
         },
-      },
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: { startsAt: 'asc' },
+        include: { class: { select: { name: true, capacity: true } } },
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: { startsAt: 'asc' },
+      });
+      return Promise.all(
+        targets.map(async (target) => {
+          const state = await this.makeupTargetState(tx, participantId, target.id);
+          return {
+            ...target,
+            eligible: state.reasonCodes.length === 0,
+            availableSeats: state.availableSeats,
+            reasonCodes: state.reasonCodes,
+          };
+        }),
+      );
     });
   }
 
   async bookMakeup(user: AuthenticatedUser, input: MakeupDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
-      const source = await tx.sessionParticipant.findUniqueOrThrow({
-        where: { id: input.originalParticipantId },
-        include: { session: true, enrollment: true },
-      });
-      const target = await tx.classSession.findUniqueOrThrow({
-        where: { id: input.targetSessionId },
-        include: { class: true },
-      });
-      assertRule(
-        !source.cancelled &&
-          source.kind === 'REGULAR' &&
-          source.attendance !== 'PRESENT' &&
-          source.attendance !== 'EXCUSED',
-        'INVALID_MAKEUP_SOURCE',
-        'Only a missed or planned-absence regular session can be made up',
+      const state = await this.makeupTargetState(
+        tx,
+        input.originalParticipantId,
+        input.targetSessionId,
       );
-      assertRule(
-        source.session.status !== 'CANCELLED' &&
-          target.id !== source.sessionId &&
-          target.lessonId === source.session.lessonId &&
-          target.status === 'SCHEDULED' &&
-          target.startsAt > new Date(),
-        'INVALID_MAKEUP_TARGET',
-        'Target must be a future session of the same lesson',
-      );
-      assertRule(
-        inTerm(source.enrollment, target.startsAt),
-        'OUTSIDE_ENROLLMENT',
-        'Makeup is outside the active term',
-      );
-      if (source.session.status !== 'COMPLETED') {
-        const leave = await tx.leaveRequest.count({
-          where: {
-            enrollmentId: source.enrollmentId,
-            sessionId: source.sessionId,
-            status: 'APPROVED',
-            kind: 'SINGLE_ABSENCE',
-          },
-        });
-        assertRule(
-          leave,
-          'ABSENCE_NOT_APPROVED',
-          'Approve a single-session absence before a planned swap',
-        );
-      }
-      const day = studyDate(target.startsAt);
-      const leave = await tx.leaveRequest.count({
+      const problem = state.reasonCodes[0];
+      assertRule(!problem, problem ?? 'INVALID_MAKEUP_TARGET', 'Makeup target is not eligible');
+      const { source, target } = state;
+      const existing = await tx.sessionParticipant.findUnique({
         where: {
-          enrollmentId: source.enrollmentId,
-          status: 'APPROVED',
-          fromDate: { lte: day },
-          toDate: { gte: day },
+          sessionId_enrollmentId: { sessionId: target.id, enrollmentId: source.enrollmentId },
         },
-      });
-      assertRule(!leave, 'TARGET_DURING_LEAVE', 'Target conflicts with approved leave');
-      const conflict = await tx.sessionParticipant.count({
-        where: {
-          cancelled: false,
-          id: { not: source.id },
-          enrollment: { studentProfileId: source.enrollment.studentProfileId },
-          session: {
-            status: { not: 'CANCELLED' },
-            startsAt: { lt: target.endsAt },
-            endsAt: { gt: target.startsAt },
-          },
-        },
+        include: { replacementBookings: { where: { status: { in: ['BOOKED', 'COMPLETED'] } } } },
       });
       assertRule(
-        !conflict,
-        'STUDENT_SCHEDULE_CONFLICT',
-        'Student already has a session at this time',
+        !existing ||
+          (existing.kind === 'MAKEUP' &&
+            existing.cancelled &&
+            !existing.replacementBookings.length),
+        'MAKEUP_TARGET_OCCUPIED',
+        'This enrollment already has an active or completed seat in the target session',
       );
-      const regularReservations = await this.reservations(tx, target.classId, target.startsAt);
-      const extra = await tx.sessionParticipant.count({
-        where: { sessionId: target.id, cancelled: false, kind: 'MAKEUP' },
-      });
-      assertRule(
-        regularReservations + extra < target.class.capacity,
-        'SESSION_FULL',
-        'Target session has no remaining seats',
-      );
-      const replacement = await tx.sessionParticipant.create({
-        data: { sessionId: target.id, enrollmentId: source.enrollmentId, kind: 'MAKEUP' },
-      });
+      const replacement = existing
+        ? await tx.sessionParticipant.update({
+            where: { id: existing.id },
+            data: { cancelled: false, attendance: 'UNMARKED' },
+          })
+        : await tx.sessionParticipant.create({
+            data: { sessionId: target.id, enrollmentId: source.enrollmentId, kind: 'MAKEUP' },
+          });
       return tx.makeupBooking.create({
         data: {
           originalParticipantId: source.id,
@@ -425,8 +457,172 @@ export class EnrollmentWorkflowsService {
     });
   }
 
+  async attendanceSummary(
+    user: AuthenticatedUser,
+    input: AttendanceQueryDto & { classId?: string; studentId?: string },
+  ): Promise<unknown> {
+    assertRule(
+      (user.role === 'TEACHER' && !!input.classId) || (user.role === 'PARENT' && !!input.studentId),
+      'FORBIDDEN',
+      'Attendance scope is not allowed',
+      HttpStatus.FORBIDDEN,
+    );
+    if (user.role === 'TEACHER') await this.access.classroom(user, input.classId!);
+    if (user.role === 'PARENT') {
+      const owned = await this.repo.db.studentProfile.count({
+        where: { id: input.studentId, parentProfile: { userId: user.id } },
+      });
+      assertRule(
+        owned === 1,
+        'FORBIDDEN',
+        'Student does not belong to this parent',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    const from = input.fromDate ? new Date(input.fromDate) : new Date(0);
+    const to = input.toDate ? new Date(input.toDate) : new Date();
+    assertRule(from <= to, 'INVALID_DATE_RANGE', 'Start must not follow end');
+    const rows = await this.repo.db.sessionParticipant.findMany({
+      where: {
+        kind: 'REGULAR',
+        cancelled: false,
+        session: {
+          ...(input.classId ? { classId: input.classId } : {}),
+          startsAt: { gte: from, lte: to },
+          status: 'COMPLETED',
+        },
+        enrollment: input.studentId ? { studentProfileId: input.studentId } : {},
+      },
+      select: {
+        id: true,
+        attendance: true,
+        enrollmentId: true,
+        enrollment: { select: { studentProfile: { select: { id: true, fullName: true } } } },
+        session: { select: { id: true, classId: true, startsAt: true, endsAt: true } },
+        sourceBookings: {
+          where: { status: 'COMPLETED' },
+          select: { id: true, replacement: { select: { sessionId: true } } },
+        },
+      },
+      orderBy: { session: { startsAt: 'asc' } },
+      take: 20001,
+    });
+    assertRule(rows.length <= 20000, 'ATTENDANCE_TOO_LARGE', 'Reduce the attendance date range');
+    const counts = { present: 0, absent: 0, madeUp: 0, excused: 0, required: 0, attended: 0 };
+    const history = rows.map((row) => {
+      let effectiveStatus: 'PRESENT' | 'ABSENT' | 'MADE_UP' | 'EXCUSED';
+      if (row.attendance === 'EXCUSED') {
+        effectiveStatus = 'EXCUSED';
+        counts.excused++;
+      } else if (row.attendance === 'PRESENT') {
+        effectiveStatus = 'PRESENT';
+        counts.present++;
+        counts.required++;
+        counts.attended++;
+      } else if (row.sourceBookings.length) {
+        effectiveStatus = 'MADE_UP';
+        counts.madeUp++;
+        counts.required++;
+        counts.attended++;
+      } else {
+        effectiveStatus = 'ABSENT';
+        counts.absent++;
+        counts.required++;
+      }
+      return { ...row, effectiveStatus };
+    });
+    return {
+      range: { from: input.fromDate ?? null, to: input.toDate ?? null },
+      counts,
+      attendancePercent: counts.required
+        ? Math.round((counts.attended / counts.required) * 10000) / 100
+        : null,
+      history,
+    };
+  }
+
+  private async makeupTargetState(
+    tx: Prisma.TransactionClient,
+    sourceId: string,
+    targetId: string,
+  ): Promise<{
+    source: Prisma.SessionParticipantGetPayload<{ include: { session: true; enrollment: true } }>;
+    target: Prisma.ClassSessionGetPayload<{ include: { class: true } }>;
+    availableSeats: number;
+    reasonCodes: string[];
+  }> {
+    const source = await tx.sessionParticipant.findUniqueOrThrow({
+      where: { id: sourceId },
+      include: { session: true, enrollment: true },
+    });
+    const target = await tx.classSession.findUniqueOrThrow({
+      where: { id: targetId },
+      include: { class: true },
+    });
+    const reasonCodes: string[] = [];
+    if (
+      source.cancelled ||
+      source.kind !== 'REGULAR' ||
+      source.attendance === 'PRESENT' ||
+      source.attendance === 'EXCUSED'
+    )
+      reasonCodes.push('INVALID_MAKEUP_SOURCE');
+    if (
+      source.session.status === 'CANCELLED' ||
+      target.id === source.sessionId ||
+      target.lessonId !== source.session.lessonId ||
+      target.status !== 'SCHEDULED' ||
+      target.startsAt <= new Date()
+    )
+      reasonCodes.push('INVALID_MAKEUP_TARGET');
+    if (!inTerm(source.enrollment, target.startsAt)) reasonCodes.push('OUTSIDE_ENROLLMENT');
+    if (source.session.status !== 'COMPLETED') {
+      const approved = await tx.leaveRequest.count({
+        where: {
+          enrollmentId: source.enrollmentId,
+          sessionId: source.sessionId,
+          status: 'APPROVED',
+          kind: 'SINGLE_ABSENCE',
+        },
+      });
+      if (!approved) reasonCodes.push('ABSENCE_NOT_APPROVED');
+    }
+    const day = studyDate(target.startsAt);
+    const [leave, conflict, regularReservations, extra] = await Promise.all([
+      tx.leaveRequest.count({
+        where: {
+          enrollmentId: source.enrollmentId,
+          status: 'APPROVED',
+          fromDate: { lte: day },
+          toDate: { gte: day },
+        },
+      }),
+      tx.sessionParticipant.count({
+        where: {
+          cancelled: false,
+          id: { not: source.id },
+          enrollment: { studentProfileId: source.enrollment.studentProfileId },
+          session: {
+            status: { not: 'CANCELLED' },
+            startsAt: { lt: target.endsAt },
+            endsAt: { gt: target.startsAt },
+          },
+        },
+      }),
+      this.reservations(tx, target.classId, target.startsAt),
+      tx.sessionParticipant.count({
+        where: { sessionId: target.id, cancelled: false, kind: 'MAKEUP' },
+      }),
+    ]);
+    if (leave) reasonCodes.push('TARGET_DURING_LEAVE');
+    if (conflict) reasonCodes.push('STUDENT_SCHEDULE_CONFLICT');
+    const availableSeats = Math.max(0, target.class.capacity - regularReservations - extra);
+    if (!availableSeats) reasonCodes.push('SESSION_FULL');
+    return { source, target, availableSeats, reasonCodes: [...new Set(reasonCodes)] };
+  }
+
   async cancelMakeup(user: AuthenticatedUser, id: string): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const booking = await tx.makeupBooking.findUniqueOrThrow({
         where: { id },
@@ -448,11 +644,91 @@ export class EnrollmentWorkflowsService {
     });
   }
 
+  async rescheduleMakeup(
+    user: AuthenticatedUser,
+    id: string,
+    input: RescheduleMakeupDto,
+  ): Promise<unknown> {
+    roles(user, 'STAFF');
+    return this.repo.transaction(async (tx) => {
+      const booking = await tx.makeupBooking.findUniqueOrThrow({
+        where: { id },
+        include: { replacement: { include: { session: true } } },
+      });
+      assertRule(
+        booking.status === 'BOOKED' && booking.replacement.session.status === 'SCHEDULED',
+        'MAKEUP_LOCKED',
+        'Only an uncompleted booking can be rescheduled',
+      );
+      assertRule(
+        booking.replacement.sessionId !== input.targetSessionId,
+        'SAME_MAKEUP_TARGET',
+        'Choose another session',
+      );
+      const state = await this.makeupTargetState(
+        tx,
+        booking.originalParticipantId,
+        input.targetSessionId,
+      );
+      const problem = state.reasonCodes[0];
+      assertRule(!problem, problem ?? 'INVALID_MAKEUP_TARGET', 'Makeup target is not eligible');
+      const existing = await tx.sessionParticipant.findUnique({
+        where: {
+          sessionId_enrollmentId: {
+            sessionId: state.target.id,
+            enrollmentId: state.source.enrollmentId,
+          },
+        },
+        include: { replacementBookings: { where: { status: { in: ['BOOKED', 'COMPLETED'] } } } },
+      });
+      assertRule(
+        !existing ||
+          (existing.kind === 'MAKEUP' &&
+            existing.cancelled &&
+            !existing.replacementBookings.length),
+        'MAKEUP_TARGET_OCCUPIED',
+        'This enrollment already occupies the target session',
+      );
+      const replacement = existing
+        ? await tx.sessionParticipant.update({
+            where: { id: existing.id },
+            data: { cancelled: false, attendance: 'UNMARKED' },
+          })
+        : await tx.sessionParticipant.create({
+            data: {
+              sessionId: state.target.id,
+              enrollmentId: state.source.enrollmentId,
+              kind: 'MAKEUP',
+            },
+          });
+      await tx.sessionParticipant.update({
+        where: { id: booking.replacementParticipantId },
+        data: { cancelled: true },
+      });
+      const updated = await tx.makeupBooking.update({
+        where: { id },
+        data: { replacementParticipantId: replacement.id, managerId: user.id },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'MAKEUP_RESCHEDULE',
+          entityType: 'MakeupBooking',
+          entityId: id,
+          beforeData: { sessionId: booking.replacement.sessionId },
+          afterData: { sessionId: state.target.id, reason: input.reason },
+        },
+      });
+      return updated;
+    });
+  }
+
   async finalizeAttendance(
     user: AuthenticatedUser,
     id: string,
     input: AttendanceDto,
   ): Promise<unknown> {
+    roles(user, 'TEACHER');
     await this.access.session(user, id);
     return this.repo.transaction(async (tx) => {
       const session = await tx.classSession.findUniqueOrThrow({
@@ -461,7 +737,7 @@ export class EnrollmentWorkflowsService {
           participants: {
             where: { cancelled: false },
             include: {
-              replacementBooking: true,
+              replacementBookings: { where: { status: 'BOOKED' } },
               sourceBookings: { where: { status: { in: ['BOOKED', 'COMPLETED'] } } },
             },
           },
@@ -499,13 +775,14 @@ export class EnrollmentWorkflowsService {
           where: { id: row.id },
           data: { attendance: item.status },
         });
-        if (row.replacementBooking)
+        const replacementBooking = row.replacementBookings[0];
+        if (replacementBooking)
           await tx.makeupBooking.update({
-            where: { id: row.replacementBooking.id },
+            where: { id: replacementBooking.id },
             data: {
               status: item.status === 'PRESENT' ? 'COMPLETED' : 'MISSED',
               activeOriginalId:
-                item.status === 'PRESENT' ? row.replacementBooking.originalParticipantId : null,
+                item.status === 'PRESENT' ? replacementBooking.originalParticipantId : null,
             },
           });
       }
@@ -517,7 +794,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async transfer(user: AuthenticatedUser, id: string, input: TransferDto): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const enrollment = await tx.enrollment.findUniqueOrThrow({
         where: { id },
@@ -658,9 +935,9 @@ export class EnrollmentWorkflowsService {
           where: { sessionId_enrollmentId: { sessionId: session.id, enrollmentId: id } },
         });
         assertRule(
-          !existing || existing.kind === 'REGULAR',
+          !existing || existing.kind === 'REGULAR' || existing.cancelled,
           'TRANSFER_MAKEUP_CONFLICT',
-          'Target contains a previous makeup seat; resolve that session first',
+          'Target contains an active makeup seat; resolve that session first',
         );
         await tx.sessionParticipant.upsert({
           where: { sessionId_enrollmentId: { sessionId: session.id, enrollmentId: id } },
@@ -669,7 +946,11 @@ export class EnrollmentWorkflowsService {
             enrollmentId: id,
             attendance: paused ? 'EXCUSED' : 'UNMARKED',
           },
-          update: { cancelled: false, attendance: paused ? 'EXCUSED' : 'UNMARKED' },
+          update: {
+            kind: 'REGULAR',
+            cancelled: false,
+            attendance: paused ? 'EXCUSED' : 'UNMARKED',
+          },
         });
       }
       return tx.enrollmentTransfer.create({
@@ -686,7 +967,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async endEnrollment(user: AuthenticatedUser, id: string): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const { enrollment, impact } = await this.endOne(tx, id);
       await tx.auditLog.create({
@@ -703,7 +984,7 @@ export class EnrollmentWorkflowsService {
   }
 
   async endStudent(user: AuthenticatedUser, studentId: string): Promise<unknown> {
-    roles(user, 'MANAGER', 'STAFF');
+    roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const enrollments = await tx.enrollment.findMany({
         where: { studentProfileId: studentId, status: { not: 'ENDED' } },
@@ -735,6 +1016,42 @@ export class EnrollmentWorkflowsService {
         },
       });
       return { ...student, impact };
+    });
+  }
+
+  async reactivateStudent(
+    user: AuthenticatedUser,
+    studentId: string,
+    input: ReactivateStudentDto,
+  ): Promise<unknown> {
+    roles(user, 'STAFF');
+    return this.repo.transaction(async (tx) => {
+      const student = await tx.studentProfile.findUnique({ where: { id: studentId } });
+      assertRule(student, 'STUDENT_NOT_FOUND', 'Student not found', HttpStatus.NOT_FOUND);
+      if (student.status === 'ACTIVE') return student;
+      const activeEnrollments = await tx.enrollment.count({
+        where: { studentProfileId: studentId, status: { not: 'ENDED' } },
+      });
+      assertRule(
+        !activeEnrollments,
+        'STUDENT_HAS_ACTIVE_ENROLLMENT',
+        'Resolve active enrollments before reactivating the student',
+      );
+      const updated = await tx.studentProfile.update({
+        where: { id: studentId },
+        data: { status: 'ACTIVE' },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'STUDENT_REACTIVATE',
+          entityType: 'StudentProfile',
+          entityId: studentId,
+          beforeData: { status: student.status },
+          afterData: { status: updated.status, reason: input.reason },
+        },
+      });
+      return updated;
     });
   }
 

@@ -530,11 +530,13 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       expect((schedule.body as Envelope<WithId[]>).data.length).toBeGreaterThan(0);
       await call('PARENT', 'get', 'students').expect(403);
       await call('TEACHER', 'get', `students/${kids.A}/schedule`).expect(403);
-      const detail = await call('STAFF', 'get', `classes/${classes.two}`).expect(200);
+      const detail = await call('STAFF', 'get', `classes/${classes.two}`)
+        .query({ at: `${tomorrow}T12:00:00.000Z` })
+        .expect(200);
       expect(
         (detail.body as Envelope<{ weeklySchedules: unknown[]; enrollments: { total: number } }>)
           .data,
-      ).toMatchObject({ enrollments: { total: 3 } });
+      ).toMatchObject({ enrollments: { total: 2 } });
       await call('STAFF', 'get', 'classes/does-not-exist').expect(404);
       const payments = await call('STAFF', 'get', 'payments').expect(200);
       const ledger = (payments.body as Envelope<{ total: number; totalAmount: string }>).data;

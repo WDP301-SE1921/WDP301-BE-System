@@ -90,6 +90,7 @@ describe('Academic workflows (database + HTTP)', () => {
     const passwordHash = await bcrypt.hash(password, 4);
     for (const [key, role] of Object.entries({
       manager: 'MANAGER',
+      staff: 'STAFF',
       teacher: 'TEACHER',
       outsider: 'TEACHER',
       designer: 'CURRICULUM_DESIGNER',
@@ -313,11 +314,14 @@ describe('Academic workflows (database + HTTP)', () => {
         endsAt: new Date(now + 86400000 + 3600000),
       },
     });
-    const booked = await call('manager', 'post', 'makeups')
+    await call('manager', 'post', 'makeups')
+      .send({ originalParticipantId: source.id, targetSessionId: target.id })
+      .expect(403);
+    const booked = await call('staff', 'post', 'makeups')
       .send({ originalParticipantId: source.id, targetSessionId: target.id })
       .expect(201);
     const booking = (booked.body as Envelope<WithId & { replacementParticipantId: string }>).data;
-    await call('manager', 'post', 'makeups')
+    await call('staff', 'post', 'makeups')
       .send({ originalParticipantId: source.id, targetSessionId: target.id })
       .expect(409);
     await db.classSession.update({
@@ -394,6 +398,9 @@ describe('Academic workflows (database + HTTP)', () => {
       .expect(403);
     await call('manager', 'post', `leaves/${leaveId}/decide`)
       .send({ approve: true, reason: 'Approved' })
+      .expect(403);
+    await call('staff', 'post', `leaves/${leaveId}/decide`)
+      .send({ approve: true, reason: 'Approved' })
       .expect(201);
     expect(
       (
@@ -404,7 +411,103 @@ describe('Academic workflows (database + HTTP)', () => {
         })
       ).attendance,
     ).toBe('EXCUSED');
-    await call('manager', 'post', `leaves/${leaveId}/cancel`).expect(201);
+    await call('staff', 'post', `leaves/${leaveId}/cancel`).expect(201);
+  });
+
+  it('creates a single-session leave before roster preparation and rebooks a cancelled makeup', async () => {
+    const now = Date.now();
+    const sourceSession = await db.classSession.create({
+      data: {
+        classId: ids.classA,
+        lessonId: ids.lesson,
+        teacherId: ids.teacher,
+        startsAt: new Date(now + 3 * 86400000),
+        endsAt: new Date(now + 3 * 86400000 + 3600000),
+      },
+    });
+    const day = new Date(sourceSession.startsAt.getTime() + 7 * 3600000).toISOString().slice(0, 10);
+    await call('staff', 'post', 'leaves')
+      .send({
+        enrollmentId: ids.enrollment,
+        sessionId: sourceSession.id,
+        kind: 'SINGLE_ABSENCE',
+        fromDate: day,
+        toDate: day,
+        reason: 'Planned absence',
+      })
+      .expect(201);
+    const source = await db.sessionParticipant.findUniqueOrThrow({
+      where: {
+        sessionId_enrollmentId: {
+          sessionId: sourceSession.id,
+          enrollmentId: ids.enrollment,
+        },
+      },
+    });
+    const target = await db.classSession.create({
+      data: {
+        classId: ids.classB,
+        lessonId: ids.lesson,
+        teacherId: ids.teacher,
+        startsAt: new Date(now + 4 * 86400000),
+        endsAt: new Date(now + 4 * 86400000 + 3600000),
+      },
+    });
+    const first = await call('staff', 'post', 'makeups')
+      .send({ originalParticipantId: source.id, targetSessionId: target.id })
+      .expect(201);
+    const firstBooking = (first.body as Envelope<WithId>).data;
+    await call('staff', 'post', `makeups/${firstBooking.id}/cancel`).expect(201);
+    const second = await call('staff', 'post', 'makeups')
+      .send({ originalParticipantId: source.id, targetSessionId: target.id })
+      .expect(201);
+    expect((second.body as Envelope<WithId>).data.id).not.toBe(firstBooking.id);
+    expect(
+      await db.makeupBooking.count({
+        where: { replacement: { sessionId: target.id, enrollmentId: ids.enrollment } },
+      }),
+    ).toBe(2);
+    expect(
+      await db.makeupBooking.count({
+        where: {
+          replacement: { sessionId: target.id, enrollmentId: ids.enrollment },
+          status: 'BOOKED',
+        },
+      }),
+    ).toBe(1);
+    const targetDate = new Date(target.startsAt.getTime() + 7 * 3600000).toISOString().slice(0, 10);
+    const calendar = await call(
+      'parent',
+      'get',
+      `scheduled-sessions?studentId=${ids.student}&fromDate=${targetDate}&toDate=${targetDate}`,
+    ).expect(200);
+    await call(
+      'otherParent',
+      'get',
+      `scheduled-sessions?studentId=${ids.student}&fromDate=${targetDate}&toDate=${targetDate}`,
+    ).expect(403);
+    const targetEntry = (
+      calendar.body as Envelope<
+        Array<{
+          id: string;
+          participations: Array<{
+            kind: string;
+            replacementMakeups: Array<{ sourceSessionId: string }>;
+          }>;
+        }>
+      >
+    ).data.find((item) => item.id === target.id);
+    expect(targetEntry?.participations[0].kind).toBe('MAKEUP');
+    expect(
+      targetEntry?.participations[0].replacementMakeups.find(
+        (booking) => booking.sourceSessionId === sourceSession.id,
+      ),
+    ).toBeDefined();
+    await call(
+      'staff',
+      'post',
+      `makeups/${(second.body as Envelope<WithId>).data.id}/cancel`,
+    ).expect(201);
   });
 
   it('transfers enrollment without rewriting the original class and ends only that child', async () => {
@@ -423,6 +526,13 @@ describe('Academic workflows (database + HTTP)', () => {
         effectiveAt: new Date(Date.now() + 2 * 86400000).toISOString(),
         reason: 'Schedule changed',
       })
+      .expect(403);
+    await call('staff', 'post', `enrollments/${ids.enrollment}/transfer`)
+      .send({
+        targetClassId: ids.classB,
+        effectiveAt: new Date(Date.now() + 2 * 86400000).toISOString(),
+        reason: 'Schedule changed',
+      })
       .expect(201);
     const enrollment = await db.enrollment.findUniqueOrThrow({
       where: { id: ids.enrollment },
@@ -430,11 +540,17 @@ describe('Academic workflows (database + HTTP)', () => {
     });
     expect(enrollment.classId).toBe(ids.classA);
     expect(enrollment.placements).toHaveLength(2);
-    await call('manager', 'post', `students/${ids.student}/end-study`).expect(201);
+    await call('staff', 'post', `students/${ids.student}/end-study`).expect(201);
     expect((await db.enrollment.findUniqueOrThrow({ where: { id: ids.enrollment } })).status).toBe(
       'ENDED',
     );
     expect((await db.user.findUniqueOrThrow({ where: { id: ids.parent } })).status).toBe('ACTIVE');
+    await call('staff', 'post', `students/${ids.student}/reactivate`)
+      .send({ reason: 'Student returns' })
+      .expect(201);
+    expect((await db.studentProfile.findUniqueOrThrow({ where: { id: ids.student } })).status).toBe(
+      'ACTIVE',
+    );
   });
 
   it('serializes competing requests for the last makeup seat', async () => {
@@ -496,7 +612,7 @@ describe('Academic workflows (database + HTTP)', () => {
     });
     const responses = await Promise.all(
       sources.map((originalParticipantId) =>
-        call('manager', 'post', 'makeups').send({
+        call('staff', 'post', 'makeups').send({
           originalParticipantId,
           targetSessionId: target.id,
         }),

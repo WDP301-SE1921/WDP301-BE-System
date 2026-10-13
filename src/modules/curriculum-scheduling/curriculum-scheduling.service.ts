@@ -968,6 +968,7 @@ export class CurriculumSchedulingService {
           classId,
           lessonId: slot.lessonId,
           teacherId: classroom.teacherId!,
+          roomId: classroom.roomId,
           generationId: generation.id,
           startsAt: slot.startsAt,
           endsAt: slot.endsAt,
@@ -995,11 +996,32 @@ export class CurriculumSchedulingService {
         ? (query.toDate ?? dateOnly(new Date(localDate(fromDate!).getTime() + 30 * DAY_MS)))
         : query.toDate;
     if (fromDate && toDate) this.assertRange(fromDate, toDate);
+    if (user.role === 'PARENT' && query.studentId) {
+      const owned = await this.db.studentProfile.count({
+        where: { id: query.studentId, parentProfile: { userId: user.id } },
+      });
+      this.assert(
+        owned === 1,
+        'FORBIDDEN',
+        'Student does not belong to this parent',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     const enrollments =
       user.role === 'PARENT'
         ? await this.db.enrollment.findMany({
-            where: { status: 'ACTIVE', studentProfile: { parentProfile: { userId: user.id } } },
+            where: {
+              status: { not: 'PENDING_LINK' },
+              studentProfile: {
+                parentProfile: { userId: user.id },
+                ...(query.studentId ? { id: query.studentId } : {}),
+              },
+            },
             select: {
+              id: true,
+              status: true,
+              endedAt: true,
+              studentProfileId: true,
               classId: true,
               startDate: true,
               endDate: true,
@@ -1018,15 +1040,75 @@ export class CurriculumSchedulingService {
     ];
     const start = fromDate ? localDate(fromDate) : undefined;
     const endExclusive = toDate ? new Date(localDate(toDate).getTime() + DAY_MS) : undefined;
+    const parentParticipants =
+      user.role === 'PARENT'
+        ? await this.db.sessionParticipant.findMany({
+            where: {
+              enrollmentId: { in: enrollments.map((item) => item.id) },
+              session: {
+                ...(start || endExclusive
+                  ? {
+                      startsAt: {
+                        ...(start ? { gte: new Date(start.getTime() - HCM_OFFSET_MS) } : {}),
+                        ...(endExclusive
+                          ? { lt: new Date(endExclusive.getTime() - HCM_OFFSET_MS) }
+                          : {}),
+                      },
+                    }
+                  : {}),
+                status: { not: 'CANCELLED' },
+              },
+            },
+            select: {
+              id: true,
+              sessionId: true,
+              session: { select: { classId: true } },
+              enrollmentId: true,
+              kind: true,
+              attendance: true,
+              cancelled: true,
+              enrollment: { select: { studentProfileId: true } },
+              sourceBookings: {
+                select: {
+                  id: true,
+                  status: true,
+                  replacement: { select: { sessionId: true } },
+                },
+              },
+              replacementBookings: {
+                select: {
+                  id: true,
+                  status: true,
+                  original: { select: { sessionId: true } },
+                },
+                orderBy: { createdAt: 'desc' },
+              },
+            },
+          })
+        : [];
+    const participantSessionIds = [...new Set(parentParticipants.map((item) => item.sessionId))];
     const rows = await this.db.classSession.findMany({
       where: {
         ...(user.role === 'PARENT'
           ? {
-              classId: {
-                in: query.classId
-                  ? parentClassIds.filter((id) => id === query.classId)
-                  : parentClassIds,
-              },
+              OR: [
+                {
+                  classId: {
+                    in: query.classId
+                      ? parentClassIds.filter((id) => id === query.classId)
+                      : parentClassIds,
+                  },
+                },
+                {
+                  id: {
+                    in: query.classId
+                      ? parentParticipants
+                          .filter((item) => item.session.classId === query.classId)
+                          .map((item) => item.sessionId)
+                      : participantSessionIds,
+                  },
+                },
+              ],
             }
           : query.classId
             ? { classId: query.classId }
@@ -1059,27 +1141,70 @@ export class CurriculumSchedulingService {
     });
     if (user.role !== 'PARENT') return rows;
     return rows
-      .filter((session) =>
-        enrollments.some((enrollment) => {
-          const day = localDate(
-            new Date(session.startsAt.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10),
-          );
-          if (
-            !enrollment.startDate ||
-            !enrollment.endDate ||
-            day < enrollment.startDate ||
-            day >= enrollment.endDate
-          )
-            return false;
-          if (!enrollment.placements.length) return enrollment.classId === session.classId;
-          return enrollment.placements.some(
-            (placement) =>
-              placement.classId === session.classId &&
-              placement.effectiveFrom <= session.startsAt &&
-              (!placement.effectiveTo || placement.effectiveTo > session.startsAt),
-          );
-        }),
-      )
+      .filter((session) => {
+        const participant = parentParticipants.some(
+          (item) =>
+            item.sessionId === session.id &&
+            enrollments.some(
+              (enrollment) =>
+                enrollment.id === item.enrollmentId &&
+                (enrollment.status !== 'ENDED' ||
+                  !enrollment.endedAt ||
+                  session.startsAt < enrollment.endedAt),
+            ),
+        );
+        return (
+          participant ||
+          enrollments.some((enrollment) => {
+            if (
+              enrollment.status === 'ENDED' &&
+              enrollment.endedAt &&
+              session.startsAt >= enrollment.endedAt
+            )
+              return false;
+            const day = localDate(
+              new Date(session.startsAt.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10),
+            );
+            if (
+              !enrollment.startDate ||
+              !enrollment.endDate ||
+              day < enrollment.startDate ||
+              day >= enrollment.endDate
+            )
+              return false;
+            if (!enrollment.placements.length) return enrollment.classId === session.classId;
+            return enrollment.placements.some(
+              (placement) =>
+                placement.classId === session.classId &&
+                placement.effectiveFrom <= session.startsAt &&
+                (!placement.effectiveTo || placement.effectiveTo > session.startsAt),
+            );
+          })
+        );
+      })
+      .map((session) => ({
+        ...session,
+        participations: parentParticipants
+          .filter((item) => item.sessionId === session.id)
+          .map((item) => ({
+            participantId: item.id,
+            enrollmentId: item.enrollmentId,
+            studentId: item.enrollment.studentProfileId,
+            kind: item.kind,
+            attendance: item.attendance,
+            cancelled: item.cancelled,
+            sourceMakeups: item.sourceBookings.map((booking) => ({
+              bookingId: booking.id,
+              status: booking.status,
+              targetSessionId: booking.replacement.sessionId,
+            })),
+            replacementMakeups: item.replacementBookings.map((booking) => ({
+              bookingId: booking.id,
+              status: booking.status,
+              sourceSessionId: booking.original.sessionId,
+            })),
+          })),
+      }))
       .slice((query.page - 1) * query.limit, query.page * query.limit);
   }
 
@@ -1115,10 +1240,14 @@ export class CurriculumSchedulingService {
       this.assert(studentId, 'STUDENT_ID_REQUIRED', 'Select a student', HttpStatus.BAD_REQUEST);
       const enrollments = await this.db.enrollment.findMany({
         where: {
+          status: { not: 'PENDING_LINK' },
           studentProfile: { id: studentId, parentProfile: { userId: user.id } },
         },
         select: {
+          id: true,
           classId: true,
+          status: true,
+          endedAt: true,
           startDate: true,
           endDate: true,
           placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
@@ -1143,6 +1272,9 @@ export class CurriculumSchedulingService {
       );
       const entitled = enrollments.some(
         (enrollment) =>
+          (enrollment.status !== 'ENDED' ||
+            !enrollment.endedAt ||
+            row.startsAt < enrollment.endedAt) &&
           enrollment.startDate &&
           enrollment.endDate &&
           enrollment.startDate <= day &&
@@ -1156,8 +1288,17 @@ export class CurriculumSchedulingService {
               )
             : enrollment.classId === row.classId),
       );
+      const participantEnrollment = participant
+        ? enrollments.find((enrollment) => enrollment.id === participant.enrollmentId)
+        : undefined;
+      const participantEntitled =
+        !!participant &&
+        !!participantEnrollment &&
+        (participantEnrollment.status !== 'ENDED' ||
+          !participantEnrollment.endedAt ||
+          row.startsAt < participantEnrollment.endedAt);
       this.assert(
-        entitled || participant,
+        entitled || participantEntitled,
         'FORBIDDEN',
         'Session does not belong to this parent',
         HttpStatus.FORBIDDEN,
@@ -1474,7 +1615,11 @@ export class CurriculumSchedulingService {
           status: { not: 'CANCELLED' },
           startsAt: { lt: endsAt },
           endsAt: { gt: startsAt },
-          OR: [{ classId: session.classId }, { teacherId: session.teacherId }],
+          OR: [
+            { classId: session.classId },
+            { teacherId: session.teacherId },
+            ...(session.roomId ? [{ roomId: session.roomId }] : []),
+          ],
         },
         select: { id: true },
       }),
@@ -1599,7 +1744,11 @@ export class CurriculumSchedulingService {
         status: { not: 'CANCELLED' },
         startsAt: { lt: last },
         endsAt: { gt: first },
-        OR: [{ classId: classroom.id }, { teacherId: classroom.teacherId! }],
+        OR: [
+          { classId: classroom.id },
+          { teacherId: classroom.teacherId! },
+          ...(classroom.roomId ? [{ roomId: classroom.roomId }] : []),
+        ],
       },
       select: { id: true, classId: true, teacherId: true, startsAt: true, endsAt: true },
     });

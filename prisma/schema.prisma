@@ -63,44 +63,96 @@ enum OutboxStatus {
   FAILED
 }
 
+enum AccountInvitationStatus {
+  INVITED
+  ACCEPTED
+  APPROVED
+  REJECTED
+  REVOKED
+}
+
 model User {
-  id                 String              @id @default(cuid()) @db.VarChar(191)
-  email              String              @unique @db.VarChar(255)
-  passwordHash       String?             @db.VarChar(255)
-  displayName        String?             @db.VarChar(255)
-  role               UserRole
-  status             UserStatus          @default(ACTIVE)
-  emailVerifiedAt    DateTime?
-  parentProfile      ParentProfile?
-  sessions           AuthSession[]
-  emailVerificationTokens EmailVerificationToken[]
-  createdOrders      RegistrationOrder[] @relation("OrderCreatedBy")
-  confirmedPayments  Payment[]           @relation("PaymentConfirmedBy")
-  usedInvitations    LinkInvitation[]    @relation("InvitationUsedBy")
-  auditLogs          AuditLog[]
-  teachingClasses    Class[]             @relation("ClassTeacher")
-  teachingSessions   ClassSession[]      @relation("SessionTeacher")
-  designedLessons    Lesson[]
-  designedUnits      CurriculumUnit[]
-  scheduleGenerations ScheduleGeneration[]
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
+  id                         String                   @id @default(cuid()) @db.VarChar(191)
+  email                      String                   @unique @db.VarChar(255)
+  passwordHash               String?                  @db.VarChar(255)
+  displayName                String?                  @db.VarChar(255)
+  role                       UserRole
+  status                     UserStatus               @default(ACTIVE)
+  permissions                Json?
+  emailVerifiedAt            DateTime?
+  parentProfile              ParentProfile?
+  sessions                   AuthSession[]
+  emailVerificationTokens    EmailVerificationToken[]
+  passwordResetTokens        PasswordResetToken[]
+  acceptedAccountInvitations AccountInvitation[]      @relation("AccountInvitationAcceptedUser")
+  sentAccountInvitations     AccountInvitation[]      @relation("AccountInvitationInviter")
+  reviewedAccountInvitations AccountInvitation[]      @relation("AccountInvitationReviewer")
+  createdOrders              RegistrationOrder[]      @relation("OrderCreatedBy")
+  confirmedPayments          Payment[]                @relation("PaymentConfirmedBy")
+  usedInvitations            LinkInvitation[]         @relation("InvitationUsedBy")
+  auditLogs                  AuditLog[]
+  teachingClasses            Class[]                  @relation("ClassTeacher")
+  confirmedSchedules         Class[]                  @relation("ScheduleConfirmedBy")
+  teachingSessions           ClassSession[]           @relation("SessionTeacher")
+  designedLessons            Lesson[]
+  designedUnits              CurriculumUnit[]
+  scheduleGenerations        ScheduleGeneration[]
+  createdAt                  DateTime                 @default(now())
+  updatedAt                  DateTime                 @updatedAt
 
   @@map("users")
 }
 
+model AccountInvitation {
+  id             String                  @id @default(cuid()) @db.VarChar(191)
+  email          String                  @db.VarChar(255)
+  role           UserRole
+  tokenHash      String                  @unique @db.Char(64)
+  status         AccountInvitationStatus @default(INVITED)
+  invitedById    String                  @db.VarChar(191)
+  acceptedUserId String?                 @db.VarChar(191)
+  reviewedById   String?                 @db.VarChar(191)
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  reviewedAt     DateTime?
+  reviewNote     String?                 @db.Text
+  invitedBy      User                    @relation("AccountInvitationInviter", fields: [invitedById], references: [id], onDelete: Restrict)
+  acceptedUser   User?                   @relation("AccountInvitationAcceptedUser", fields: [acceptedUserId], references: [id], onDelete: Restrict)
+  reviewedBy     User?                   @relation("AccountInvitationReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  @@index([email, role, status])
+  @@index([invitedById])
+  @@map("account_invitations")
+}
+
 model EmailVerificationToken {
-  id        String   @id @default(cuid()) @db.VarChar(191)
-  userId    String   @db.VarChar(191)
-  tokenHash String   @unique @db.Char(64)
+  id        String    @id @default(cuid()) @db.VarChar(191)
+  userId    String    @db.VarChar(191)
+  tokenHash String    @unique @db.Char(64)
   expiresAt DateTime
   usedAt    DateTime?
-  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  createdAt DateTime @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdAt DateTime  @default(now())
 
   @@index([userId, usedAt])
   @@index([expiresAt])
   @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid()) @db.VarChar(191)
+  userId    String    @db.VarChar(191)
+  tokenHash String    @unique @db.Char(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdAt DateTime  @default(now())
+
+  @@index([userId, usedAt])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 model AuthSession {
@@ -148,58 +200,79 @@ model StudentProfile {
 }
 
 model Program {
-  id        String   @id @default(cuid()) @db.VarChar(191)
-  name      String   @db.VarChar(255)
-  subject   String   @db.VarChar(191)
-  subjectId String? @db.VarChar(191)
-  isActive Boolean @default(true)
-  grade     Int
-  subjectRecord Subject? @relation(fields: [subjectId], references: [id], onDelete: Restrict)
-  classes   Class[]
-  lessons   Lesson[]
+  id              String           @id @default(cuid()) @db.VarChar(191)
+  name            String           @db.VarChar(255)
+  subject         String           @db.VarChar(191)
+  subjectId       String?          @db.VarChar(191)
+  isActive        Boolean          @default(true)
+  grade           Int
+  subjectRecord   Subject?         @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  classes         Class[]
+  lessons         Lesson[]
   curriculumUnits CurriculumUnit[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   @@index([subject, grade])
   @@map("programs")
 }
 
 model Subject {
-  id String @id @default(cuid()) @db.VarChar(191)
-  code String @unique @db.VarChar(64)
-  name String @db.VarChar(191)
-  isActive Boolean @default(true)
-  programs Program[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String    @id @default(cuid()) @db.VarChar(191)
+  code      String    @unique @db.VarChar(64)
+  name      String    @db.VarChar(191)
+  isActive  Boolean   @default(true)
+  programs  Program[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
   @@map("subjects")
 }
 
 model Class {
-  id                 String              @id @default(cuid()) @db.VarChar(191)
-  programId          String              @db.VarChar(191)
-  name               String              @db.VarChar(255)
-  capacity           Int
-  isOpen             Boolean             @default(true)
-  isActive           Boolean             @default(true)
-  monthlyFee         Decimal             @db.Decimal(14, 2)
-  teacherId          String?             @db.VarChar(191)
-  teacher            User?               @relation("ClassTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
-  weeklySchedules    ClassWeeklySchedule[]
-  sessions           ClassSession[]
-  scheduleGenerations ScheduleGeneration[]
-  placements         EnrollmentPlacement[]
-  assignments        Assignment[]
-  announcements      Announcement[]
-  program            Program             @relation(fields: [programId], references: [id], onDelete: Restrict)
-  registrationOrders RegistrationOrder[]
-  enrollments        Enrollment[]
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
+  id                    String                @id @default(cuid()) @db.VarChar(191)
+  programId             String                @db.VarChar(191)
+  name                  String                @db.VarChar(255)
+  capacity              Int
+  isOpen                Boolean               @default(true)
+  isActive              Boolean               @default(true)
+  monthlyFee            Decimal               @db.Decimal(14, 2)
+  teacherId             String?               @db.VarChar(191)
+  roomId                String?               @db.VarChar(191)
+  scheduleConfirmedAt   DateTime?
+  scheduleConfirmedById String?               @db.VarChar(191)
+  teacher               User?                 @relation("ClassTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  room                  Room?                 @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  scheduleConfirmedBy   User?                 @relation("ScheduleConfirmedBy", fields: [scheduleConfirmedById], references: [id], onDelete: Restrict)
+  weeklySchedules       ClassWeeklySchedule[]
+  sessions              ClassSession[]
+  scheduleGenerations   ScheduleGeneration[]
+  placements            EnrollmentPlacement[]
+  assignments           Assignment[]
+  announcements         Announcement[]
+  program               Program               @relation(fields: [programId], references: [id], onDelete: Restrict)
+  registrationOrders    RegistrationOrder[]
+  enrollments           Enrollment[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
 
   @@index([programId, isOpen])
+  @@index([roomId])
+  @@index([scheduleConfirmedById])
   @@map("classes")
+}
+
+model Room {
+  id        String         @id @default(cuid()) @db.VarChar(191)
+  name      String         @unique @db.VarChar(191)
+  capacity  Int
+  isActive  Boolean        @default(true)
+  classes   Class[]
+  sessions  ClassSession[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@map("rooms")
 }
 
 model ClassWeeklySchedule {
@@ -217,36 +290,35 @@ model ClassWeeklySchedule {
 }
 
 model RegistrationOrder {
-  id                  String                @id @default(cuid()) @db.VarChar(191)
-  type                RegistrationType
-  parentEmail         String                @db.VarChar(255)
-  parentPhone         String?               @db.VarChar(32)
-  studentFullName     String                @db.VarChar(255)
-  studentGrade        Int
-  targetStudentId     String?               @db.VarChar(191)
-  classId             String                @db.VarChar(191)
-  packageMonths       Int
-  quotedAmount        Decimal               @db.Decimal(14, 2)
+  id                   String              @id @default(cuid()) @db.VarChar(191)
+  type                 RegistrationType
+  parentEmail          String              @db.VarChar(255)
+  parentPhone          String?             @db.VarChar(32)
+  studentFullName      String              @db.VarChar(255)
+  studentGrade         Int
+  targetStudentId      String?             @db.VarChar(191)
+  classId              String              @db.VarChar(191)
+  packageMonths        Int
+  quotedAmount         Decimal             @db.Decimal(14, 2)
   billSnapshot         Json?
-  currency            String                @default("VND") @db.VarChar(3)
-  startDate           DateTime?             @db.Date
-  endDate             DateTime?             @db.Date
-  status              RegistrationStatus    @default(DRAFT)
-  createdByManagerId  String                @db.VarChar(191)
-  confirmedAt         DateTime?
-  linkedAt            DateTime?
-  createIdempotencyKey String?              @db.VarChar(191)
-  createRequestHash   String?               @db.Char(64)
-  targetStudent       StudentProfile?       @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
-  class               Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdByManager    User                  @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
-  payment             Payment?
-  enrollment          Enrollment?
-  invitations         LinkInvitation[]
-  outboxEvents        OutboxEvent[]
-  idempotencyRecords  IdempotencyRecord[]
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
+  currency             String              @default("VND") @db.VarChar(3)
+  startDate            DateTime?           @db.Date
+  endDate              DateTime?           @db.Date
+  status               RegistrationStatus  @default(DRAFT)
+  createdByManagerId   String              @db.VarChar(191)
+  confirmedAt          DateTime?
+  linkedAt             DateTime?
+  createIdempotencyKey String?             @db.VarChar(191)
+  createRequestHash    String?             @db.Char(64)
+  targetStudent        StudentProfile?     @relation("TargetStudent", fields: [targetStudentId], references: [id], onDelete: Restrict)
+  class                Class               @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdByManager     User                @relation("OrderCreatedBy", fields: [createdByManagerId], references: [id], onDelete: Restrict)
+  payment              Payment?
+  enrollment           Enrollment?
+  invitations          LinkInvitation[]
+  idempotencyRecords   IdempotencyRecord[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
 
   @@unique([createdByManagerId, createIdempotencyKey])
   @@index([parentEmail])
@@ -257,17 +329,17 @@ model RegistrationOrder {
 }
 
 model Payment {
-  id                     String            @id @default(cuid()) @db.VarChar(191)
-  registrationOrderId    String            @unique @db.VarChar(191)
-  amount                 Decimal           @db.Decimal(14, 2)
-  currency               String            @default("VND") @db.VarChar(3)
-  status                 PaymentStatus     @default(CONFIRMED)
-  confirmedByManagerId   String            @db.VarChar(191)
-  confirmedAt            DateTime          @default(now())
-  receiptNumber          String            @unique @db.VarChar(191)
-  registrationOrder      RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  confirmedByManager     User              @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
-  createdAt              DateTime          @default(now())
+  id                   String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId  String            @unique @db.VarChar(191)
+  amount               Decimal           @db.Decimal(14, 2)
+  currency             String            @default("VND") @db.VarChar(3)
+  status               PaymentStatus     @default(CONFIRMED)
+  confirmedByManagerId String            @db.VarChar(191)
+  confirmedAt          DateTime          @default(now())
+  receiptNumber        String            @unique @db.VarChar(191)
+  registrationOrder    RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  confirmedByManager   User              @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
+  createdAt            DateTime          @default(now())
 
   @@index([confirmedByManagerId])
   @@index([confirmedAt])
@@ -275,14 +347,14 @@ model Payment {
 }
 
 model Enrollment {
-  id                  String            @id @default(cuid()) @db.VarChar(191)
-  registrationOrderId String            @unique @db.VarChar(191)
-  studentProfileId    String?           @db.VarChar(191)
-  classId             String            @db.VarChar(191)
+  id                  String                @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId String                @unique @db.VarChar(191)
+  studentProfileId    String?               @db.VarChar(191)
+  classId             String                @db.VarChar(191)
   packageMonths       Int
-  status              EnrollmentStatus  @default(PENDING_LINK)
-  startDate           DateTime?         @db.Date
-  endDate             DateTime?         @db.Date
+  status              EnrollmentStatus      @default(PENDING_LINK)
+  startDate           DateTime?             @db.Date
+  endDate             DateTime?             @db.Date
   activatedAt         DateTime?
   endedAt             DateTime?
   placements          EnrollmentPlacement[]
@@ -290,11 +362,11 @@ model Enrollment {
   participants        SessionParticipant[]
   recipients          AssignmentRecipient[]
   transfers           EnrollmentTransfer[]
-  registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  studentProfile      StudentProfile?   @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
-  class               Class             @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
+  registrationOrder   RegistrationOrder     @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  studentProfile      StudentProfile?       @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
+  class               Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
 
   @@index([classId, status])
   @@index([studentProfileId, status])
@@ -331,33 +403,33 @@ model CurriculumTrack {
 }
 
 model CurriculumUnit {
-  id          String               @id @default(cuid()) @db.VarChar(191)
-  trackId     String               @db.VarChar(191)
-  programId   String               @db.VarChar(191)
-  designerId  String               @db.VarChar(191)
-  basedOnId   String?              @db.VarChar(191)
-  version     Int                  @default(1)
-  revision    Int                  @default(1)
-  submittedAt DateTime?
-  reviewedAt DateTime?
-  reviewedById String? @db.VarChar(191)
-  reviewNote String? @db.Text
-  title       String               @db.VarChar(255)
-  fromDate    DateTime             @db.Date
-  toDate      DateTime             @db.Date
-  status      CurriculumUnitStatus @default(DRAFT)
-  approvedAt  DateTime?
-  track       CurriculumTrack      @relation(fields: [trackId], references: [id], onDelete: Restrict)
-  program     Program              @relation(fields: [programId], references: [id], onDelete: Restrict)
-  designer    User                 @relation(fields: [designerId], references: [id], onDelete: Restrict)
-  basedOn     CurriculumUnit?      @relation("CurriculumUnitVersion", fields: [basedOnId], references: [id], onDelete: Restrict)
-  revisions   CurriculumUnit[]     @relation("CurriculumUnitVersion")
-  lessons     Lesson[]
-  generations ScheduleGeneration[]
+  id             String                    @id @default(cuid()) @db.VarChar(191)
+  trackId        String                    @db.VarChar(191)
+  programId      String                    @db.VarChar(191)
+  designerId     String                    @db.VarChar(191)
+  basedOnId      String?                   @db.VarChar(191)
+  version        Int                       @default(1)
+  revision       Int                       @default(1)
+  submittedAt    DateTime?
+  reviewedAt     DateTime?
+  reviewedById   String?                   @db.VarChar(191)
+  reviewNote     String?                   @db.Text
+  title          String                    @db.VarChar(255)
+  fromDate       DateTime                  @db.Date
+  toDate         DateTime                  @db.Date
+  status         CurriculumUnitStatus      @default(DRAFT)
+  approvedAt     DateTime?
+  track          CurriculumTrack           @relation(fields: [trackId], references: [id], onDelete: Restrict)
+  program        Program                   @relation(fields: [programId], references: [id], onDelete: Restrict)
+  designer       User                      @relation(fields: [designerId], references: [id], onDelete: Restrict)
+  basedOn        CurriculumUnit?           @relation("CurriculumUnitVersion", fields: [basedOnId], references: [id], onDelete: Restrict)
+  revisions      CurriculumUnit[]          @relation("CurriculumUnitVersion")
+  lessons        Lesson[]
+  generations    ScheduleGeneration[]
   importPreviews CurriculumImportPreview[]
-  importCommits CurriculumImportCommit[]
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
+  importCommits  CurriculumImportCommit[]
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
 
   @@unique([programId, fromDate, toDate, version])
   @@index([programId, status])
@@ -366,28 +438,30 @@ model CurriculumUnit {
 }
 
 model CurriculumImportPreview {
-  id String @id @default(cuid()) @db.VarChar(191)
-  unitId String @db.VarChar(191)
-  actorUserId String @db.VarChar(191)
+  id               String         @id @default(cuid()) @db.VarChar(191)
+  unitId           String         @db.VarChar(191)
+  actorUserId      String         @db.VarChar(191)
   expectedRevision Int
-  mode String @db.VarChar(16)
-  rows Json
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-  unit CurriculumUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  mode             String         @db.VarChar(16)
+  rows             Json
+  expiresAt        DateTime
+  createdAt        DateTime       @default(now())
+  unit             CurriculumUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
   @@index([unitId, expiresAt])
   @@map("curriculum_import_previews")
 }
 
 model CurriculumImportCommit {
-  id String @id @default(cuid()) @db.VarChar(191)
-  unitId String @db.VarChar(191)
-  actorUserId String @db.VarChar(191)
-  key String @db.VarChar(191)
-  requestHash String @db.Char(64)
-  response Json
-  createdAt DateTime @default(now())
-  unit CurriculumUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  id          String         @id @default(cuid()) @db.VarChar(191)
+  unitId      String         @db.VarChar(191)
+  actorUserId String         @db.VarChar(191)
+  key         String         @db.VarChar(191)
+  requestHash String         @db.Char(64)
+  response    Json
+  createdAt   DateTime       @default(now())
+  unit        CurriculumUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
   @@unique([unitId, key])
   @@map("curriculum_import_commits")
 }
@@ -462,97 +536,105 @@ enum FeedbackStatus {
 }
 
 model Lesson {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  programId    String @db.VarChar(191)
-  designerId   String @db.VarChar(191)
-  title        String @db.VarChar(255)
-  content      String @db.LongText
-  sequence     Int
-  unitId       String? @db.VarChar(191)
-  kind         CurriculumItemKind @default(LESSON)
-  monthKey     String? @db.VarChar(7)
-  basedOnId    String? @db.VarChar(191)
-  basedOn      Lesson? @relation("LessonRevision", fields: [basedOnId], references: [id], onDelete: Restrict)
-  revisions    Lesson[] @relation("LessonRevision")
+  id               String               @id @default(cuid()) @db.VarChar(191)
+  programId        String               @db.VarChar(191)
+  designerId       String               @db.VarChar(191)
+  title            String               @db.VarChar(255)
+  content          String               @db.LongText
+  sequence         Int
+  unitId           String?              @db.VarChar(191)
+  kind             CurriculumItemKind   @default(LESSON)
+  monthKey         String?              @db.VarChar(7)
+  basedOnId        String?              @db.VarChar(191)
+  basedOn          Lesson?              @relation("LessonRevision", fields: [basedOnId], references: [id], onDelete: Restrict)
+  revisions        Lesson[]             @relation("LessonRevision")
   resolvedFeedback CurriculumFeedback[] @relation("FeedbackResolution")
-  status       LessonStatus @default(DRAFT)
-  program      Program @relation(fields: [programId], references: [id], onDelete: Restrict)
-  unit         CurriculumUnit? @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  designer     User @relation(fields: [designerId], references: [id], onDelete: Restrict)
-  sessions     ClassSession[]
-  feedback     CurriculumFeedback[]
-  createdAt    DateTime @default(now())
-  @@index([programId, sequence])
+  status           LessonStatus         @default(DRAFT)
+  program          Program              @relation(fields: [programId], references: [id], onDelete: Restrict)
+  unit             CurriculumUnit?      @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  designer         User                 @relation(fields: [designerId], references: [id], onDelete: Restrict)
+  sessions         ClassSession[]
+  feedback         CurriculumFeedback[]
+  createdAt        DateTime             @default(now())
+
   @@unique([unitId, kind, sequence])
   @@unique([unitId, kind, monthKey])
+  @@index([programId, sequence])
   @@map("lessons")
 }
 
 model CurriculumFeedback {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  lessonId     String @db.VarChar(191)
-  teacherId    String @db.VarChar(191)
-  content      String @db.Text
-  status       FeedbackStatus @default(OPEN)
-  response     String? @db.Text
-  resolutionLessonId String? @db.VarChar(191)
-  resolutionLesson Lesson? @relation("FeedbackResolution", fields: [resolutionLessonId], references: [id], onDelete: Restrict)
-  lesson       Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                 String         @id @default(cuid()) @db.VarChar(191)
+  lessonId           String         @db.VarChar(191)
+  teacherId          String         @db.VarChar(191)
+  content            String         @db.Text
+  status             FeedbackStatus @default(OPEN)
+  response           String?        @db.Text
+  resolutionLessonId String?        @db.VarChar(191)
+  resolutionLesson   Lesson?        @relation("FeedbackResolution", fields: [resolutionLessonId], references: [id], onDelete: Restrict)
+  lesson             Lesson         @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
   @@index([lessonId, status])
   @@map("curriculum_feedback")
 }
 
 model EnrollmentPlacement {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  enrollmentId String @db.VarChar(191)
-  classId      String @db.VarChar(191)
+  id            String     @id @default(cuid()) @db.VarChar(191)
+  enrollmentId  String     @db.VarChar(191)
+  classId       String     @db.VarChar(191)
   effectiveFrom DateTime
   effectiveTo   DateTime?
-  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
-  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+  enrollment    Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  class         Class      @relation(fields: [classId], references: [id], onDelete: Restrict)
+
   @@index([classId, effectiveFrom, effectiveTo])
   @@index([enrollmentId, effectiveFrom])
   @@map("enrollment_placements")
 }
 
 model EnrollmentTransfer {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  enrollmentId String @db.VarChar(191)
-  fromClassId  String @db.VarChar(191)
-  toClassId    String @db.VarChar(191)
+  id           String     @id @default(cuid()) @db.VarChar(191)
+  enrollmentId String     @db.VarChar(191)
+  fromClassId  String     @db.VarChar(191)
+  toClassId    String     @db.VarChar(191)
   effectiveAt  DateTime
-  managerId    String @db.VarChar(191)
-  reason       String @db.Text
+  managerId    String     @db.VarChar(191)
+  reason       String     @db.Text
   enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
-  createdAt    DateTime @default(now())
+  createdAt    DateTime   @default(now())
+
   @@index([enrollmentId, effectiveAt])
   @@map("enrollment_transfers")
 }
 
 model ClassSession {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  classId      String @db.VarChar(191)
-  lessonId     String @db.VarChar(191)
-  teacherId    String @db.VarChar(191)
-  generationId String? @db.VarChar(191)
+  id           String               @id @default(cuid()) @db.VarChar(191)
+  classId      String               @db.VarChar(191)
+  lessonId     String               @db.VarChar(191)
+  teacherId    String               @db.VarChar(191)
+  roomId       String?              @db.VarChar(191)
+  generationId String?              @db.VarChar(191)
   startsAt     DateTime
   endsAt       DateTime
-  status       SessionStatus @default(SCHEDULED)
-  summary      String? @db.Text
-  cancelReason String? @db.Text
-  cancelledAt DateTime?
-  revision Int @default(1)
-  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
-  lesson       Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
-  teacher      User @relation("SessionTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
-  generation   ScheduleGeneration? @relation(fields: [generationId], references: [id], onDelete: Restrict)
+  status       SessionStatus        @default(SCHEDULED)
+  summary      String?              @db.Text
+  cancelReason String?              @db.Text
+  cancelledAt  DateTime?
+  revision     Int                  @default(1)
+  class        Class                @relation(fields: [classId], references: [id], onDelete: Restrict)
+  lesson       Lesson               @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  teacher      User                 @relation("SessionTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  room         Room?                @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  generation   ScheduleGeneration?  @relation(fields: [generationId], references: [id], onDelete: Restrict)
   participants SessionParticipant[]
   leaves       LeaveRequest[]
-  mutations SessionMutation[]
+  mutations    SessionMutation[]
+
   @@unique([classId, startsAt])
   @@index([teacherId, startsAt])
+  @@index([roomId, startsAt])
   @@index([generationId])
   @@map("class_sessions")
 }
@@ -578,224 +660,240 @@ model ScheduleGeneration {
 }
 
 model SessionMutation {
-  id String @id @default(cuid()) @db.VarChar(191)
-  sessionId String @db.VarChar(191)
-  actorUserId String @db.VarChar(191)
-  key String @db.VarChar(191)
-  requestHash String @db.Char(64)
-  response Json
-  createdAt DateTime @default(now())
-  session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  id          String       @id @default(cuid()) @db.VarChar(191)
+  sessionId   String       @db.VarChar(191)
+  actorUserId String       @db.VarChar(191)
+  key         String       @db.VarChar(191)
+  requestHash String       @db.Char(64)
+  response    Json
+  createdAt   DateTime     @default(now())
+  session     ClassSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+
   @@unique([sessionId, key])
   @@map("session_mutations")
 }
 
 model SchedulePreview {
-  id String @id @default(cuid()) @db.VarChar(191)
-  classId String @db.VarChar(191)
-  unitId String @db.VarChar(191)
-  actorUserId String @db.VarChar(191)
-  fromDate DateTime @db.Date
-  toDate DateTime @db.Date
-  snapshotHash String @db.Char(64)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid()) @db.VarChar(191)
+  classId      String   @db.VarChar(191)
+  unitId       String   @db.VarChar(191)
+  actorUserId  String   @db.VarChar(191)
+  fromDate     DateTime @db.Date
+  toDate       DateTime @db.Date
+  snapshotHash String   @db.Char(64)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
   @@index([classId, expiresAt])
   @@map("schedule_previews")
 }
 
 model SessionParticipant {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  sessionId    String @db.VarChar(191)
-  enrollmentId String @db.VarChar(191)
-  kind         ParticipantKind @default(REGULAR)
-  attendance   AttendanceStatus @default(UNMARKED)
-  cancelled    Boolean @default(false)
-  session      ClassSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
-  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
-  sourceBookings MakeupBooking[] @relation("OriginalParticipant")
-  replacementBooking MakeupBooking? @relation("ReplacementParticipant")
+  id                  String           @id @default(cuid()) @db.VarChar(191)
+  sessionId           String           @db.VarChar(191)
+  enrollmentId        String           @db.VarChar(191)
+  kind                ParticipantKind  @default(REGULAR)
+  attendance          AttendanceStatus @default(UNMARKED)
+  cancelled           Boolean          @default(false)
+  session             ClassSession     @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  enrollment          Enrollment       @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  sourceBookings      MakeupBooking[]  @relation("OriginalParticipant")
+  replacementBookings MakeupBooking[]  @relation("ReplacementParticipant")
+
   @@unique([sessionId, enrollmentId])
   @@map("session_participants")
 }
 
 model MakeupBooking {
-  id                    String @id @default(cuid()) @db.VarChar(191)
-  originalParticipantId String @db.VarChar(191)
-  activeOriginalId      String? @unique @db.VarChar(191)
-  replacementParticipantId String @unique @db.VarChar(191)
-  managerId             String @db.VarChar(191)
-  status                MakeupStatus @default(BOOKED)
-  original              SessionParticipant @relation("OriginalParticipant", fields: [originalParticipantId], references: [id], onDelete: Restrict)
-  replacement           SessionParticipant @relation("ReplacementParticipant", fields: [replacementParticipantId], references: [id], onDelete: Restrict)
-  createdAt             DateTime @default(now())
+  id                       String             @id @default(cuid()) @db.VarChar(191)
+  originalParticipantId    String             @db.VarChar(191)
+  activeOriginalId         String?            @unique @db.VarChar(191)
+  replacementParticipantId String             @db.VarChar(191)
+  managerId                String             @db.VarChar(191)
+  status                   MakeupStatus       @default(BOOKED)
+  original                 SessionParticipant @relation("OriginalParticipant", fields: [originalParticipantId], references: [id], onDelete: Restrict)
+  replacement              SessionParticipant @relation("ReplacementParticipant", fields: [replacementParticipantId], references: [id], onDelete: Restrict)
+  createdAt                DateTime           @default(now())
+
   @@index([originalParticipantId])
+  @@index([replacementParticipantId])
   @@map("makeup_bookings")
 }
 
 model LeaveRequest {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  enrollmentId String @db.VarChar(191)
-  sessionId    String? @db.VarChar(191)
-  kind         LeaveKind
-  fromDate     DateTime @db.Date
-  toDate       DateTime @db.Date
-  reason       String @db.Text
-  requestedById String @db.VarChar(191)
-  decidedById  String? @db.VarChar(191)
-  decisionNote String? @db.Text
-  status       RequestStatus @default(PENDING)
-  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
-  session      ClassSession? @relation(fields: [sessionId], references: [id], onDelete: Restrict)
-  createdAt    DateTime @default(now())
+  id            String        @id @default(cuid()) @db.VarChar(191)
+  enrollmentId  String        @db.VarChar(191)
+  sessionId     String?       @db.VarChar(191)
+  kind          LeaveKind
+  fromDate      DateTime      @db.Date
+  toDate        DateTime      @db.Date
+  reason        String        @db.Text
+  requestedById String        @db.VarChar(191)
+  decidedById   String?       @db.VarChar(191)
+  decisionNote  String?       @db.Text
+  status        RequestStatus @default(PENDING)
+  enrollment    Enrollment    @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  session       ClassSession? @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  createdAt     DateTime      @default(now())
+
   @@index([enrollmentId, status, fromDate, toDate])
   @@map("leave_requests")
 }
 
 model Assignment {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  classId      String @db.VarChar(191)
-  teacherId    String @db.VarChar(191)
-  title        String @db.VarChar(255)
-  instructions String @db.Text
-  dueAt        DateTime
-  maxAttempts  Int @default(1)
-  status       AssignmentStatus @default(DRAFT)
+  id                 String                @id @default(cuid()) @db.VarChar(191)
+  classId            String                @db.VarChar(191)
+  teacherId          String                @db.VarChar(191)
+  title              String                @db.VarChar(255)
+  instructions       String                @db.Text
+  dueAt              DateTime
+  maxAttempts        Int                   @default(1)
+  status             AssignmentStatus      @default(DRAFT)
   answersPublishedAt DateTime?
-  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
-  questions    AssignmentQuestion[]
-  recipients   AssignmentRecipient[]
-  createdAt    DateTime @default(now())
+  class              Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
+  questions          AssignmentQuestion[]
+  recipients         AssignmentRecipient[]
+  createdAt          DateTime              @default(now())
+
   @@index([classId, status])
   @@map("assignments")
 }
 
 model AssignmentQuestion {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  assignmentId String @db.VarChar(191)
-  position     Int
-  kind         QuestionKind
-  prompt       String @db.Text
-  choices      Json?
-  correctAnswer String? @db.Text
-  rubric       String? @db.Text
-  maxScore     Float
-  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  id            String       @id @default(cuid()) @db.VarChar(191)
+  assignmentId  String       @db.VarChar(191)
+  position      Int
+  kind          QuestionKind
+  prompt        String       @db.Text
+  choices       Json?
+  correctAnswer String?      @db.Text
+  rubric        String?      @db.Text
+  maxScore      Float
+  assignment    Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+
   @@unique([assignmentId, position])
   @@map("assignment_questions")
 }
 
 model AssignmentRecipient {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  assignmentId String @db.VarChar(191)
-  enrollmentId String @db.VarChar(191)
-  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
-  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  id           String       @id @default(cuid()) @db.VarChar(191)
+  assignmentId String       @db.VarChar(191)
+  enrollmentId String       @db.VarChar(191)
+  assignment   Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  enrollment   Enrollment   @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
   submissions  Submission[]
+
   @@unique([assignmentId, enrollmentId])
   @@map("assignment_recipients")
 }
 
 model Submission {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  recipientId  String @db.VarChar(191)
-  attemptNo    Int
-  answers      Json
-  submittedAt  DateTime @default(now())
-  recipient    AssignmentRecipient @relation(fields: [recipientId], references: [id], onDelete: Restrict)
-  grades       GradeReview[]
-  jobs         GradingJob[]
-  files        SubmissionFile[]
+  id          String              @id @default(cuid()) @db.VarChar(191)
+  recipientId String              @db.VarChar(191)
+  attemptNo   Int
+  answers     Json
+  submittedAt DateTime            @default(now())
+  recipient   AssignmentRecipient @relation(fields: [recipientId], references: [id], onDelete: Restrict)
+  grades      GradeReview[]
+  jobs        GradingJob[]
+  files       SubmissionFile[]
+
   @@unique([recipientId, attemptNo])
   @@map("submissions")
 }
 
 model GradeReview {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  submissionId String @db.VarChar(191)
+  id           String      @id @default(cuid()) @db.VarChar(191)
+  submissionId String      @db.VarChar(191)
   revision     Int
-  reviewerId   String @db.VarChar(191)
+  reviewerId   String      @db.VarChar(191)
   status       GradeStatus @default(DRAFT)
   scores       Json
   totalScore   Float
-  feedback     String @db.Text
+  feedback     String      @db.Text
   publishedAt  DateTime?
-  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
-  createdAt    DateTime @default(now())
+  submission   Submission  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  createdAt    DateTime    @default(now())
+
   @@unique([submissionId, revision])
   @@map("grade_reviews")
 }
 
 model GradingJob {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  submissionId String @db.VarChar(191)
-  status       JobStatus @default(QUEUED)
+  id           String     @id @default(cuid()) @db.VarChar(191)
+  submissionId String     @db.VarChar(191)
+  status       JobStatus  @default(QUEUED)
   result       Json?
-  error        String? @db.Text
+  error        String?    @db.Text
   startedAt    DateTime?
   submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
-  createdAt    DateTime @default(now())
+  createdAt    DateTime   @default(now())
+
   @@index([status, createdAt])
   @@map("grading_jobs")
 }
 
 model FileAsset {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  ownerId      String @db.VarChar(191)
-  storageKey   String @unique @db.VarChar(255)
-  name         String @db.VarChar(255)
-  mimeType     String @db.VarChar(128)
-  size         Int
-  submissions  SubmissionFile[]
-  createdAt    DateTime @default(now())
+  id          String           @id @default(cuid()) @db.VarChar(191)
+  ownerId     String           @db.VarChar(191)
+  storageKey  String           @unique @db.VarChar(255)
+  name        String           @db.VarChar(255)
+  mimeType    String           @db.VarChar(128)
+  size        Int
+  submissions SubmissionFile[]
+  createdAt   DateTime         @default(now())
+
   @@index([ownerId])
   @@map("file_assets")
 }
 
 model SubmissionFile {
-  submissionId String @db.VarChar(191)
-  fileId       String @db.VarChar(191)
+  submissionId String     @db.VarChar(191)
+  fileId       String     @db.VarChar(191)
   submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
-  file         FileAsset @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  file         FileAsset  @relation(fields: [fileId], references: [id], onDelete: Restrict)
+
   @@id([submissionId, fileId])
   @@map("submission_files")
 }
 
 model LearningReport {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  teacherId    String @db.VarChar(191)
-  classId      String @db.VarChar(191)
-  snapshot     Json
-  aiSummary    String? @db.Text
-  createdAt    DateTime @default(now())
+  id        String   @id @default(cuid()) @db.VarChar(191)
+  teacherId String   @db.VarChar(191)
+  classId   String   @db.VarChar(191)
+  snapshot  Json
+  aiSummary String?  @db.Text
+  createdAt DateTime @default(now())
+
   @@index([teacherId, createdAt])
   @@map("learning_reports")
 }
 
 model Announcement {
-  id           String @id @default(cuid()) @db.VarChar(191)
-  classId      String @db.VarChar(191)
-  managerId    String @db.VarChar(191)
-  title        String @db.VarChar(255)
-  content      String @db.Text
-  class        Class @relation(fields: [classId], references: [id], onDelete: Restrict)
-  createdAt    DateTime @default(now())
+  id        String   @id @default(cuid()) @db.VarChar(191)
+  classId   String   @db.VarChar(191)
+  managerId String   @db.VarChar(191)
+  title     String   @db.VarChar(255)
+  content   String   @db.Text
+  class     Class    @relation(fields: [classId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+
   @@index([classId, createdAt])
   @@map("announcements")
 }
 
 model LinkInvitation {
-  id                    String            @id @default(cuid()) @db.VarChar(191)
-  registrationOrderId   String            @db.VarChar(191)
-  tokenHash             String            @unique @db.Char(64)
-  expectedParentEmail   String            @db.VarChar(255)
-  status                InvitationStatus  @default(ACTIVE)
-  expiresAt             DateTime
-  usedAt                DateTime?
-  usedByUserId          String?           @db.VarChar(191)
-  registrationOrder     RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
-  usedByUser             User?             @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
-  createdAt             DateTime          @default(now())
+  id                  String            @id @default(cuid()) @db.VarChar(191)
+  registrationOrderId String            @db.VarChar(191)
+  tokenHash           String            @unique @db.Char(64)
+  expectedParentEmail String            @db.VarChar(255)
+  status              InvitationStatus  @default(ACTIVE)
+  expiresAt           DateTime
+  usedAt              DateTime?
+  usedByUserId        String?           @db.VarChar(191)
+  registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
+  usedByUser          User?             @relation("InvitationUsedBy", fields: [usedByUserId], references: [id], onDelete: Restrict)
+  createdAt           DateTime          @default(now())
 
   @@index([registrationOrderId, status])
   @@index([expectedParentEmail])
@@ -803,17 +901,21 @@ model LinkInvitation {
 }
 
 model OutboxEvent {
-  id                  String            @id @default(cuid()) @db.VarChar(191)
-  eventType           String            @db.VarChar(191)
-  aggregateId         String            @db.VarChar(191)
-  payload             Json
-  status              OutboxStatus      @default(PENDING)
-  attemptCount        Int               @default(0)
-  nextAttemptAt       DateTime          @default(now())
-  lastError           String?           @db.Text
-  registrationOrder   RegistrationOrder @relation(fields: [aggregateId], references: [id], onDelete: Restrict)
-  createdAt           DateTime          @default(now())
-  sentAt              DateTime?
+  id            String       @id @default(cuid()) @db.VarChar(191)
+  eventType     String       @db.VarChar(191)
+  aggregateType String       @db.VarChar(191)
+  aggregateId   String       @db.VarChar(191)
+  recipient     String       @db.VarChar(255)
+  subject       String       @db.VarChar(255)
+  dedupeKey     String       @unique @db.VarChar(191)
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attemptCount  Int          @default(0)
+  maxAttempts   Int          @default(5)
+  nextAttemptAt DateTime     @default(now())
+  lastError     String?      @db.Text
+  createdAt     DateTime     @default(now())
+  sentAt        DateTime?
 
   @@index([status, nextAttemptAt])
   @@index([aggregateId])
@@ -843,8 +945,8 @@ model IdempotencyRecord {
   scope               String            @db.VarChar(191)
   key                 String            @db.VarChar(191)
   registrationOrderId String            @db.VarChar(191)
-  actorUserId         String?             @db.VarChar(191)
-  requestHash         String?             @db.Char(64)
+  actorUserId         String?           @db.VarChar(191)
+  requestHash         String?           @db.Char(64)
   response            Json
   registrationOrder   RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
   createdAt           DateTime          @default(now())
