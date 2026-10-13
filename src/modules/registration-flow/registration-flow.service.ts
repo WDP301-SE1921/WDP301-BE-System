@@ -674,21 +674,7 @@ export class RegistrationFlowService {
     this.assertNoScheduleOverlaps(schedules);
     return this.transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
-      const active = await tx.enrollment.count({
-        where: { classId, status: { not: 'ENDED' } },
-      });
-      this.assert(
-        !active,
-        'CLASS_SCHEDULE_LOCKED',
-        'Cannot change schedule while class has enrollments',
-      );
-      const futureSessions = await tx.classSession.count({ where: { classId } });
-      this.assert(
-        !futureSessions,
-        'CLASS_SCHEDULE_LOCKED',
-        'Cannot change weekly schedule after sessions have been generated',
-      );
-      const classroom = await tx.class.findUniqueOrThrow({ where: { id: classId } });
+      const classroom = await this.assertScheduleEditable(tx, classId);
       this.assert(
         schedules.length > 0 || !classroom.isOpen,
         'CLASS_NEEDS_SCHEDULE',
@@ -780,6 +766,15 @@ export class RegistrationFlowService {
       'SCHEDULE_CONFIRMED',
       'Unlock the confirmed schedule before editing',
     );
+    this.assert(
+      !(await this.isScheduleLocked(tx, classId)),
+      'CLASS_SCHEDULE_LOCKED',
+      'Weekly schedule is locked by enrollment or generated sessions',
+    );
+    return classroom;
+  }
+
+  private async isScheduleLocked(tx: Prisma.TransactionClient, classId: string): Promise<boolean> {
     const [enrollments, placements, sessions] = await Promise.all([
       tx.enrollment.count({ where: { classId, status: { not: 'ENDED' } } }),
       tx.enrollmentPlacement.count({
@@ -787,12 +782,7 @@ export class RegistrationFlowService {
       }),
       tx.classSession.count({ where: { classId } }),
     ]);
-    this.assert(
-      !enrollments && !placements && !sessions,
-      'CLASS_SCHEDULE_LOCKED',
-      'Weekly schedule is locked by enrollment or generated sessions',
-    );
-    return classroom;
+    return Boolean(enrollments || placements || sessions);
   }
 
   async deleteClass(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -1402,7 +1392,7 @@ export class RegistrationFlowService {
       ],
       AND: [{ OR: [{ status: 'ACTIVE' }, { status: 'ENDED', endedAt: { gt: at } }] }],
     };
-    const [items, total] = await Promise.all([
+    const [items, total, scheduleLocked] = await Promise.all([
       this.db.enrollment.findMany({
         where,
         select: {
@@ -1418,10 +1408,12 @@ export class RegistrationFlowService {
         take: page.limit,
       }),
       this.db.enrollment.count({ where }),
+      this.isScheduleLocked(this.db, id),
     ]);
     return {
       ...classroom,
       rosterAt: at.toISOString(),
+      scheduleLocked: Boolean(classroom.scheduleConfirmedAt) || scheduleLocked,
       enrollments: { items, page: page.page, limit: page.limit, total },
     };
   }

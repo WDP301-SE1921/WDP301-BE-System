@@ -32,18 +32,18 @@ Thứ tự đề xuất khi nối FE: tạo Subject → Program → Class và l�
 
 ## 1. Danh mục môn và khóa học
 
-| Phương thức và đường dẫn | Quyền | Ý nghĩa / dữ liệu chính |
-| --- | --- | --- |
-| `GET /subjects?search=` | Manager, Staff, Teacher, Designer | Danh sách môn, gồm `isActive` và số khóa đang dùng. |
-| `GET /subjects/:id` | Như trên | Chi tiết môn và các khóa liên quan. |
-| `POST /subjects` | Manager | Tạo môn: `{ "code": "MATH", "name": "Toán" }`. `code` được chuẩn hóa thành chữ hoa. |
-| `PATCH /subjects/:id` | Manager | Sửa `code`, `name`, `isActive`. Không đổi tên khi đã có giáo trình liên quan. |
-| `DELETE /subjects/:id` | Manager | Xóa khi chưa có khóa; nếu đã được dùng thì chuyển `isActive=false`. |
-| `GET /programs?search=&subjectId=&grade=&isActive=&page=&limit=` | Manager, Staff, Teacher, Designer | Danh sách khóa học. |
-| `GET /programs/:id` | Như trên | Chi tiết khóa, môn, lớp và các phiên bản giáo trình. |
-| `POST /programs` | Manager | Tạo khóa: `{ "name": "Toán 7", "subjectId": "...", "grade": 7 }`. Có thể dùng `subject` chuỗi cho client cũ. |
-| `PATCH /programs/:id` | Manager | Sửa `name`, `subjectId`/`subject`, `grade`, `isActive`. Không đổi môn/khối khi khóa đã có lớp, bài hoặc giáo trình. |
-| `DELETE /programs/:id` | Manager | Xóa khi chưa dùng; nếu đã dùng thì chuyển `isActive=false`. |
+| Phương thức và đường dẫn                                         | Quyền                             | Ý nghĩa / dữ liệu chính                                                                                             |
+| ---------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `GET /subjects?search=`                                          | Manager, Staff, Teacher, Designer | Danh sách môn, gồm `isActive` và số khóa đang dùng.                                                                 |
+| `GET /subjects/:id`                                              | Như trên                          | Chi tiết môn và các khóa liên quan.                                                                                 |
+| `POST /subjects`                                                 | Manager                           | Tạo môn: `{ "code": "MATH", "name": "Toán" }`. `code` được chuẩn hóa thành chữ hoa.                                 |
+| `PATCH /subjects/:id`                                            | Manager                           | Sửa `code`, `name`, `isActive`. Không đổi tên khi đã có giáo trình liên quan.                                       |
+| `DELETE /subjects/:id`                                           | Manager                           | Xóa khi chưa có khóa; nếu đã được dùng thì chuyển `isActive=false`.                                                 |
+| `GET /programs?search=&subjectId=&grade=&isActive=&page=&limit=` | Manager, Staff, Teacher, Designer | Danh sách khóa học.                                                                                                 |
+| `GET /programs/:id`                                              | Như trên                          | Chi tiết khóa, môn, lớp và các phiên bản giáo trình.                                                                |
+| `POST /programs`                                                 | Manager                           | Tạo khóa: `{ "name": "Toán 7", "subjectId": "...", "grade": 7 }`. Có thể dùng `subject` chuỗi cho client cũ.        |
+| `PATCH /programs/:id`                                            | Manager                           | Sửa `name`, `subjectId`/`subject`, `grade`, `isActive`. Không đổi môn/khối khi khóa đã có lớp, bài hoặc giáo trình. |
+| `DELETE /programs/:id`                                           | Manager                           | Xóa khi chưa dùng; nếu đã dùng thì chuyển `isActive=false`.                                                         |
 
 `programId` là khóa nối toàn bộ luồng sau: mỗi giáo trình thuộc **một khóa học cụ thể**. Manager duyệt giáo trình ở cấp khóa, chưa gắn với lớp; khi sinh buổi mới chọn lớp của đúng `programId`.
 
@@ -52,7 +52,7 @@ Thứ tự đề xuất khi nối FE: tạo Subject → Program → Class và l�
 | Phương thức và đường dẫn | Quyền | Ý nghĩa / dữ liệu chính |
 | --- | --- | --- |
 | `GET /classes` | Manager, Staff, Teacher, Parent | Danh sách; lọc bằng `programId`, `subject`, `grade`, `search`, `studentId`, `isOpen`, `isActive`, `page`, `limit`. Teacher chỉ thấy lớp mình dạy. |
-| `GET /classes/:id?at=&page=&limit=` | Manager, Staff, Teacher được phân công | Chi tiết lớp và roster có hiệu lực tại `at` (mặc định hiện tại). Response có `rosterAt`; transfer tương lai chỉ đổi roster từ đúng thời điểm hiệu lực. |
+| `GET /classes/:id?at=&page=&limit=` | Manager, Staff, Teacher được phân công | Chi tiết lớp và roster có hiệu lực tại `at` (mặc định hiện tại). Response có `rosterAt` và `scheduleLocked`; transfer tương lai chỉ đổi roster từ đúng thời điểm hiệu lực. |
 | `POST /classes` | Manager | Tạo lớp: `programId`, `name`, `capacity`, `monthlyFee`, tùy chọn `teacherId`; ban đầu đóng đăng ký. |
 | `PATCH /classes/:id` | Manager | Sửa lớp, phân giáo viên, `isOpen`, `isActive`. Muốn `isOpen=true` phải có lịch tuần và lớp đang hoạt động. |
 | `DELETE /classes/:id` | Manager | Xóa lớp chưa có dữ liệu phụ thuộc; lớp đã được dùng nên chuyển `isActive=false` qua PATCH sau khi xử lý dữ liệu liên quan. |
@@ -61,29 +61,29 @@ Thứ tự đề xuất khi nối FE: tạo Subject → Program → Class và l�
 | `PATCH /classes/:id/schedules/:scheduleId` | Manager | Sửa một khung giờ với đủ `weekday`, `startTime`, `endTime`. |
 | `DELETE /classes/:id/schedules/:scheduleId` | Manager | Xóa một khung giờ. |
 
-Lịch tuần là khuôn để sinh buổi học. Các thao tác sửa lịch bị khóa khi lớp có ghi danh hoặc đã sinh buổi; PATCH/DELETE từng khung giờ còn kiểm tra học viên được chuyển vào. **Giới hạn hiện tại:** PUT/POST thay toàn bộ lịch chỉ kiểm tra ghi danh gốc và buổi đã sinh, chưa kiểm tra riêng placement chuyển lớp. Client nên coi lịch của lớp có học viên chuyển vào là đã khóa cho đến khi backend bổ sung kiểm tra tương ứng.
+Lịch tuần là khuôn để sinh buổi học. PUT/POST/PATCH/DELETE lịch tuần đều dùng chung kiểm tra khóa khi lớp có ghi danh chưa kết thúc, placement chuyển vào của ghi danh chưa kết thúc, bất kỳ buổi đã sinh hoặc Teacher đã xác nhận lịch. `scheduleLocked` phản ánh các điều kiện này; mở khóa xác nhận không bỏ qua khóa do dữ liệu học vụ.
 
 ## 3. Soạn, gửi và duyệt giáo trình
 
 `CURRICULUM_DESIGNER` chỉ sửa giáo trình mình tạo khi còn `DRAFT`. `MANAGER` xem và duyệt. `TEACHER` chỉ xem giáo trình đã duyệt của khóa có lớp mình được phân công.
 
-| Phương thức và đường dẫn (đều có tiền tố `/academic`) | Quyền | Ý nghĩa / dữ liệu chính |
-| --- | --- | --- |
-| `POST /curriculum-units` | Designer | Tạo nháp: `programId`, `title`, `fromDate`, `toDate` (tối đa 366 ngày). |
-| `GET /curriculum-units` | Designer, Manager, Teacher | Lọc `programId`, `grade`, `subject`, `status`, `search`; đặt `paginated=true&page=1&limit=20` để nhận `{ items, page, limit, total }`. |
-| `GET /curriculum-units/:id` | Như trên, theo quyền sở hữu/phân công | Chi tiết gồm bài học và bài kiểm tra tháng. |
-| `PATCH /curriculum-units/:id` | Designer sở hữu nháp | Sửa `title`, `fromDate`, `toDate`; nên gửi `expectedRevision`. |
-| `POST /curriculum-units/:id/lessons` | Designer sở hữu nháp | Thêm bài: `title`, `content`, `sequence`, tùy chọn `expectedRevision`. |
-| `PATCH /curriculum-units/:id/lessons/:lessonId` | Designer sở hữu nháp | Sửa bài với các field như thêm bài. |
-| `DELETE /curriculum-units/:id/lessons/:lessonId` | Designer sở hữu nháp | Xóa bài/kiểm tra chưa có dữ liệu phụ thuộc; bài thường được đánh lại số thứ tự. |
-| `PUT /curriculum-units/:id/lesson-order` | Designer sở hữu nháp | `{ "orderedLessonIds": ["...", "..."], "expectedRevision": 1 }`; mảng phải chứa đủ mỗi bài thường đúng một lần. |
-| `POST /curriculum-units/:id/monthly-tests` | Designer sở hữu nháp | Tạo hoặc thay bài kiểm tra tháng: `monthKey` dạng `YYYY-MM`, `title`, `content`, tùy chọn `expectedRevision`. |
-| `POST /curriculum-units/:id/validation` | Người được xem giáo trình | Trả `ready`, `errors`, `revision`, số bài thường và bài kiểm tra. |
-| `POST /curriculum-units/:id/submit` | Designer sở hữu nháp | Kiểm tra cấu trúc rồi chuyển `DRAFT → PENDING_REVIEW`. |
-| `POST /curriculum-units/:id/request-changes` | Manager | `{ "reason": "..." }`; chuyển `PENDING_REVIEW → DRAFT`, lưu ghi chú. |
-| `POST /curriculum-units/:id/approve` | Manager | Chuyển `PENDING_REVIEW → APPROVED`; duyệt cả bài học/kiểm tra. |
-| `POST /curriculum-units/:id/revisions` | Designer sở hữu bản đã duyệt | Sao chép bản `APPROVED` thành phiên bản `DRAFT` mới. |
-| `DELETE /curriculum-units/:id` | Designer hoặc Manager theo trạng thái | Xóa nháp chưa có tham chiếu; Manager lưu trữ bản đã duyệt thành `ARCHIVED`. |
+| Phương thức và đường dẫn (đều có tiền tố `/academic`) | Quyền                                 | Ý nghĩa / dữ liệu chính                                                                                                                |
+| ----------------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /curriculum-units`                              | Designer                              | Tạo nháp: `programId`, `title`, `fromDate`, `toDate` (tối đa 366 ngày).                                                                |
+| `GET /curriculum-units`                               | Designer, Manager, Teacher            | Lọc `programId`, `grade`, `subject`, `status`, `search`; đặt `paginated=true&page=1&limit=20` để nhận `{ items, page, limit, total }`. |
+| `GET /curriculum-units/:id`                           | Như trên, theo quyền sở hữu/phân công | Chi tiết gồm bài học và bài kiểm tra tháng.                                                                                            |
+| `PATCH /curriculum-units/:id`                         | Designer sở hữu nháp                  | Sửa `title`, `fromDate`, `toDate`; nên gửi `expectedRevision`.                                                                         |
+| `POST /curriculum-units/:id/lessons`                  | Designer sở hữu nháp                  | Thêm bài: `title`, `content`, `sequence`, tùy chọn `expectedRevision`.                                                                 |
+| `PATCH /curriculum-units/:id/lessons/:lessonId`       | Designer sở hữu nháp                  | Sửa bài với các field như thêm bài.                                                                                                    |
+| `DELETE /curriculum-units/:id/lessons/:lessonId`      | Designer sở hữu nháp                  | Xóa bài/kiểm tra chưa có dữ liệu phụ thuộc; bài thường được đánh lại số thứ tự.                                                        |
+| `PUT /curriculum-units/:id/lesson-order`              | Designer sở hữu nháp                  | `{ "orderedLessonIds": ["...", "..."], "expectedRevision": 1 }`; mảng phải chứa đủ mỗi bài thường đúng một lần.                        |
+| `POST /curriculum-units/:id/monthly-tests`            | Designer sở hữu nháp                  | Tạo hoặc thay bài kiểm tra tháng: `monthKey` dạng `YYYY-MM`, `title`, `content`, tùy chọn `expectedRevision`.                          |
+| `POST /curriculum-units/:id/validation`               | Người được xem giáo trình             | Trả `ready`, `errors`, `revision`, số bài thường và bài kiểm tra.                                                                      |
+| `POST /curriculum-units/:id/submit`                   | Designer sở hữu nháp                  | Kiểm tra cấu trúc rồi chuyển `DRAFT → PENDING_REVIEW`.                                                                                 |
+| `POST /curriculum-units/:id/request-changes`          | Manager                               | `{ "reason": "..." }`; chuyển `PENDING_REVIEW → DRAFT`, lưu ghi chú.                                                                   |
+| `POST /curriculum-units/:id/approve`                  | Manager                               | Chuyển `PENDING_REVIEW → APPROVED`; duyệt cả bài học/kiểm tra.                                                                         |
+| `POST /curriculum-units/:id/revisions`                | Designer sở hữu bản đã duyệt          | Sao chép bản `APPROVED` thành phiên bản `DRAFT` mới.                                                                                   |
+| `DELETE /curriculum-units/:id`                        | Designer hoặc Manager theo trạng thái | Xóa nháp chưa có tham chiếu; Manager lưu trữ bản đã duyệt thành `ARCHIVED`.                                                            |
 
 Luồng trạng thái:
 
@@ -113,10 +113,10 @@ Lấy `data.id` và `data.revision` từ response, thêm bài/kiểm tra, gọi 
 
 ## 4. Nhập bài từ CSV
 
-| Phương thức và đường dẫn (tiền tố `/academic`) | Quyền | Cách dùng |
-| --- | --- | --- |
-| `POST /curriculum-units/:id/import-preview` | Designer sở hữu nháp | `multipart/form-data`: file field tên `file`, field `mode=APPEND` hoặc `REPLACE`. Trả `previewId`, `expectedRevision`, `expiresAt`, từng dòng và lỗi. |
-| `POST /curriculum-units/:id/import-commit` | Designer sở hữu nháp | Header `Idempotency-Key`; JSON gồm `previewId`, `expectedRevision`, `mode`, `rows` đúng như preview. |
+| Phương thức và đường dẫn (tiền tố `/academic`) | Quyền                | Cách dùng                                                                                                                                             |
+| ---------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /curriculum-units/:id/import-preview`    | Designer sở hữu nháp | `multipart/form-data`: file field tên `file`, field `mode=APPEND` hoặc `REPLACE`. Trả `previewId`, `expectedRevision`, `expiresAt`, từng dòng và lỗi. |
+| `POST /curriculum-units/:id/import-commit`     | Designer sở hữu nháp | Header `Idempotency-Key`; JSON gồm `previewId`, `expectedRevision`, `mode`, `rows` đúng như preview.                                                  |
 
 Header CSV bắt buộc có `kind,sequence,title,content,monthKey` (có thể đổi thứ tự cột). `kind` là `LESSON` hoặc `MONTHLY_TEST`. Bài thường dùng `sequence` bắt đầu từ 1; bài kiểm tra dùng `monthKey` như `2026-11`. File UTF-8, tối đa 5 MiB và 1.000 dòng dữ liệu; hỗ trợ BOM, dấu tiếng Việt, ô được quote và nội dung nhiều dòng. Số cột mỗi dòng phải khớp header.
 
@@ -165,11 +165,11 @@ Backend yêu cầu bản giáo trình `APPROVED`, cùng `programId` với lớp,
 
 ## 6. Đổi giờ và hủy từng buổi
 
-| Phương thức và đường dẫn (tiền tố `/academic`) | Quyền | Cách dùng |
-| --- | --- | --- |
-| `POST /sessions/:id/reschedule-preview` | Manager | Body `startsAt`, `endsAt`, `reason`, `expectedRevision`; kiểm tra khả năng đổi giờ. |
-| `POST /sessions/:id/reschedule` | Manager | Cùng body preview, thêm `Idempotency-Key`; giữ nguyên session ID, tăng revision, ghi audit. |
-| `POST /sessions/:id/cancel` | Manager | `{ "reason": "...", "expectedRevision": 1 }`, thêm `Idempotency-Key`; chuyển buổi sang `CANCELLED`, ghi audit. |
+| Phương thức và đường dẫn (tiền tố `/academic`) | Quyền   | Cách dùng                                                                                                      |
+| ---------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `POST /sessions/:id/reschedule-preview`        | Manager | Body `startsAt`, `endsAt`, `reason`, `expectedRevision`; kiểm tra khả năng đổi giờ.                            |
+| `POST /sessions/:id/reschedule`                | Manager | Cùng body preview, thêm `Idempotency-Key`; giữ nguyên session ID, tăng revision, ghi audit.                    |
+| `POST /sessions/:id/cancel`                    | Manager | `{ "reason": "...", "expectedRevision": 1 }`, thêm `Idempotency-Key`; chuyển buổi sang `CANCELLED`, ghi audit. |
 
 Chỉ xử lý buổi `SCHEDULED` ở tương lai. Khi đổi giờ, backend kiểm tra xung đột lớp/giáo viên, thứ tự bài và các dữ liệu học viên liên quan. Khi hủy, booking học bù, điểm danh đã ghi hoặc đơn nghỉ đang hiệu lực phải được xử lý trước. Lấy `revision` mới từ chi tiết buổi trước mỗi thao tác; nếu có người khác đã sửa, tải lại buổi và preview lại.
 

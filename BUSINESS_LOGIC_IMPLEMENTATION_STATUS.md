@@ -2,6 +2,8 @@
 
 Ngày đối chiếu: **12/10/2026**. Phạm vi: mã nguồn trong workspace WDP301-BE-System tại thời điểm lập tài liệu, bao gồm thay đổi chưa commit.
 
+**Cập nhật sau merge dev ngày 13/10/2026:** PUT/POST thay toàn bộ lịch tuần đã dùng chung `assertScheduleEditable` với PATCH/DELETE từng slot. Kiểm tra này giữ cả khóa do Teacher xác nhận và khóa do enrollment/placement/session. GET /classes/:id giữ roster theo `at` và bổ sung `scheduleLocked`, bao gồm cả trạng thái xác nhận. Vì vậy các ghi chú bên dưới về replace bỏ qua placement hoặc confirmation đã được khắc phục trong lần merge này; những giới hạn khác vẫn cần xử lý. Regression test bao gồm khóa replacement bởi placement chuyển vào và khóa PUT/POST bởi confirmation.
+
 Tài liệu này giải thích hệ thống đang làm gì, chạy theo trình tự nào, ghi dữ liệu nào và phần nào chưa hoàn thiện. “Có endpoint” không đồng nghĩa “đã đáp ứng toàn bộ nghiệp vụ”. Những giới hạn phát hiện qua đọc code được ghi ngay tại chức năng liên quan.
 
 **Đính chính báo cáo trước:** chưa có căn cứ để kết luận toàn bộ BE-01–BE-18 đã hoàn thành. Email, invitation, phân quyền Manager, phòng, đổi giáo viên, chuyên cần và khóa lịch vẫn còn những phần thiếu cụ thể được liệt kê dưới đây. Không coi kết quả test cũ là bằng chứng nghiệm thu tất cả API mới.
