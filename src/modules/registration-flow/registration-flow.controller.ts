@@ -22,6 +22,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import {
   ClassDto,
+  ClassRosterQueryDto,
   ClassScheduleSlotDto,
   ClassFilterDto,
   ConfirmPaymentDto,
@@ -37,8 +38,13 @@ import {
   ProgramDto,
   ProgramFilterDto,
   ReplaceClassSchedulesDto,
+  RoomDto,
+  SessionSubstitutionDto,
+  ScheduleConfirmationDto,
+  TeacherAssignmentDto,
   UpdateClassDto,
   UpdateProgramDto,
+  UpdateRoomDto,
   UpdateStudentDto,
 } from './dto/registration-flow.dto';
 import { RegistrationFlowService } from './registration-flow.service';
@@ -226,6 +232,67 @@ export class RegistrationFlowController {
     return this.flow.createClass(user, input);
   }
 
+  @Get('rooms')
+  @ApiOperation({ summary: 'List rooms used by classes and sessions' })
+  rooms(@CurrentUser() user: AuthenticatedUser): Promise<unknown> {
+    return this.flow.listRooms(user);
+  }
+
+  @Post('rooms')
+  @ApiOperation({ summary: 'Manager: create a room' })
+  createRoom(@CurrentUser() user: AuthenticatedUser, @Body() input: RoomDto): Promise<unknown> {
+    return this.flow.createRoom(user, input);
+  }
+
+  @Patch('rooms/:id')
+  @ApiOperation({ summary: 'Manager: update or deactivate a room' })
+  updateRoom(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateRoomDto,
+  ): Promise<unknown> {
+    return this.flow.updateRoom(user, id, input);
+  }
+
+  @Post('classes/:id/teacher-assignments')
+  @ApiOperation({ summary: 'Manager: replace a class teacher from an effective time' })
+  assignTeacher(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: TeacherAssignmentDto,
+  ): Promise<unknown> {
+    return this.flow.assignTeacher(user, id, input);
+  }
+
+  @Get('academic/sessions/:id/substitute-candidates')
+  @ApiOperation({ summary: 'Manager: list active teachers available for a session' })
+  substituteCandidates(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.flow.substituteCandidates(user, id);
+  }
+
+  @Post('academic/sessions/:id/substitutions')
+  @ApiOperation({ summary: 'Manager: assign a substitute to one scheduled session' })
+  substitute(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: SessionSubstitutionDto,
+  ): Promise<unknown> {
+    return this.flow.substitute(user, id, input);
+  }
+
+  @Put('classes/:id/schedule-confirmation')
+  @ApiOperation({ summary: 'Assigned teacher confirms; manager may unlock a class schedule' })
+  confirmSchedule(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ScheduleConfirmationDto,
+  ): Promise<unknown> {
+    return this.flow.confirmSchedule(user, id, input);
+  }
+
   @Patch('classes/:id')
   @ApiOperation({ summary: 'Manager: update a class and open/close registration' })
   updateClass(
@@ -250,7 +317,7 @@ export class RegistrationFlowController {
   classDetail(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Query() page: PageDto,
+    @Query() page: ClassRosterQueryDto,
   ): Promise<unknown> {
     return this.flow.getClass(user, id, page);
   }

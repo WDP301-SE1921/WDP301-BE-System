@@ -36,6 +36,16 @@ export class PageDto {
   limit = 20;
 }
 
+export class ClassRosterQueryDto extends PageDto {
+  @ApiPropertyOptional({
+    description: 'Roster effective instant. Defaults to the current time.',
+    example: '2026-10-12T10:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  at?: string;
+}
+
 export class CreateStudentDto {
   @ApiProperty({ example: 'Nguyen An' })
   @IsString()
@@ -200,6 +210,8 @@ export class ClassDto {
   @IsString()
   teacherId?: string;
 
+  @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string;
+
   @ApiProperty()
   @IsInt()
   @Min(1)
@@ -230,6 +242,8 @@ export class UpdateClassDto {
   @IsString()
   teacherId?: string | null;
 
+  @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string | null;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
@@ -249,6 +263,34 @@ export class UpdateClassDto {
   isOpen?: boolean;
 
   @ApiPropertyOptional() @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+export class RoomDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) name!: string;
+  @ApiProperty() @IsInt() @Min(1) @Max(10000) capacity!: number;
+}
+
+export class UpdateRoomDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(191) name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) @Max(10000) capacity?: number;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+export class TeacherAssignmentDto {
+  @ApiProperty() @IsString() @MinLength(1) teacherId!: string;
+  @ApiProperty() @IsDateString() effectiveAt!: string;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
+}
+
+export class SessionSubstitutionDto {
+  @ApiProperty() @IsString() @MinLength(1) teacherId!: string;
+  @ApiProperty() @IsInt() @Min(1) expectedRevision!: number;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
+}
+
+export class ScheduleConfirmationDto {
+  @ApiProperty() @IsBoolean() confirmed!: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(2000) reason?: string;
 }
 
 export class ClassScheduleSlotDto {

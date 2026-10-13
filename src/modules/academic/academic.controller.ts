@@ -23,13 +23,16 @@ import { AssessmentService } from './assessment.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
 import { AnnouncementsService } from './announcements.service';
+import { EmailDeliveriesService } from './email-deliveries.service';
 import { AcademicErrorsFilter } from './academic-errors.filter';
 import {
   AnnouncementDto,
+  AttendanceQueryDto,
   AssignmentDto,
   AttendanceDto,
   ClassDto,
   DecisionDto,
+  EndLeaveEarlyDto,
   FeedbackDto,
   GradeDto,
   LeaveDto,
@@ -42,6 +45,8 @@ import {
   PageDto,
   ProgramDto,
   RecipientsDto,
+  ReactivateStudentDto,
+  RescheduleMakeupDto,
   ReminderDto,
   ReportDto,
   ResolveFeedbackDto,
@@ -63,7 +68,20 @@ export class AcademicController {
     private readonly reports: ReportsService,
     private readonly storage: AcademicStorageService,
     private readonly announcements: AnnouncementsService,
+    private readonly emailDeliveries: EmailDeliveriesService,
   ) {}
+
+  @Get('email-deliveries')
+  @ApiOperation({ summary: 'Manager/staff: inspect persisted email deliveries' })
+  deliveries(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
+    return this.emailDeliveries.list(user, page);
+  }
+
+  @Post('email-deliveries/:id/retry')
+  @ApiOperation({ summary: 'Manager/staff: retry a failed or pending email delivery' })
+  retryDelivery(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.emailDeliveries.retry(user, id);
+  }
 
   @Post('programs')
   @ApiOperation({ summary: 'Manager: create prerequisite program' })
@@ -223,12 +241,39 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.workflows.cancelLeave(user, id);
   }
+  @Post('leaves/:id/end-early')
+  @ApiOperation({ summary: 'Staff: end an approved period pause early' })
+  endLeaveEarly(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: EndLeaveEarlyDto,
+  ): Promise<unknown> {
+    return this.workflows.endLeaveEarly(user, id, input);
+  }
   @Get('participants/:id/makeup-candidates') candidates(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Query() page: PageDto,
   ): Promise<unknown> {
     return this.workflows.makeupCandidates(user, id, page);
+  }
+  @Get('classes/:id/attendance-summary')
+  @ApiOperation({ summary: 'Teacher: attendance summary and history for an assigned class' })
+  attendanceSummary(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() query: AttendanceQueryDto,
+  ): Promise<unknown> {
+    return this.workflows.attendanceSummary(user, { ...query, classId: id });
+  }
+  @Get('me/students/:id/attendance')
+  @ApiOperation({ summary: 'Parent: attendance summary and history for one owned student' })
+  studentAttendance(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() query: AttendanceQueryDto,
+  ): Promise<unknown> {
+    return this.workflows.attendanceSummary(user, { ...query, studentId: id });
   }
   @Post('makeups') makeup(
     @CurrentUser() user: AuthenticatedUser,
@@ -241,6 +286,15 @@ export class AcademicController {
     @Param('id') id: string,
   ): Promise<unknown> {
     return this.workflows.cancelMakeup(user, id);
+  }
+  @Post('makeups/:id/reschedule')
+  @ApiOperation({ summary: 'Staff: atomically move a booked makeup seat' })
+  rescheduleMakeup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: RescheduleMakeupDto,
+  ): Promise<unknown> {
+    return this.workflows.rescheduleMakeup(user, id, input);
   }
   @Post('enrollments/:id/transfer') transfer(
     @CurrentUser() user: AuthenticatedUser,
@@ -260,6 +314,15 @@ export class AcademicController {
     @Param('id') id: string,
   ): Promise<unknown> {
     return this.workflows.endStudent(user, id);
+  }
+  @Post('students/:id/reactivate')
+  @ApiOperation({ summary: 'Staff: reactivate an inactive student profile for a new registration' })
+  reactivateStudent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ReactivateStudentDto,
+  ): Promise<unknown> {
+    return this.workflows.reactivateStudent(user, id, input);
   }
   @Post('assignments') assignment(
     @CurrentUser() user: AuthenticatedUser,

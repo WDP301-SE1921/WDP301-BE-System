@@ -59,7 +59,7 @@ Idempotency-Key: <uuid-once-per-operation>
 
 `data.sessions` chứa các buổi đã tạo, kèm thông tin bài. Frontend giữ nguyên key/body khi retry do timeout; cùng key và body trả cùng kết quả, cùng key với body khác trả `IDEMPOTENCY_CONFLICT`. Yêu cầu khác chồng lên buổi đã có trả `SCHEDULE_CONFLICT` và không tạo lịch dở dang. Không tự tạo danh sách điểm danh: gọi `POST /academic/sessions/:id/roster` khi cần, sau khi học sinh đã ghi danh.
 
-`GET /academic/scheduled-sessions?classId=...&fromDate=2027-01-04&toDate=2027-01-31&page=1&limit=20` trả buổi học và bài (`kind`, `monthKey`, `unitId`). MANAGER/STAFF xem lớp, TEACHER chỉ xem buổi được phân công, PARENT chỉ xem buổi nằm trong kỳ ghi danh của con, kể cả trước khi giáo viên chuẩn bị danh sách điểm danh. Phụ huynh dùng ngày giờ trả về để hiển thị lịch; nếu phụ huynh không gửi khoảng ngày, API mặc định từ hôm nay đến 30 ngày sau.
+`GET /academic/scheduled-sessions?studentId=...&classId=...&fromDate=2027-01-04&toDate=2027-01-31&page=1&limit=20` trả buổi học và bài (`kind`, `monthKey`, `unitId`). MANAGER/STAFF xem lớp, TEACHER chỉ xem buổi được phân công. PARENT có thể chọn một con bằng `studentId`; kết quả gồm lịch placement, học bù khác lớp và lịch sử hợp lệ, với `participations` chỉ thuộc con của Parent. Nếu Parent không gửi khoảng ngày, API mặc định từ hôm nay đến 30 ngày sau.
 
 ## Quy tắc và lỗi cần hiển thị
 
@@ -73,3 +73,10 @@ Idempotency-Key: <uuid-once-per-operation>
 - `UNIT_LOCKED`: nội dung đã duyệt; tạo phiên bản mới. Buổi đã sinh tiếp tục trỏ tới phiên bản cũ.
 
 Schema và migration mới chỉ bổ sung bảng/cột. Dữ liệu `Lesson`, `ClassSession` và các API học vụ cũ không bị đổi hoặc xóa.
+
+## Phòng, giáo viên và xác nhận lịch
+
+- Manager quản lý phòng qua `GET/POST /rooms`, `PATCH /rooms/:id`. Phòng phải hoạt động, đủ sức chứa; session sinh mới giữ `roomId` và kiểm tra trùng phòng.
+- `POST /classes/:id/teacher-assignments` đổi giáo viên từ `effectiveAt` và chỉ cập nhật các buổi tương lai. `GET /academic/sessions/:id/substitute-candidates` cùng `POST /academic/sessions/:id/substitutions` xử lý dạy thay một buổi.
+- Teacher phụ trách xác nhận bằng `PUT /classes/:id/schedule-confirmation { "confirmed": true }`; Manager mở khóa bằng `{ "confirmed": false, "reason": "..." }` trước khi sửa lịch tuần.
+- Luồng mời Teacher/Manager dùng `/teacher-invitations`, `/manager-invitations`, `/account-invitations/accept`, review/revoke. Account vừa accept vẫn `DISABLED` đến khi Manager duyệt.

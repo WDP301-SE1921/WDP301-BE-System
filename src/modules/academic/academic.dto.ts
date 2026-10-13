@@ -60,6 +60,10 @@ export class MakeupSourceFilterDto extends PageDto {
   @MaxLength(191)
   studentId?: string;
 }
+export class AttendanceQueryDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
+}
 export class ProgramDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) name!: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(100) subject!: string;
@@ -103,8 +107,17 @@ export class TransferDto extends ReasonDto {
   @ApiProperty() @IsString() @MinLength(1) targetClassId!: string;
   @ApiProperty() @IsDateString() effectiveAt!: string;
 }
+export class ReactivateStudentDto extends ReasonDto {}
+export class EndLeaveEarlyDto extends ReasonDto {
+  @ApiProperty({ description: 'First local study date no longer covered by the pause.' })
+  @IsDateString({ strict: true })
+  effectiveDate!: string;
+}
 export class MakeupDto {
   @ApiProperty() @IsString() @MinLength(1) originalParticipantId!: string;
+  @ApiProperty() @IsString() @MinLength(1) targetSessionId!: string;
+}
+export class RescheduleMakeupDto extends ReasonDto {
   @ApiProperty() @IsString() @MinLength(1) targetSessionId!: string;
 }
 export class AttendanceItemDto {

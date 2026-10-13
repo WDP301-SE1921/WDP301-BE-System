@@ -2,14 +2,21 @@ import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DirectoryService } from './directory.service';
 import {
   CreateStaffAccountDto,
+  DirectoryPageDto,
+  AuditLogQueryDto,
+  AcceptAccountInvitationDto,
+  CreateAccountInvitationDto,
   DashboardQueryDto,
   ListAccountsDto,
   UpdateParentAccountDto,
   UpdateStaffAccountDto,
+  ReviewAccountInvitationDto,
+  UpdateManagerPermissionsDto,
 } from './dto/directory.dto';
 
 @ApiBearerAuth()
@@ -122,5 +129,88 @@ export class DirectoryController {
     @Query() query: DashboardQueryDto,
   ): Promise<unknown> {
     return this.directory.dashboard(user, query);
+  }
+
+  @Get('audit-logs')
+  @ApiOperation({ summary: 'Manager: search immutable audit history' })
+  auditLogs(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AuditLogQueryDto,
+  ): Promise<unknown> {
+    return this.directory.auditLogs(user, query);
+  }
+
+  @Get('managers')
+  @ApiOperation({ summary: 'Manager: list manager accounts' })
+  managers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListAccountsDto,
+  ): Promise<unknown> {
+    return this.directory.listManagers(user, query);
+  }
+
+  @Patch('managers/:id/permissions')
+  @ApiOperation({ summary: 'Manager: replace another manager permission set' })
+  managerPermissions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateManagerPermissionsDto,
+  ): Promise<unknown> {
+    return this.directory.updateManagerPermissions(user, id, input);
+  }
+
+  @Post('teacher-invitations')
+  inviteTeacher(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CreateAccountInvitationDto,
+  ): Promise<unknown> {
+    return this.directory.invite(user, 'TEACHER', input);
+  }
+
+  @Get('teacher-invitations')
+  teacherInvitations(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: DirectoryPageDto,
+  ): Promise<unknown> {
+    return this.directory.invitations(user, 'TEACHER', page);
+  }
+
+  @Post('manager-invitations')
+  inviteManager(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CreateAccountInvitationDto,
+  ): Promise<unknown> {
+    return this.directory.invite(user, 'MANAGER', input);
+  }
+
+  @Get('manager-invitations')
+  managerInvitations(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: DirectoryPageDto,
+  ): Promise<unknown> {
+    return this.directory.invitations(user, 'MANAGER', page);
+  }
+
+  @Public()
+  @Post('account-invitations/accept')
+  acceptInvitation(@Body() input: AcceptAccountInvitationDto): Promise<unknown> {
+    return this.directory.acceptInvitation(input);
+  }
+
+  @Post('account-invitations/:id/review')
+  reviewInvitation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ReviewAccountInvitationDto,
+  ): Promise<unknown> {
+    return this.directory.reviewInvitation(user, id, input);
+  }
+
+  @Post('account-invitations/:id/revoke')
+  revokeInvitation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.directory.revokeInvitation(user, id);
   }
 }

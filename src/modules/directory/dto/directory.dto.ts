@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayUnique,
+  IsArray,
   IsDateString,
   IsEmail,
   IsIn,
@@ -125,4 +127,45 @@ export class DashboardQueryDto {
   @IsOptional()
   @IsDateString({ strict: true })
   toDate?: string;
+}
+
+export class AuditLogQueryDto extends DirectoryPageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) actorUserId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) entityType?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) entityId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) action?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() from?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() to?: string;
+}
+
+export class CreateAccountInvitationDto {
+  @ApiPropertyOptional({ example: 'teacher@example.com' })
+  @Transform(normalizeEmail)
+  @IsEmail()
+  @MaxLength(255)
+  email!: string;
+}
+
+export class AcceptAccountInvitationDto {
+  @ApiPropertyOptional() @IsString() token!: string;
+  @ApiPropertyOptional() @IsString() @MinLength(8) @MaxLength(72) password!: string;
+  @ApiPropertyOptional()
+  @Transform(trim)
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  displayName!: string;
+}
+
+export class ReviewAccountInvitationDto {
+  @ApiPropertyOptional() @IsIn(['APPROVE', 'REJECT']) decision!: 'APPROVE' | 'REJECT';
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(2000) note?: string;
+}
+
+export class UpdateManagerPermissionsDto {
+  @ApiPropertyOptional({ type: [String] })
+  @IsArray()
+  @ArrayUnique()
+  @IsString({ each: true })
+  permissions!: string[];
 }

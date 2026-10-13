@@ -153,6 +153,10 @@ export class ScheduleRangeDto {
 
 export class SessionQueryDto {
   @ApiPropertyOptional() @IsOptional() @IsString() classId?: string;
+  @ApiPropertyOptional({ description: 'Parent-owned student profile id.' })
+  @IsOptional()
+  @IsString()
+  studentId?: string;
   @ApiPropertyOptional()
   @IsOptional()
   @IsDateString({ strict: true })

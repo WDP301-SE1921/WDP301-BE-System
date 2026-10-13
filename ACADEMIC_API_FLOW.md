@@ -49,19 +49,19 @@ Thứ tự đề xuất khi nối FE: tạo Subject → Program → Class và l�
 
 ## 2. Lớp và lịch học cố định hằng tuần
 
-| Phương thức và đường dẫn                    | Quyền                                  | Ý nghĩa / dữ liệu chính                                                                                                                                                                                                                                                        |
-| ------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /classes`                              | Manager, Staff, Teacher, Parent        | Danh sách; lọc bằng `programId`, `subject`, `grade`, `search`, `studentId`, `isOpen`, `isActive`, `page`, `limit`. Teacher chỉ thấy lớp mình dạy.                                                                                                                              |
-| `GET /classes/:id`                          | Manager, Staff, Teacher được phân công | Chi tiết lớp, khóa, giáo viên, lịch tuần, `scheduleLocked` và danh sách ghi danh gốc có phân trang. `scheduleLocked=true` khi có ghi danh chưa kết thúc, placement của ghi danh chưa kết thúc hoặc bất kỳ buổi đã sinh; PUT/POST/PATCH/DELETE lịch tuần cùng áp dụng khóa này. |
-| `POST /classes`                             | Manager                                | Tạo lớp: `programId`, `name`, `capacity`, `monthlyFee`, tùy chọn `teacherId`; ban đầu đóng đăng ký.                                                                                                                                                                            |
-| `PATCH /classes/:id`                        | Manager                                | Sửa lớp, phân giáo viên, `isOpen`, `isActive`. Muốn `isOpen=true` phải có lịch tuần và lớp đang hoạt động.                                                                                                                                                                     |
-| `DELETE /classes/:id`                       | Manager                                | Xóa lớp chưa có dữ liệu phụ thuộc; lớp đã được dùng nên chuyển `isActive=false` qua PATCH sau khi xử lý dữ liệu liên quan.                                                                                                                                                     |
-| `GET /classes/:id/schedules`                | Manager, Staff, Teacher được phân công | Xem các khung lịch tuần. Parent dùng `GET /me/students/:id/schedule`.                                                                                                                                                                                                          |
-| `PUT /classes/:id/schedules`                | Manager                                | Thay toàn bộ bằng `{ "schedules": [{ "weekday": 2, "startTime": "18:00", "endTime": "20:00" }] }`. `POST` cùng đường dẫn là alias cũ.                                                                                                                                          |
-| `PATCH /classes/:id/schedules/:scheduleId`  | Manager                                | Sửa một khung giờ với đủ `weekday`, `startTime`, `endTime`.                                                                                                                                                                                                                    |
-| `DELETE /classes/:id/schedules/:scheduleId` | Manager                                | Xóa một khung giờ.                                                                                                                                                                                                                                                             |
+| Phương thức và đường dẫn | Quyền | Ý nghĩa / dữ liệu chính |
+| --- | --- | --- |
+| `GET /classes` | Manager, Staff, Teacher, Parent | Danh sách; lọc bằng `programId`, `subject`, `grade`, `search`, `studentId`, `isOpen`, `isActive`, `page`, `limit`. Teacher chỉ thấy lớp mình dạy. |
+| `GET /classes/:id?at=&page=&limit=` | Manager, Staff, Teacher được phân công | Chi tiết lớp và roster có hiệu lực tại `at` (mặc định hiện tại). Response có `rosterAt` và `scheduleLocked`; transfer tương lai chỉ đổi roster từ đúng thời điểm hiệu lực. |
+| `POST /classes` | Manager | Tạo lớp: `programId`, `name`, `capacity`, `monthlyFee`, tùy chọn `teacherId`; ban đầu đóng đăng ký. |
+| `PATCH /classes/:id` | Manager | Sửa lớp, phân giáo viên, `isOpen`, `isActive`. Muốn `isOpen=true` phải có lịch tuần và lớp đang hoạt động. |
+| `DELETE /classes/:id` | Manager | Xóa lớp chưa có dữ liệu phụ thuộc; lớp đã được dùng nên chuyển `isActive=false` qua PATCH sau khi xử lý dữ liệu liên quan. |
+| `GET /classes/:id/schedules` | Manager, Staff, Teacher được phân công | Xem các khung lịch tuần. Parent dùng `GET /me/students/:id/schedule`. |
+| `PUT /classes/:id/schedules` | Manager | Thay toàn bộ bằng `{ "schedules": [{ "weekday": 2, "startTime": "18:00", "endTime": "20:00" }] }`. `POST` cùng đường dẫn là alias cũ. |
+| `PATCH /classes/:id/schedules/:scheduleId` | Manager | Sửa một khung giờ với đủ `weekday`, `startTime`, `endTime`. |
+| `DELETE /classes/:id/schedules/:scheduleId` | Manager | Xóa một khung giờ. |
 
-Lịch tuần là khuôn để sinh buổi học. Các thao tác sửa lịch bị khóa khi lớp có ghi danh hoặc đã sinh buổi; PATCH/DELETE từng khung giờ còn kiểm tra học viên được chuyển vào. **Giới hạn hiện tại:** PUT/POST thay toàn bộ lịch chỉ kiểm tra ghi danh gốc và buổi đã sinh, chưa kiểm tra riêng placement chuyển lớp. Client nên coi lịch của lớp có học viên chuyển vào là đã khóa cho đến khi backend bổ sung kiểm tra tương ứng.
+Lịch tuần là khuôn để sinh buổi học. PUT/POST/PATCH/DELETE lịch tuần đều dùng chung kiểm tra khóa khi lớp có ghi danh chưa kết thúc, placement chuyển vào của ghi danh chưa kết thúc, bất kỳ buổi đã sinh hoặc Teacher đã xác nhận lịch. `scheduleLocked` phản ánh các điều kiện này; mở khóa xác nhận không bỏ qua khóa do dữ liệu học vụ.
 
 ## 3. Soạn, gửi và duyệt giáo trình
 
@@ -131,14 +131,14 @@ Chỉ commit khi preview không có lỗi và chưa hết hạn. Bản nháp kh�
 
 ## 5. Xem trước và sinh buổi học cho lớp
 
-| Phương thức và đường dẫn (tiền tố `/academic`)                    | Quyền                                  | Cách dùng                                                                                                                      |
-| ----------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `POST /classes/:id/session-preview`                               | Manager                                | Body `curriculumUnitId`, `fromDate`, `toDate`; trả `previewId`, `expiresAt`, tổng buổi, các buổi dự kiến và xung đột.          |
-| `POST /classes/:id/session-generations`                           | Manager                                | Body như preview, có thể kèm `previewId`; **bắt buộc** `Idempotency-Key`. Sinh toàn bộ buổi trong transaction và ghi đợt sinh. |
-| `GET /classes/:id/session-generations`                            | Manager, Staff, Teacher được phân công | Lịch sử các đợt sinh của lớp.                                                                                                  |
-| `GET /session-generations/:id`                                    | Manager, Staff, Teacher được phân công | Chi tiết một đợt sinh.                                                                                                         |
-| `GET /scheduled-sessions?classId=&fromDate=&toDate=&page=&limit=` | Manager, Staff, Teacher, Parent        | Danh sách buổi; Teacher chỉ thấy buổi mình dạy, Parent chỉ thấy theo ghi danh/placement của con.                               |
-| `GET /scheduled-sessions/:id?studentId=`                          | Manager, Staff, Teacher, Parent        | Chi tiết buổi; Parent phải chọn `studentId` của con mình, chỉ nhận dữ liệu tham gia của con đó.                                |
+| Phương thức và đường dẫn (tiền tố `/academic`) | Quyền | Cách dùng |
+| --- | --- | --- |
+| `POST /classes/:id/session-preview` | Manager | Body `curriculumUnitId`, `fromDate`, `toDate`; trả `previewId`, `expiresAt`, tổng buổi, các buổi dự kiến và xung đột. |
+| `POST /classes/:id/session-generations` | Manager | Body như preview, có thể kèm `previewId`; **bắt buộc** `Idempotency-Key`. Sinh toàn bộ buổi trong transaction và ghi đợt sinh. |
+| `GET /classes/:id/session-generations` | Manager, Staff, Teacher được phân công | Lịch sử các đợt sinh của lớp. |
+| `GET /session-generations/:id` | Manager, Staff, Teacher được phân công | Chi tiết một đợt sinh. |
+| `GET /scheduled-sessions?studentId=&classId=&fromDate=&toDate=&page=&limit=` | Manager, Staff, Teacher, Parent | Danh sách buổi; Teacher chỉ thấy buổi mình dạy. Parent có thể chọn một con, nhận cả lịch theo placement, buổi học bù khác lớp và lịch sử hợp lệ; mỗi buổi có `participations` cùng liên kết source/target makeup. |
+| `GET /scheduled-sessions/:id?studentId=` | Manager, Staff, Teacher, Parent | Chi tiết buổi; Parent phải chọn `studentId` của con mình, chỉ nhận dữ liệu tham gia của con đó. |
 
 Ví dụ sinh lịch:
 
@@ -186,4 +186,28 @@ Content-Type: application/json
 
 Sau khi Manager tạo lớp và lịch tuần, đặt `isOpen=true` qua `PATCH /classes/:id` để Staff có thể ghi danh. `POST /registrations` tạo đơn; `POST /registrations/:id/confirm-payment` xác nhận thanh toán ngoại tuyến và tạo enrollment/placement. Hai thao tác này dùng `Idempotency-Key`. Parent có thể xem `GET /me/students/:id/schedule` (lịch tuần cố định) và `GET /academic/scheduled-sessions` hoặc chi tiết buổi (lịch đã sinh). Lịch tuần và lịch buổi là hai dữ liệu khác nhau: đổi/hủy một buổi không sửa khuôn lịch tuần.
 
-Các API lịch theo từng con hiện chưa tổng hợp học bù khác lớp và các chỉ số chuyên cần/điểm/lộ trình; xem tiến độ và giới hạn tại [FEATURE_PROCESS.md](FEATURE_PROCESS.md).
+`GET /academic/scheduled-sessions` nhận `studentId` khi Parent muốn xem một con. API giữ buổi lịch sử của enrollment đã kết thúc, nhưng không cấp quyền xem buổi mới từ thời điểm kết thúc. Học bù ở lớp khác placement được trả qua participant của đúng con; response không chứa participant của học sinh khác.
+
+## 8. Nghỉ học, học bù, chuyển lớp và học lại
+
+| Phương thức và đường dẫn (tiền tố `/academic`) | Quyền ghi | Cách dùng |
+| --- | --- | --- |
+| `POST /leaves` | Parent hoặc Staff | Parent tạo yêu cầu chờ duyệt; Staff ghi thay và được duyệt trong cùng transaction. Với `SINGLE_ABSENCE`, backend tự tạo participant thường nếu roster chưa được chuẩn bị. |
+| `POST /leaves/:id/decide` | Staff | Duyệt hoặc từ chối yêu cầu đang chờ. |
+| `POST /leaves/:id/cancel` | Staff | Hủy yêu cầu còn có thể thay đổi. |
+| `POST /makeups` | Staff | Đặt học bù sau khi kiểm tra kỳ học, leave, trùng lịch và sức chứa. |
+| `POST /makeups/:id/cancel` | Staff | Hủy booking chưa hoàn thành. Có thể đặt lại cùng target; booking cũ vẫn giữ trạng thái `CANCELLED`. |
+| `POST /enrollments/:id/transfer` | Staff | Chuyển lớp theo `effectiveAt`, giữ nguyên enrollment và lịch sử lớp gốc. |
+| `POST /enrollments/:id/end` | Staff | Kết thúc một enrollment. |
+| `POST /students/:id/end-study` | Staff | Kết thúc các enrollment và chuyển hồ sơ học sinh sang `INACTIVE`. |
+| `POST /students/:id/reactivate` | Staff | Body `{ "reason": "..." }`; chuyển lại hồ sơ cũ sang `ACTIVE`, ghi audit, không phục hồi enrollment cũ hoặc tự tạo enrollment mới. |
+
+Chỉ Teacher được phân công mới được gọi `POST /sessions/:id/roster` và `POST /sessions/:id/finalize-attendance`. Actor của mọi command lấy từ JWT; Manager có thể dùng các API đọc được công bố nhưng không được gọi thay các command vận hành của Staff hoặc Teacher.
+
+## Contract vận hành bổ sung (12/10/2026)
+
+- `GET /academic/classes/:id/attendance-summary` và `GET /academic/me/students/:id/attendance` dùng chung công thức `(present + madeUp) / required`; buổi nghỉ có phép không vào mẫu số.
+- `POST /academic/leaves/:id/end-early` giữ lịch sử đã nghỉ và chỉ mở lại các buổi tương lai. `POST /academic/makeups/:id/reschedule` đổi chỗ học bù trong một transaction.
+- `GET /academic/email-deliveries` và `POST /academic/email-deliveries/:id/retry` dành cho Manager/Staff. Worker retry email pending với backoff và giới hạn số lần thử.
+- `PATCH /auth/me`, `POST /auth/change-password`, `/auth/forgot-password`, `/auth/reset-password` cung cấp self-service profile/password; reset thu hồi các phiên cũ.
+- `GET /audit-logs` dành cho Manager, có bộ lọc actor/entity/action/thời gian.

@@ -20,8 +20,13 @@ import {
   ProgramDto,
   ProgramFilterDto,
   ReplaceClassSchedulesDto,
+  RoomDto,
+  SessionSubstitutionDto,
+  ScheduleConfirmationDto,
+  TeacherAssignmentDto,
   UpdateClassDto,
   UpdateProgramDto,
+  UpdateRoomDto,
   UpdateStudentDto,
 } from './dto/registration-flow.dto';
 
@@ -248,6 +253,7 @@ export class RegistrationFlowService {
       'Create schedules before opening registration for a class',
     );
     await this.assertTeacher(input.teacherId);
+    await this.assertRoom(input.roomId, input.capacity);
     const program = await this.db.program.findUnique({
       where: { id: input.programId },
       include: { subjectRecord: true },
@@ -264,11 +270,12 @@ export class RegistrationFlowService {
         programId: input.programId,
         name: input.name.trim(),
         teacherId: input.teacherId,
+        roomId: input.roomId,
         capacity: input.capacity,
         monthlyFee: input.monthlyFee,
         isOpen: false,
       },
-      include: { program: true, weeklySchedules: true },
+      include: { program: true, weeklySchedules: true, room: true },
     });
   }
 
@@ -282,6 +289,7 @@ export class RegistrationFlowService {
         include: { weeklySchedules: true },
       });
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      await this.assertRoom(input.roomId ?? undefined, input.capacity ?? classroom.capacity, tx);
       if (input.teacherId !== undefined && input.teacherId !== classroom.teacherId) {
         const scheduled = await tx.classSession.count({
           where: { classId: id, status: 'SCHEDULED', startsAt: { gte: new Date() } },
@@ -333,6 +341,7 @@ export class RegistrationFlowService {
         data: {
           ...(input.name === undefined ? {} : { name: input.name.trim() }),
           ...(input.teacherId === undefined ? {} : { teacherId: input.teacherId }),
+          ...(input.roomId === undefined ? {} : { roomId: input.roomId }),
           ...(input.capacity === undefined ? {} : { capacity: input.capacity }),
           ...(input.monthlyFee === undefined ? {} : { monthlyFee: input.monthlyFee }),
           ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
@@ -340,8 +349,234 @@ export class RegistrationFlowService {
             ? {}
             : { isActive: input.isActive, ...(input.isActive ? {} : { isOpen: false }) }),
         },
-        include: { program: true, weeklySchedules: true },
+        include: { program: true, weeklySchedules: true, room: true },
       });
+    });
+  }
+
+  async listRooms(user: AuthenticatedUser): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
+    return this.db.room.findMany({ orderBy: { name: 'asc' } });
+  }
+
+  async createRoom(user: AuthenticatedUser, input: RoomDto): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    return this.db.room.create({ data: { name: input.name.trim(), capacity: input.capacity } });
+  }
+
+  async updateRoom(user: AuthenticatedUser, id: string, input: UpdateRoomDto): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    return this.transaction(async (tx) => {
+      const room = await tx.room.findUnique({ where: { id } });
+      this.assert(room, 'ROOM_NOT_FOUND', 'Room not found', HttpStatus.NOT_FOUND);
+      const largestClass = input.capacity
+        ? await tx.class.aggregate({
+            where: { roomId: id, isActive: true },
+            _max: { capacity: true },
+          })
+        : null;
+      this.assert(
+        !largestClass?._max.capacity || input.capacity! >= largestClass._max.capacity,
+        'ROOM_CAPACITY_TOO_SMALL',
+        'Room capacity is below an assigned class capacity',
+      );
+      if (input.isActive === false) {
+        const future = await tx.classSession.count({
+          where: { roomId: id, status: 'SCHEDULED', startsAt: { gte: new Date() } },
+        });
+        this.assert(!future, 'ROOM_IN_USE', 'Room has future scheduled sessions');
+      }
+      return tx.room.update({
+        where: { id },
+        data: {
+          ...(input.name === undefined ? {} : { name: input.name.trim() }),
+          ...(input.capacity === undefined ? {} : { capacity: input.capacity }),
+          ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+        },
+      });
+    });
+  }
+
+  async assignTeacher(
+    user: AuthenticatedUser,
+    classId: string,
+    input: TeacherAssignmentDto,
+  ): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    await this.assertTeacher(input.teacherId);
+    const effectiveAt = new Date(input.effectiveAt);
+    this.assert(
+      effectiveAt >= new Date(),
+      'INVALID_EFFECTIVE_DATE',
+      'Teacher change must be current or future',
+    );
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+      const classroom = await tx.class.findUnique({ where: { id: classId } });
+      this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      const sessions = await tx.classSession.findMany({
+        where: { classId, status: 'SCHEDULED', startsAt: { gte: effectiveAt } },
+        select: { id: true, startsAt: true, endsAt: true },
+      });
+      const conflict = await tx.classSession.findFirst({
+        where: {
+          teacherId: input.teacherId,
+          status: 'SCHEDULED',
+          OR: sessions.map((session) => ({
+            startsAt: { lt: session.endsAt },
+            endsAt: { gt: session.startsAt },
+          })),
+        },
+      });
+      this.assert(!conflict, 'TEACHER_SCHEDULE_CONFLICT', 'Teacher has an overlapping session');
+      await tx.classSession.updateMany({
+        where: { id: { in: sessions.map((session) => session.id) } },
+        data: { teacherId: input.teacherId, revision: { increment: 1 } },
+      });
+      const updated = await tx.class.update({
+        where: { id: classId },
+        data: { teacherId: input.teacherId },
+        include: { teacher: { select: { id: true, email: true, displayName: true } } },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'CLASS_TEACHER_ASSIGNED',
+          entityType: 'Class',
+          entityId: classId,
+          beforeData: { teacherId: classroom.teacherId },
+          afterData: {
+            teacherId: input.teacherId,
+            effectiveAt,
+            reason: input.reason,
+            affectedSessions: sessions.length,
+          },
+        },
+      });
+      return updated;
+    });
+  }
+
+  async substituteCandidates(user: AuthenticatedUser, sessionId: string): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    const session = await this.db.classSession.findUnique({ where: { id: sessionId } });
+    this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+    return this.db.user.findMany({
+      where: {
+        role: 'TEACHER',
+        status: 'ACTIVE',
+        id: { not: session.teacherId },
+        teachingSessions: {
+          none: {
+            status: 'SCHEDULED',
+            startsAt: { lt: session.endsAt },
+            endsAt: { gt: session.startsAt },
+          },
+        },
+      },
+      select: { id: true, email: true, displayName: true },
+      orderBy: { displayName: 'asc' },
+    });
+  }
+
+  async substitute(
+    user: AuthenticatedUser,
+    sessionId: string,
+    input: SessionSubstitutionDto,
+  ): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    await this.assertTeacher(input.teacherId);
+    return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM class_sessions WHERE id = ${sessionId} FOR UPDATE`;
+      const session = await tx.classSession.findUnique({ where: { id: sessionId } });
+      this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+      this.assert(
+        session.status === 'SCHEDULED' && session.startsAt > new Date(),
+        'SESSION_LOCKED',
+        'Only a future scheduled session can be substituted',
+      );
+      this.assert(
+        session.revision === input.expectedRevision,
+        'REVISION_CONFLICT',
+        'Session was changed; reload it',
+      );
+      const conflict = await tx.classSession.count({
+        where: {
+          id: { not: sessionId },
+          teacherId: input.teacherId,
+          status: 'SCHEDULED',
+          startsAt: { lt: session.endsAt },
+          endsAt: { gt: session.startsAt },
+        },
+      });
+      this.assert(!conflict, 'TEACHER_SCHEDULE_CONFLICT', 'Teacher has an overlapping session');
+      const updated = await tx.classSession.update({
+        where: { id: sessionId },
+        data: { teacherId: input.teacherId, revision: { increment: 1 } },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'SESSION_SUBSTITUTE_ASSIGNED',
+          entityType: 'ClassSession',
+          entityId: sessionId,
+          beforeData: { teacherId: session.teacherId },
+          afterData: { teacherId: input.teacherId, reason: input.reason },
+        },
+      });
+      return updated;
+    });
+  }
+
+  async confirmSchedule(
+    user: AuthenticatedUser,
+    classId: string,
+    input: ScheduleConfirmationDto,
+  ): Promise<unknown> {
+    this.requireRoles(user, 'TEACHER', 'MANAGER');
+    return this.transaction(async (tx) => {
+      const classroom = await tx.class.findUnique({
+        where: { id: classId },
+        include: { weeklySchedules: true },
+      });
+      this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      if (input.confirmed) {
+        this.assert(
+          user.role === 'TEACHER' && classroom.teacherId === user.id,
+          'FORBIDDEN',
+          'Only the assigned teacher can confirm this schedule',
+          HttpStatus.FORBIDDEN,
+        );
+        this.assert(
+          classroom.weeklySchedules.length > 0,
+          'CLASS_NEEDS_SCHEDULE',
+          'Class has no weekly schedule',
+        );
+      } else {
+        this.assert(
+          user.role === 'MANAGER',
+          'FORBIDDEN',
+          'Only a manager can unlock a confirmed schedule',
+          HttpStatus.FORBIDDEN,
+        );
+        this.assert(input.reason?.trim(), 'REASON_REQUIRED', 'An unlock reason is required');
+      }
+      const updated = await tx.class.update({
+        where: { id: classId },
+        data: input.confirmed
+          ? { scheduleConfirmedAt: new Date(), scheduleConfirmedById: user.id }
+          : { scheduleConfirmedAt: null, scheduleConfirmedById: null },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: input.confirmed ? 'CLASS_SCHEDULE_CONFIRMED' : 'CLASS_SCHEDULE_UNLOCKED',
+          entityType: 'Class',
+          entityId: classId,
+          afterData: { confirmed: input.confirmed, reason: input.reason ?? null },
+        },
+      });
+      return updated;
     });
   }
 
@@ -526,6 +761,11 @@ export class RegistrationFlowService {
   ): Promise<Class> {
     const classroom = await tx.class.findUnique({ where: { id: classId } });
     this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+    this.assert(
+      !classroom.scheduleConfirmedAt,
+      'SCHEDULE_CONFIRMED',
+      'Unlock the confirmed schedule before editing',
+    );
     this.assert(
       !(await this.isScheduleLocked(tx, classId)),
       'CLASS_SCHEDULE_LOCKED',
@@ -996,6 +1236,19 @@ export class RegistrationFlowService {
           afterData: { paymentId: payment.id, enrollmentId: enrollment.id },
         },
       });
+      await tx.outboxEvent.create({
+        data: {
+          eventType: 'PAYMENT_CONFIRMED',
+          aggregateType: 'RegistrationOrder',
+          aggregateId: order.id,
+          recipient: order.parentEmail,
+          subject: `EduGrade - Payment confirmed for ${order.studentFullName}`,
+          dedupeKey: `PAYMENT_CONFIRMED:${order.id}`,
+          payload: {
+            text: `Payment ${payment.receiptNumber} for ${order.studentFullName} in ${order.class.name} was confirmed. Amount: ${order.quotedAmount.toString()} ${order.currency}.`,
+          },
+        },
+      });
       const response = receiptResponse(completed);
       await tx.idempotencyRecord.create({
         data: {
@@ -1097,7 +1350,11 @@ export class RegistrationFlowService {
     });
   }
 
-  async getClass(user: AuthenticatedUser, id: string, page: PageDto): Promise<unknown> {
+  async getClass(
+    user: AuthenticatedUser,
+    id: string,
+    page: PageDto & { at?: string },
+  ): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER');
     const classroom = await this.db.class.findUnique({
       where: { id },
@@ -1114,7 +1371,27 @@ export class RegistrationFlowService {
       'Class is not assigned to this teacher',
       HttpStatus.FORBIDDEN,
     );
-    const where: Prisma.EnrollmentWhereInput = { classId: id, status: { not: 'PENDING_LINK' } };
+    const at = page.at ? new Date(page.at) : new Date();
+    const day = new Date(new Date(at.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10));
+    const where: Prisma.EnrollmentWhereInput = {
+      status: { not: 'PENDING_LINK' },
+      studentProfileId: { not: null },
+      startDate: { lte: day },
+      endDate: { gt: day },
+      OR: [
+        {
+          placements: {
+            some: {
+              classId: id,
+              effectiveFrom: { lte: at },
+              OR: [{ effectiveTo: null }, { effectiveTo: { gt: at } }],
+            },
+          },
+        },
+        { placements: { none: {} }, classId: id },
+      ],
+      AND: [{ OR: [{ status: 'ACTIVE' }, { status: 'ENDED', endedAt: { gt: at } }] }],
+    };
     const [items, total, scheduleLocked] = await Promise.all([
       this.db.enrollment.findMany({
         where,
@@ -1135,7 +1412,8 @@ export class RegistrationFlowService {
     ]);
     return {
       ...classroom,
-      scheduleLocked,
+      rosterAt: at.toISOString(),
+      scheduleLocked: Boolean(classroom.scheduleConfirmedAt) || scheduleLocked,
       enrollments: { items, page: page.page, limit: page.limit, total },
     };
   }
@@ -1303,6 +1581,21 @@ export class RegistrationFlowService {
       where: { id: teacherId, role: 'TEACHER', status: 'ACTIVE' },
     });
     this.assert(teacher, 'INVALID_TEACHER', 'An active teacher is required');
+  }
+
+  private async assertRoom(
+    roomId: string | undefined,
+    classCapacity: number,
+    db: Prisma.TransactionClient | DatabaseService = this.db,
+  ): Promise<void> {
+    if (!roomId) return;
+    const room = await db.room.findFirst({ where: { id: roomId, isActive: true } });
+    this.assert(room, 'INVALID_ROOM', 'An active room is required');
+    this.assert(
+      room.capacity >= classCapacity,
+      'ROOM_CAPACITY_TOO_SMALL',
+      'Room capacity is below class capacity',
+    );
   }
 
   private assertCanReadRegistration(user: AuthenticatedUser, parentEmail: string): void {

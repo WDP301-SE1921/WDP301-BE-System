@@ -530,11 +530,13 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       expect((schedule.body as Envelope<WithId[]>).data.length).toBeGreaterThan(0);
       await call('PARENT', 'get', 'students').expect(403);
       await call('TEACHER', 'get', `students/${kids.A}/schedule`).expect(403);
-      const detail = await call('STAFF', 'get', `classes/${classes.two}`).expect(200);
+      const detail = await call('STAFF', 'get', `classes/${classes.two}`)
+        .query({ at: `${tomorrow}T12:00:00.000Z` })
+        .expect(200);
       expect(
         (detail.body as Envelope<{ weeklySchedules: unknown[]; enrollments: { total: number } }>)
           .data,
-      ).toMatchObject({ enrollments: { total: 3 } });
+      ).toMatchObject({ enrollments: { total: 2 } });
       await call('STAFF', 'get', 'classes/does-not-exist').expect(404);
       const payments = await call('STAFF', 'get', 'payments').expect(200);
       const ledger = (payments.body as Envelope<{ total: number; totalAmount: string }>).data;
@@ -596,6 +598,24 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .expect(200);
       const slots = await call('MANAGER', 'get', `classes/${classroomId}/schedules`).expect(200);
       const slotId = (slots.body as Envelope<Array<WithId>>).data[0].id;
+      await db.class.update({
+        where: { id: classroomId },
+        data: { scheduleConfirmedAt: new Date() },
+      });
+      const confirmed = await call('MANAGER', 'get', `classes/${classroomId}`).expect(200);
+      expect(confirmed.body).toMatchObject({ data: { scheduleLocked: true } });
+      for (const method of ['put', 'post'] as const) {
+        const blocked = await request(httpServer)
+          [method](`/api/v1/classes/${classroomId}/schedules`)
+          .set('Authorization', `Bearer ${tokens.MANAGER}`)
+          .send({ schedules: [{ weekday: 5, startTime: '18:00', endTime: '20:00' }] })
+          .expect(409);
+        expect(blocked.body).toMatchObject({ error: { code: 'SCHEDULE_CONFIRMED' } });
+      }
+      await db.class.update({
+        where: { id: classroomId },
+        data: { scheduleConfirmedAt: null },
+      });
       await call('MANAGER', 'patch', `classes/${classroomId}/schedules/${slotId}`)
         .send({ weekday: 3, startTime: '18:00', endTime: '20:00' })
         .expect(200);

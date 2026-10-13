@@ -1,16 +1,23 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma, type UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import {
   CreateStaffAccountDto,
+  AuditLogQueryDto,
+  AcceptAccountInvitationDto,
+  CreateAccountInvitationDto,
+  DirectoryPageDto,
   DashboardQueryDto,
   ListAccountsDto,
   UpdateParentAccountDto,
   UpdateStaffAccountDto,
+  ReviewAccountInvitationDto,
+  UpdateManagerPermissionsDto,
 } from './dto/directory.dto';
 
 const PASSWORD_HASH_ROUNDS = 12;
@@ -19,6 +26,8 @@ const HCM_OFFSET_MS = 7 * 3_600_000;
 const DAY_MS = 86_400_000;
 
 type ManagedRole = Extract<UserRole, 'STAFF' | 'TEACHER'>;
+type InvitedRole = Extract<UserRole, 'TEACHER' | 'MANAGER'>;
+const MANAGER_PERMISSIONS = ['MANAGE_MANAGERS', 'MANAGE_ACCOUNTS', 'MANAGE_CLASSES'] as const;
 
 // The password hash must never leave the service, so every query selects these columns explicitly.
 const accountSelect = {
@@ -302,6 +311,268 @@ export class DirectoryService {
         cancelled: byStatus.CANCELLED ?? 0,
       },
     };
+  }
+
+  async auditLogs(user: AuthenticatedUser, query: AuditLogQueryDto): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    const createdAt = {
+      ...(query.from ? { gte: new Date(query.from) } : {}),
+      ...(query.to ? { lte: new Date(query.to) } : {}),
+    };
+    const where: Prisma.AuditLogWhereInput = {
+      ...(query.actorUserId ? { actorUserId: query.actorUserId } : {}),
+      ...(query.entityType ? { entityType: query.entityType } : {}),
+      ...(query.entityId ? { entityId: query.entityId } : {}),
+      ...(query.action ? { action: query.action } : {}),
+      ...(Object.keys(createdAt).length ? { createdAt } : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.db.auditLog.findMany({
+        where,
+        include: { actor: { select: accountSelect } },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      this.db.auditLog.count({ where }),
+    ]);
+    return { items, page: query.page, limit: query.limit, total };
+  }
+
+  async listManagers(user: AuthenticatedUser, query: ListAccountsDto): Promise<unknown> {
+    await this.requireManagerPermission(user, 'MANAGE_MANAGERS');
+    const where = this.accountWhere('MANAGER', query);
+    const [items, total] = await Promise.all([
+      this.db.user.findMany({
+        where,
+        select: { ...accountSelect, permissions: true },
+        orderBy: { createdAt: 'asc' },
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      this.db.user.count({ where }),
+    ]);
+    return { items, page: query.page, limit: query.limit, total };
+  }
+
+  async updateManagerPermissions(
+    user: AuthenticatedUser,
+    id: string,
+    input: UpdateManagerPermissionsDto,
+  ): Promise<unknown> {
+    await this.requireManagerPermission(user, 'MANAGE_MANAGERS');
+    this.assert(
+      id !== user.id,
+      'SELF_PERMISSION_CHANGE',
+      'A manager cannot change their own permissions',
+    );
+    const invalid = input.permissions.filter(
+      (permission) => !(MANAGER_PERMISSIONS as readonly string[]).includes(permission),
+    );
+    this.assert(
+      !invalid.length,
+      'INVALID_PERMISSION',
+      `Unknown permissions: ${invalid.join(', ')}`,
+      HttpStatus.BAD_REQUEST,
+    );
+    return this.db.$transaction(async (tx) => {
+      const target = await tx.user.findFirst({ where: { id, role: 'MANAGER' } });
+      this.assert(target, 'MANAGER_NOT_FOUND', 'Manager not found', HttpStatus.NOT_FOUND);
+      const updated = await tx.user.update({
+        where: { id },
+        data: { permissions: input.permissions },
+        select: { ...accountSelect, permissions: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'MANAGER_PERMISSIONS_UPDATED',
+          entityType: 'User',
+          entityId: id,
+          beforeData: { permissions: target.permissions },
+          afterData: { permissions: input.permissions },
+        },
+      });
+      return updated;
+    });
+  }
+
+  async invite(
+    user: AuthenticatedUser,
+    role: InvitedRole,
+    input: CreateAccountInvitationDto,
+  ): Promise<unknown> {
+    await this.requireManagerPermission(
+      user,
+      role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
+    );
+    const existing = await this.db.user.count({ where: { email: input.email } });
+    this.assert(!existing, 'AUTH_EMAIL_EXISTS', 'Email is already registered', HttpStatus.CONFLICT);
+    const pending = await this.db.accountInvitation.count({
+      where: {
+        email: input.email,
+        role,
+        status: { in: ['INVITED', 'ACCEPTED'] },
+        expiresAt: { gt: new Date() },
+      },
+    });
+    this.assert(
+      !pending,
+      'INVITATION_EXISTS',
+      'An active invitation already exists',
+      HttpStatus.CONFLICT,
+    );
+    const token = randomBytes(32).toString('base64url');
+    const invitation = await this.db.accountInvitation.create({
+      data: {
+        email: input.email,
+        role,
+        invitedById: user.id,
+        tokenHash: createHash('sha256').update(token).digest('hex'),
+        expiresAt: new Date(Date.now() + 48 * 3600000),
+      },
+    });
+    return { ...invitation, acceptanceToken: token };
+  }
+
+  async invitations(
+    user: AuthenticatedUser,
+    role: InvitedRole,
+    page: DirectoryPageDto,
+  ): Promise<unknown> {
+    await this.requireManagerPermission(
+      user,
+      role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
+    );
+    const where = { role } as const;
+    const [items, total] = await Promise.all([
+      this.db.accountInvitation.findMany({
+        where,
+        omit: { tokenHash: true },
+        orderBy: { createdAt: 'desc' },
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+      }),
+      this.db.accountInvitation.count({ where }),
+    ]);
+    return { items, page: page.page, limit: page.limit, total };
+  }
+
+  async acceptInvitation(input: AcceptAccountInvitationDto): Promise<unknown> {
+    this.assert(
+      Buffer.byteLength(input.password, 'utf8') <= BCRYPT_MAX_BYTES,
+      'VALIDATION_ERROR',
+      'Password must be at most 72 UTF-8 bytes',
+      HttpStatus.BAD_REQUEST,
+    );
+    const tokenHash = createHash('sha256').update(input.token).digest('hex');
+    const invitation = await this.db.accountInvitation.findUnique({ where: { tokenHash } });
+    this.assert(
+      invitation && invitation.status === 'INVITED' && invitation.expiresAt > new Date(),
+      'INVITATION_INVALID',
+      'Invitation is invalid or expired',
+      HttpStatus.BAD_REQUEST,
+    );
+    const passwordHash = await bcrypt.hash(input.password, PASSWORD_HASH_ROUNDS);
+    return this.db.$transaction(async (tx) => {
+      const account = await tx.user.create({
+        data: {
+          email: invitation.email,
+          displayName: input.displayName.trim(),
+          passwordHash,
+          role: invitation.role,
+          status: 'DISABLED',
+          emailVerifiedAt: new Date(),
+          ...(invitation.role === 'MANAGER' ? { permissions: [] } : {}),
+        },
+        select: accountSelect,
+      });
+      await tx.accountInvitation.update({
+        where: { id: invitation.id },
+        data: { status: 'ACCEPTED', acceptedUserId: account.id, acceptedAt: new Date() },
+      });
+      return account;
+    });
+  }
+
+  async reviewInvitation(
+    user: AuthenticatedUser,
+    id: string,
+    input: ReviewAccountInvitationDto,
+  ): Promise<unknown> {
+    const invitation = await this.db.accountInvitation.findUnique({ where: { id } });
+    this.assert(invitation, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
+    await this.requireManagerPermission(
+      user,
+      invitation.role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
+    );
+    this.assert(
+      invitation.status === 'ACCEPTED' && invitation.acceptedUserId,
+      'INVITATION_NOT_ACCEPTED',
+      'Invitation has not been accepted',
+    );
+    return this.db.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: invitation.acceptedUserId! },
+        data: { status: input.decision === 'APPROVE' ? 'ACTIVE' : 'DISABLED' },
+      });
+      const updated = await tx.accountInvitation.update({
+        where: { id },
+        data: {
+          status: input.decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+          reviewedById: user.id,
+          reviewedAt: new Date(),
+          reviewNote: input.note,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: `ACCOUNT_INVITATION_${input.decision}D`,
+          entityType: 'AccountInvitation',
+          entityId: id,
+          afterData: { role: invitation.role, note: input.note ?? null },
+        },
+      });
+      return updated;
+    });
+  }
+
+  async revokeInvitation(user: AuthenticatedUser, id: string): Promise<unknown> {
+    const invitation = await this.db.accountInvitation.findUnique({ where: { id } });
+    this.assert(invitation, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
+    await this.requireManagerPermission(
+      user,
+      invitation.role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
+    );
+    this.assert(
+      invitation.status === 'INVITED',
+      'INVITATION_LOCKED',
+      'Only an unused invitation can be revoked',
+    );
+    return this.db.accountInvitation.update({
+      where: { id },
+      data: { status: 'REVOKED', reviewedById: user.id, reviewedAt: new Date() },
+    });
+  }
+
+  private async requireManagerPermission(
+    user: AuthenticatedUser,
+    permission: string,
+  ): Promise<void> {
+    this.requireRoles(user, 'MANAGER');
+    const manager = await this.db.user.findUnique({
+      where: { id: user.id },
+      select: { permissions: true },
+    });
+    const permissions = manager?.permissions;
+    if (permissions === null) return;
+    this.assert(
+      Array.isArray(permissions) && permissions.includes(permission),
+      'FORBIDDEN',
+      'Manager permission is required',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   private accountWhere(role: UserRole, query: ListAccountsDto): Prisma.UserWhereInput {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBadRequestResponse,
@@ -26,6 +26,8 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterParentDto } from './dto/register-parent.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto/password.dto';
 
 @ApiTags('auth')
 @ApiExtraModels(AuthResponseDto, LogoutResponseDto, SafeUserDto)
@@ -165,6 +167,43 @@ export class AuthController {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+  }
+
+  @Patch('me')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update the current display name and parent phone' })
+  updateMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: UpdateProfileDto,
+  ): Promise<SafeUserDto> {
+    return this.authService.updateProfile(user, body);
+  }
+
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Change password and revoke the other sessions' })
+  changePassword(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: ChangePasswordDto,
+  ): Promise<{ changed: true }> {
+    return this.authService.changePassword(user, body);
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  forgotPassword(@Body() body: ForgotPasswordDto): Promise<{ accepted: true }> {
+    return this.authService.forgotPassword(body.email);
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  resetPassword(@Body() body: ResetPasswordDto): Promise<{ reset: true }> {
+    return this.authService.resetPassword(body);
   }
 }
 
