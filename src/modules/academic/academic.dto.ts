@@ -16,6 +16,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  Matches,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -63,6 +64,7 @@ export class MakeupSourceFilterDto extends PageDto {
 export class AttendanceQueryDto extends PageDto {
   @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
   @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() studentId?: string;
 }
 export class ProgramDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) name!: string;
@@ -111,6 +113,7 @@ export class ReactivateStudentDto extends ReasonDto {}
 export class EndLeaveEarlyDto extends ReasonDto {
   @ApiProperty({ description: 'First local study date no longer covered by the pause.' })
   @IsDateString({ strict: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
   effectiveDate!: string;
 }
 export class MakeupDto {

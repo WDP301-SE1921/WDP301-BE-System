@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicRepository } from './academic.repository';
 import { AcademicAccessService, assertRule, roles, studyDate } from './academic-access.service';
 import {
@@ -47,7 +48,7 @@ export class CatalogService {
   async classes(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER');
     return this.repo.db.class.findMany({
-      where: user.role === 'TEACHER' ? { teacherId: user.id } : {},
+      where: user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {},
       skip: (page.page - 1) * page.limit,
       take: page.limit,
       orderBy: { id: 'asc' },
@@ -83,7 +84,12 @@ export class CatalogService {
           : {
               status: 'APPROVED',
               sessions: {
-                some: { OR: [{ teacherId: user.id }, { class: { teacherId: user.id } }] },
+                some: {
+                  OR: [
+                    { teacherId: user.id },
+                    { class: assignedTeacherWhere(user.id, new Date()) },
+                  ],
+                },
               },
             };
     return this.repo.db.lesson.findMany({
@@ -126,7 +132,26 @@ export class CatalogService {
         },
       });
       assertRule(!conflict, 'SCHEDULE_CONFLICT', 'Class or teacher has an overlapping session');
-      return tx.classSession.create({ data: { ...input, startsAt: start, endsAt: end } });
+      if (classroom.roomId) {
+        const room = await tx.room.findUnique({ where: { id: classroom.roomId } });
+        assertRule(
+          room?.isActive && room.capacity >= classroom.capacity,
+          'INVALID_ROOM',
+          'Classroom capacity exceeds its active room',
+        );
+        const roomConflict = await tx.classSession.count({
+          where: {
+            roomId: classroom.roomId,
+            status: { not: 'CANCELLED' },
+            startsAt: { lt: end },
+            endsAt: { gt: start },
+          },
+        });
+        assertRule(!roomConflict, 'ROOM_SCHEDULE_CONFLICT', 'Room has an overlapping session');
+      }
+      return tx.classSession.create({
+        data: { ...input, startsAt: start, endsAt: end, roomId: classroom.roomId },
+      });
     });
   }
 
@@ -255,7 +280,10 @@ export class CatalogService {
   async feedback(user: AuthenticatedUser, lessonId: string, input: FeedbackDto): Promise<unknown> {
     roles(user, 'TEACHER');
     const assigned = await this.repo.db.classSession.count({
-      where: { lessonId, OR: [{ teacherId: user.id }, { class: { teacherId: user.id } }] },
+      where: {
+        lessonId,
+        OR: [{ teacherId: user.id }, { class: assignedTeacherWhere(user.id, new Date()) }],
+      },
     });
     assertRule(assigned, 'FORBIDDEN', 'Lesson is not assigned to this teacher');
     return this.repo.db.curriculumFeedback.create({
@@ -343,11 +371,11 @@ export class CatalogService {
                     some: {
                       effectiveFrom: { lte: now },
                       OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
-                      class: { teacherId: user.id },
+                      class: assignedTeacherWhere(user.id, now),
                     },
                   },
                 },
-                { placements: { none: {} }, class: { teacherId: user.id } },
+                { placements: { none: {} }, class: assignedTeacherWhere(user.id, now) },
               ],
             };
     return this.repo.db.enrollment.findMany({

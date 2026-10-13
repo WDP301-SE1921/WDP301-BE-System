@@ -72,13 +72,19 @@ export class AcademicController {
   ) {}
 
   @Get('email-deliveries')
-  @ApiOperation({ summary: 'Manager/staff: inspect persisted email deliveries' })
+  @ApiOperation({
+    summary: 'Manager/staff: inspect persisted email deliveries',
+    description: 'Delivery metadata omits payloads that may contain account tokens.',
+  })
   deliveries(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
     return this.emailDeliveries.list(user, page);
   }
 
   @Post('email-deliveries/:id/retry')
-  @ApiOperation({ summary: 'Manager/staff: retry a failed or pending email delivery' })
+  @ApiOperation({
+    summary: 'Manager/staff: retry a failed or pending email delivery',
+    description: 'SMTP failure returns 502 EMAIL_DELIVERY_FAILED and preserves the failed attempt.',
+  })
   retryDelivery(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
     return this.emailDeliveries.retry(user, id);
   }
@@ -258,7 +264,11 @@ export class AcademicController {
     return this.workflows.makeupCandidates(user, id, page);
   }
   @Get('classes/:id/attendance-summary')
-  @ApiOperation({ summary: 'Teacher: attendance summary and history for an assigned class' })
+  @ApiOperation({
+    summary: 'Teacher: attendance summary and history for an assigned class',
+    description:
+      'YYYY-MM-DD bounds include the whole local day (UTC+7). Optional studentId filters one student. Response includes students[] with counts and attendancePercent.',
+  })
   attendanceSummary(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

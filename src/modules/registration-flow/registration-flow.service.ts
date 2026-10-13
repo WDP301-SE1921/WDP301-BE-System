@@ -1,10 +1,11 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma, type Class, type ClassWeeklySchedule, type Subject } from '@prisma/client';
 import { createHash } from 'node:crypto';
 
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
+import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
 import {
   ClassDto,
   ClassScheduleSlotDto,
@@ -33,8 +34,48 @@ import {
 const HCM_OFFSET_MS = 7 * 3_600_000;
 
 @Injectable()
-export class RegistrationFlowService {
+export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
+  private teacherTimer?: NodeJS.Timeout;
+  private readonly logger = new Logger(RegistrationFlowService.name);
   constructor(private readonly db: DatabaseService) {}
+
+  onModuleInit(): void {
+    this.teacherTimer = setInterval(() => {
+      void this.activateDueTeachers().catch((error: unknown) =>
+        this.logger.error(
+          `Teacher assignment sync failed: ${error instanceof Error ? error.name : 'UnknownError'}`,
+        ),
+      );
+    }, 30_000);
+    this.teacherTimer.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.teacherTimer) clearInterval(this.teacherTimer);
+  }
+
+  private async activateDueTeachers(): Promise<void> {
+    const now = new Date();
+    const due = await this.db.class.findMany({
+      where: { pendingTeacherFrom: { lte: now }, pendingTeacherId: { not: null } },
+      select: { id: true, pendingTeacherId: true, pendingTeacherFrom: true },
+      take: 100,
+    });
+    for (const classroom of due) {
+      await this.db.class.updateMany({
+        where: {
+          id: classroom.id,
+          pendingTeacherId: classroom.pendingTeacherId,
+          pendingTeacherFrom: classroom.pendingTeacherFrom,
+        },
+        data: {
+          teacherId: classroom.pendingTeacherId,
+          pendingTeacherId: null,
+          pendingTeacherFrom: null,
+        },
+      });
+    }
+  }
 
   async listMyStudents(user: AuthenticatedUser): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
@@ -289,8 +330,17 @@ export class RegistrationFlowService {
         include: { weeklySchedules: true },
       });
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
-      await this.assertRoom(input.roomId ?? undefined, input.capacity ?? classroom.capacity, tx);
+      await this.assertRoom(
+        input.roomId === undefined ? (classroom.roomId ?? undefined) : (input.roomId ?? undefined),
+        input.capacity ?? classroom.capacity,
+        tx,
+      );
       if (input.teacherId !== undefined && input.teacherId !== classroom.teacherId) {
+        this.assert(
+          !classroom.pendingTeacherId,
+          'CLASS_TEACHER_LOCKED',
+          'Cancel the pending teacher assignment before changing the class directly',
+        );
         const scheduled = await tx.classSession.count({
           where: { classId: id, status: 'SCHEDULED', startsAt: { gte: new Date() } },
         });
@@ -405,37 +455,69 @@ export class RegistrationFlowService {
     this.requireRoles(user, 'MANAGER');
     await this.assertTeacher(input.teacherId);
     const effectiveAt = new Date(input.effectiveAt);
-    this.assert(
-      effectiveAt >= new Date(),
-      'INVALID_EFFECTIVE_DATE',
-      'Teacher change must be current or future',
-    );
     return this.transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
-      const classroom = await tx.class.findUnique({ where: { id: classId } });
+      let classroom = await tx.class.findUnique({ where: { id: classId } });
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      if (classroom.pendingTeacherFrom && classroom.pendingTeacherFrom <= new Date()) {
+        classroom = await tx.class.update({
+          where: { id: classId },
+          data: {
+            teacherId: classroom.pendingTeacherId,
+            pendingTeacherId: null,
+            pendingTeacherFrom: null,
+          },
+        });
+      }
+      const currentTeacherId = classroom.teacherId;
+      this.assert(currentTeacherId, 'INVALID_TEACHER', 'Class must have a current teacher');
+      const cancelling = input.teacherId === currentTeacherId;
+      this.assert(
+        cancelling || effectiveAt >= new Date(),
+        'INVALID_EFFECTIVE_DATE',
+        'Teacher change must be current or future',
+      );
+      const firstAffected = cancelling
+        ? (classroom.pendingTeacherFrom ?? new Date())
+        : classroom.pendingTeacherFrom && classroom.pendingTeacherFrom < effectiveAt
+          ? classroom.pendingTeacherFrom
+          : effectiveAt;
       const sessions = await tx.classSession.findMany({
-        where: { classId, status: 'SCHEDULED', startsAt: { gte: effectiveAt } },
-        select: { id: true, startsAt: true, endsAt: true },
+        where: { classId, status: 'SCHEDULED', startsAt: { gte: firstAffected } },
+        select: { id: true, startsAt: true, endsAt: true, teacherId: true },
       });
-      const conflict = await tx.classSession.findFirst({
-        where: {
-          teacherId: input.teacherId,
-          status: 'SCHEDULED',
-          OR: sessions.map((session) => ({
+      const changes = sessions.flatMap((session) => {
+        const previous = assignedTeacherAt(classroom, session.startsAt);
+        if (session.teacherId !== previous) return [];
+        const next =
+          !cancelling && session.startsAt >= effectiveAt ? input.teacherId : currentTeacherId;
+        return session.teacherId === next ? [] : [{ ...session, next }];
+      });
+      for (const session of changes) {
+        const conflict = await tx.classSession.findFirst({
+          where: {
+            classId: { not: classId },
+            teacherId: session.next,
+            status: 'SCHEDULED',
             startsAt: { lt: session.endsAt },
             endsAt: { gt: session.startsAt },
-          })),
-        },
-      });
-      this.assert(!conflict, 'TEACHER_SCHEDULE_CONFLICT', 'Teacher has an overlapping session');
-      await tx.classSession.updateMany({
-        where: { id: { in: sessions.map((session) => session.id) } },
-        data: { teacherId: input.teacherId, revision: { increment: 1 } },
-      });
+          },
+        });
+        this.assert(!conflict, 'TEACHER_SCHEDULE_CONFLICT', 'Teacher has an overlapping session');
+      }
+      for (const session of changes) {
+        await tx.classSession.update({
+          where: { id: session.id },
+          data: { teacherId: session.next, revision: { increment: 1 } },
+        });
+      }
       const updated = await tx.class.update({
         where: { id: classId },
-        data: { teacherId: input.teacherId },
+        data: cancelling
+          ? { pendingTeacherId: null, pendingTeacherFrom: null }
+          : effectiveAt <= new Date()
+            ? { teacherId: input.teacherId, pendingTeacherId: null, pendingTeacherFrom: null }
+            : { pendingTeacherId: input.teacherId, pendingTeacherFrom: effectiveAt },
         include: { teacher: { select: { id: true, email: true, displayName: true } } },
       });
       await tx.auditLog.create({
@@ -449,7 +531,7 @@ export class RegistrationFlowService {
             teacherId: input.teacherId,
             effectiveAt,
             reason: input.reason,
-            affectedSessions: sessions.length,
+            affectedSessions: changes.length,
           },
         },
       });
@@ -542,7 +624,7 @@ export class RegistrationFlowService {
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
       if (input.confirmed) {
         this.assert(
-          user.role === 'TEACHER' && classroom.teacherId === user.id,
+          user.role === 'TEACHER' && assignedTeacherAt(classroom, new Date()) === user.id,
           'FORBIDDEN',
           'Only the assigned teacher can confirm this schedule',
           HttpStatus.FORBIDDEN,
@@ -581,6 +663,7 @@ export class RegistrationFlowService {
   }
 
   async listClasses(user: AuthenticatedUser, input: ClassFilterDto): Promise<unknown> {
+    await this.activateDueTeachers();
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER', 'PARENT');
     this.assert(
       !input.startDate === !input.packageMonths,
@@ -600,18 +683,52 @@ export class RegistrationFlowService {
     };
     const rows = await this.db.class.findMany({
       where: {
-        ...(user.role === 'TEACHER' ? { teacherId: user.id } : {}),
+        ...(user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {}),
         ...(Object.keys(programWhere).length ? { program: programWhere } : {}),
         ...(input.search ? { name: { contains: input.search.trim() } } : {}),
         ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
         ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
       },
-      include: { program: true, weeklySchedules: true, _count: { select: { enrollments: true } } },
+      include: {
+        program: true,
+        room: true,
+        weeklySchedules: true,
+        _count: { select: { enrollments: true } },
+      },
       orderBy: [{ isOpen: 'desc' }, { name: 'asc' }],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     });
-    if (!input.startDate || !input.packageMonths || user.role === 'TEACHER') return rows;
+    const now = new Date();
+    const today = todayLocalDate();
+    const rosterCounts = await Promise.all(
+      rows.map((row) =>
+        this.db.enrollment.count({
+          where: {
+            status: 'ACTIVE',
+            startDate: { lte: today },
+            endDate: { gt: today },
+            OR: [
+              {
+                classId: row.id,
+                placements: { none: {} },
+              },
+              {
+                placements: {
+                  some: {
+                    classId: row.id,
+                    effectiveFrom: { lte: now },
+                    OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    const listed = rows.map((row, index) => ({ ...row, rosterCount: rosterCounts[index] }));
+    if (!input.startDate || !input.packageMonths || user.role === 'TEACHER') return listed;
     const startDate = localDate(input.startDate);
     const endDate = addCalendarMonths(startDate, input.packageMonths);
     const termWhere = {
@@ -620,16 +737,19 @@ export class RegistrationFlowService {
       endDate: { gt: startDate },
     };
     const [classEnrollments, studentRecord] = await Promise.all([
-      this.db.enrollment.findMany({
-        where: { ...termWhere, classId: { in: rows.map((row) => row.id) } },
-        select: { classId: true, startDate: true, endDate: true },
+      this.placedTermEnrollments(this.db, {
+        ...termWhere,
+        OR: [
+          { classId: { in: rows.map((row) => row.id) } },
+          { placements: { some: { classId: { in: rows.map((row) => row.id) } } } },
+        ],
       }),
       student ? this.loadStudentForRegistration(this.db, student.id) : null,
     ]);
     const studentEnrollments = student
       ? await this.studentTermEnrollments(this.db, student.id, startDate, endDate)
       : [];
-    return rows.map((row) => {
+    return listed.map((row) => {
       const occupied = classEnrollments.filter((item) => item.classId === row.id);
       const availableSeats = Math.max(
         0,
@@ -1242,10 +1362,10 @@ export class RegistrationFlowService {
           aggregateType: 'RegistrationOrder',
           aggregateId: order.id,
           recipient: order.parentEmail,
-          subject: `EduGrade - Payment confirmed for ${order.studentFullName}`,
+          subject: `EduGrade - Xác nhận thanh toán cho ${order.studentFullName}`,
           dedupeKey: `PAYMENT_CONFIRMED:${order.id}`,
           payload: {
-            text: `Payment ${payment.receiptNumber} for ${order.studentFullName} in ${order.class.name} was confirmed. Amount: ${order.quotedAmount.toString()} ${order.currency}.`,
+            text: `Đã xác nhận thanh toán ${payment.receiptNumber} cho ${order.studentFullName}. Môn: ${order.class.program.subject}. Lớp: ${order.class.name}. Lịch học: ${order.class.weeklySchedules.map((slot) => `thứ ${slot.weekday}, ${slot.startTime}-${slot.endTime}`).join('; ')}. Số tiền: ${order.quotedAmount.toString()} ${order.currency}.`,
           },
         },
       });
@@ -1355,18 +1475,20 @@ export class RegistrationFlowService {
     id: string,
     page: PageDto & { at?: string },
   ): Promise<unknown> {
+    await this.activateDueTeachers();
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER');
     const classroom = await this.db.class.findUnique({
       where: { id },
       include: {
         program: true,
+        room: true,
         teacher: { select: { id: true, displayName: true, email: true } },
         weeklySchedules: { orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }] },
       },
     });
     this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
     this.assert(
-      user.role !== 'TEACHER' || classroom.teacherId === user.id,
+      user.role !== 'TEACHER' || assignedTeacherAt(classroom, new Date()) === user.id,
       'FORBIDDEN',
       'Class is not assigned to this teacher',
       HttpStatus.FORBIDDEN,
@@ -1412,6 +1534,15 @@ export class RegistrationFlowService {
     ]);
     return {
       ...classroom,
+      pendingTeacher:
+        classroom.pendingTeacherId &&
+        classroom.pendingTeacherFrom &&
+        classroom.pendingTeacherFrom > new Date()
+          ? await this.db.user.findUnique({
+              where: { id: classroom.pendingTeacherId },
+              select: { id: true, displayName: true, email: true },
+            })
+          : null,
       rosterAt: at.toISOString(),
       scheduleLocked: Boolean(classroom.scheduleConfirmedAt) || scheduleLocked,
       enrollments: { items, page: page.page, limit: page.limit, total },
@@ -1494,26 +1625,74 @@ export class RegistrationFlowService {
     });
   }
 
-  private studentTermEnrollments(
+  private async placedTermEnrollments(
     client: Prisma.TransactionClient | DatabaseService,
-    studentId: string,
-    startDate: Date,
-    endDate: Date,
+    where: Prisma.EnrollmentWhereInput,
   ): Promise<StudentTermEnrollment[]> {
-    return client.enrollment.findMany({
-      where: {
-        studentProfileId: studentId,
-        status: 'ACTIVE',
-        startDate: { lt: endDate },
-        endDate: { gt: startDate },
-      },
+    const enrollments = await client.enrollment.findMany({
+      where,
       select: {
         classId: true,
         startDate: true,
         endDate: true,
         class: { select: { weeklySchedules: true } },
+        placements: {
+          select: {
+            classId: true,
+            effectiveFrom: true,
+            effectiveTo: true,
+            class: { select: { weeklySchedules: true } },
+          },
+          orderBy: { effectiveFrom: 'asc' },
+        },
       },
     });
+    return enrollments.flatMap((enrollment) => {
+      if (!enrollment.placements.length) {
+        return [
+          {
+            classId: enrollment.classId,
+            startDate: enrollment.startDate,
+            endDate: enrollment.endDate,
+            class: enrollment.class,
+          },
+        ];
+      }
+      return enrollment.placements.flatMap((placement) => {
+        const startDate =
+          enrollment.startDate && placement.effectiveFrom > enrollment.startDate
+            ? placement.effectiveFrom
+            : enrollment.startDate;
+        const endDate =
+          placement.effectiveTo && enrollment.endDate && placement.effectiveTo < enrollment.endDate
+            ? placement.effectiveTo
+            : (placement.effectiveTo ?? enrollment.endDate);
+        return startDate && endDate && startDate < endDate
+          ? [{ classId: placement.classId, startDate, endDate, class: placement.class }]
+          : [];
+      });
+    });
+  }
+
+  private async studentTermEnrollments(
+    client: Prisma.TransactionClient | DatabaseService,
+    studentId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<StudentTermEnrollment[]> {
+    const segments = await this.placedTermEnrollments(client, {
+      studentProfileId: studentId,
+      status: 'ACTIVE',
+      startDate: { lt: endDate },
+      endDate: { gt: startDate },
+    });
+    return segments.filter(
+      (segment) =>
+        segment.startDate &&
+        segment.endDate &&
+        segment.startDate < endDate &&
+        segment.endDate > startDate,
+    );
   }
 
   private async assertRegistrationAllowed(
@@ -1524,14 +1703,11 @@ export class RegistrationFlowService {
     endDate: Date,
   ): Promise<void> {
     const [classEnrollments, studentEnrollments] = await Promise.all([
-      tx.enrollment.findMany({
-        where: {
-          classId: classroom.id,
-          status: 'ACTIVE',
-          startDate: { lt: endDate },
-          endDate: { gt: startDate },
-        },
-        select: { classId: true, startDate: true, endDate: true },
+      this.placedTermEnrollments(tx, {
+        status: 'ACTIVE',
+        startDate: { lt: endDate },
+        endDate: { gt: startDate },
+        OR: [{ classId: classroom.id }, { placements: { some: { classId: classroom.id } } }],
       }),
       this.studentTermEnrollments(tx, student.id, startDate, endDate),
     ]);
@@ -1540,7 +1716,7 @@ export class RegistrationFlowService {
       classroom,
       startDate,
       endDate,
-      classEnrollments,
+      classEnrollments: classEnrollments.filter((item) => item.classId === classroom.id),
       studentEnrollments,
     });
     if (problem) throw new AppError(problem.code, problem.message, HttpStatus.CONFLICT);

@@ -1,5 +1,14 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { Enrollment, Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+
+function localStudyTime(value: Date | string): string {
+  return new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(new Date(value));
+}
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import {
   AcademicAccessService,
@@ -9,6 +18,7 @@ import {
   studyDate,
 } from './academic-access.service';
 import { AcademicRepository } from './academic.repository';
+import { attendanceContribution } from './attendance-calculation';
 import {
   AttendanceDto,
   AttendanceQueryDto,
@@ -30,6 +40,39 @@ export class EnrollmentWorkflowsService {
     private readonly repo: AcademicRepository,
     private readonly access: AcademicAccessService,
   ) {}
+
+  private async queueFamilyEmail(
+    tx: Prisma.TransactionClient,
+    enrollmentId: string,
+    eventType: string,
+    aggregateId: string,
+    content: string,
+  ): Promise<void> {
+    const enrollment = await tx.enrollment.findUnique({
+      where: { id: enrollmentId },
+      select: {
+        studentProfile: {
+          select: {
+            fullName: true,
+            parentProfile: { select: { user: { select: { email: true } } } },
+          },
+        },
+      },
+    });
+    const student = enrollment?.studentProfile;
+    if (!student) return;
+    await tx.outboxEvent.create({
+      data: {
+        eventType,
+        aggregateType: 'Enrollment',
+        aggregateId: enrollmentId,
+        recipient: student.parentProfile.user.email,
+        subject: `EduGrade - Thông tin học tập của ${student.fullName}`,
+        dedupeKey: `${eventType}:${aggregateId}:${randomUUID()}`,
+        payload: { text: `${student.fullName}: ${content}` },
+      },
+    });
+  }
 
   async leaves(user: AuthenticatedUser, query: LeaveFilterDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'PARENT');
@@ -179,7 +222,16 @@ export class EnrollmentWorkflowsService {
         });
       }
       const leave = await tx.leaveRequest.create({ data });
-      if (user.role !== 'STAFF') return leave;
+      if (user.role !== 'STAFF') {
+        await this.queueFamilyEmail(
+          tx,
+          leave.enrollmentId,
+          'LEAVE_REQUESTED',
+          leave.id,
+          `Đã ghi nhận yêu cầu nghỉ từ ${input.fromDate} đến ${input.toDate}.`,
+        );
+        return leave;
+      }
       // Staff record leave on behalf of the parent, so it is approved in the same transaction.
       return this.decideLeave(user, leave.id, { approve: true, reason: input.reason }, tx);
     });
@@ -246,7 +298,7 @@ export class EnrollmentWorkflowsService {
             data: { attendance: 'EXCUSED' },
           });
       }
-      return tx.leaveRequest.update({
+      const updated = await tx.leaveRequest.update({
         where: { id },
         data: {
           status: input.approve ? 'APPROVED' : 'REJECTED',
@@ -254,6 +306,14 @@ export class EnrollmentWorkflowsService {
           decisionNote: input.reason,
         },
       });
+      await this.queueFamilyEmail(
+        tx,
+        leave.enrollmentId,
+        'LEAVE_DECIDED',
+        id,
+        `Yêu cầu nghỉ từ ${leave.fromDate.toISOString().slice(0, 10)} đến ${leave.toDate.toISOString().slice(0, 10)} đã ${input.approve ? 'được duyệt' : 'bị từ chối'}.`,
+      );
+      return updated;
     };
     return outer ? run(outer) : this.repo.transaction(run);
   }
@@ -285,10 +345,18 @@ export class EnrollmentWorkflowsService {
           data: { attendance: 'UNMARKED' },
         });
       }
-      return tx.leaveRequest.update({
+      const cancelled = await tx.leaveRequest.update({
         where: { id },
         data: { status: 'CANCELLED', decidedById: user.id },
       });
+      await this.queueFamilyEmail(
+        tx,
+        leave.enrollmentId,
+        'LEAVE_CANCELLED',
+        id,
+        'Yêu cầu nghỉ đã được hủy.',
+      );
+      return cancelled;
     });
   }
 
@@ -305,18 +373,50 @@ export class EnrollmentWorkflowsService {
         'INVALID_LEAVE_STATE',
         'Only an approved period pause can end early',
       );
+      const today = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+      assertRule(
+        input.effectiveDate >= today,
+        'INVALID_EFFECTIVE_DATE',
+        'Effective date cannot be in the past',
+        HttpStatus.BAD_REQUEST,
+      );
       const effective = new Date(`${input.effectiveDate}T00:00:00.000Z`);
       assertRule(
         effective > leave.fromDate && effective <= leave.toDate,
         'INVALID_EFFECTIVE_DATE',
         'Effective date must fall inside the pause',
+        HttpStatus.BAD_REQUEST,
       );
       const shortenedTo = new Date(effective.getTime() - 86_400_000);
+      const startsAt = {
+        gte: new Date(effective.getTime() - 7 * 3600000),
+        lt: new Date(leave.toDate.getTime() + 17 * 3600000),
+      };
+      const otherLeaves = await tx.leaveRequest.findMany({
+        where: {
+          enrollmentId: leave.enrollmentId,
+          id: { not: id },
+          kind: 'PERIOD_PAUSE',
+          status: 'APPROVED',
+          fromDate: { lte: leave.toDate },
+          toDate: { gte: effective },
+        },
+        select: { fromDate: true, toDate: true },
+      });
       await tx.sessionParticipant.updateMany({
         where: {
           enrollmentId: leave.enrollmentId,
           attendance: 'EXCUSED',
-          session: { status: 'SCHEDULED', startsAt: { gte: effective } },
+          session: {
+            status: 'SCHEDULED',
+            startsAt,
+            NOT: otherLeaves.map((other) => ({
+              startsAt: {
+                gte: new Date(other.fromDate.getTime() - 7 * 3600000),
+                lt: new Date(other.toDate.getTime() + 17 * 3600000),
+              },
+            })),
+          },
         },
         data: { attendance: 'UNMARKED' },
       });
@@ -334,6 +434,13 @@ export class EnrollmentWorkflowsService {
           afterData: { toDate: shortenedTo, reason: input.reason },
         },
       });
+      await this.queueFamilyEmail(
+        tx,
+        leave.enrollmentId,
+        'LEAVE_ENDED_EARLY',
+        id,
+        `Kỳ nghỉ kết thúc sớm; ngày trở lại học là ${input.effectiveDate}.`,
+      );
       return updated;
     });
   }
@@ -446,7 +553,7 @@ export class EnrollmentWorkflowsService {
         : await tx.sessionParticipant.create({
             data: { sessionId: target.id, enrollmentId: source.enrollmentId, kind: 'MAKEUP' },
           });
-      return tx.makeupBooking.create({
+      const booking = await tx.makeupBooking.create({
         data: {
           originalParticipantId: source.id,
           activeOriginalId: source.id,
@@ -454,6 +561,14 @@ export class EnrollmentWorkflowsService {
           managerId: user.id,
         },
       });
+      await this.queueFamilyEmail(
+        tx,
+        source.enrollmentId,
+        'MAKEUP_BOOKED',
+        booking.id,
+        `Đã đặt buổi học bù vào ${localStudyTime(target.startsAt)}.`,
+      );
+      return booking;
     });
   }
 
@@ -479,8 +594,20 @@ export class EnrollmentWorkflowsService {
         HttpStatus.FORBIDDEN,
       );
     }
-    const from = input.fromDate ? new Date(input.fromDate) : new Date(0);
-    const to = input.toDate ? new Date(input.toDate) : new Date();
+    const from = input.fromDate
+      ? new Date(
+          /^\d{4}-\d{2}-\d{2}$/.test(input.fromDate)
+            ? `${input.fromDate}T00:00:00.000+07:00`
+            : input.fromDate,
+        )
+      : new Date(0);
+    const to = input.toDate
+      ? new Date(
+          /^\d{4}-\d{2}-\d{2}$/.test(input.toDate)
+            ? `${input.toDate}T23:59:59.999+07:00`
+            : input.toDate,
+        )
+      : new Date();
     assertRule(from <= to, 'INVALID_DATE_RANGE', 'Start must not follow end');
     const rows = await this.repo.db.sessionParticipant.findMany({
       where: {
@@ -509,31 +636,56 @@ export class EnrollmentWorkflowsService {
     });
     assertRule(rows.length <= 20000, 'ATTENDANCE_TOO_LARGE', 'Reduce the attendance date range');
     const counts = { present: 0, absent: 0, madeUp: 0, excused: 0, required: 0, attended: 0 };
-    const history = rows.map((row) => {
-      let effectiveStatus: 'PRESENT' | 'ABSENT' | 'MADE_UP' | 'EXCUSED';
-      if (row.attendance === 'EXCUSED') {
-        effectiveStatus = 'EXCUSED';
-        counts.excused++;
-      } else if (row.attendance === 'PRESENT') {
-        effectiveStatus = 'PRESENT';
-        counts.present++;
-        counts.required++;
-        counts.attended++;
-      } else if (row.sourceBookings.length) {
-        effectiveStatus = 'MADE_UP';
-        counts.madeUp++;
-        counts.required++;
-        counts.attended++;
-      } else {
-        effectiveStatus = 'ABSENT';
-        counts.absent++;
-        counts.required++;
+    const students = new Map<
+      string,
+      {
+        studentId: string;
+        fullName: string;
+        counts: typeof counts;
+        attendancePercent: number | null;
       }
+    >();
+    const history = rows.map((row) => {
+      const student = row.enrollment.studentProfile;
+      assertRule(student, 'STUDENT_NOT_FOUND', 'Attendance student profile is missing');
+      if (!students.has(student.id)) {
+        students.set(student.id, {
+          studentId: student.id,
+          fullName: student.fullName,
+          counts: { present: 0, absent: 0, madeUp: 0, excused: 0, required: 0, attended: 0 },
+          attendancePercent: null,
+        });
+      }
+      const studentCounts = students.get(student.id)!.counts;
+      const { effectiveStatus, required, attended } = attendanceContribution(
+        row.attendance,
+        row.sourceBookings.length > 0,
+      );
+      const key =
+        effectiveStatus === 'PRESENT'
+          ? 'present'
+          : effectiveStatus === 'MADE_UP'
+            ? 'madeUp'
+            : effectiveStatus === 'EXCUSED'
+              ? 'excused'
+              : 'absent';
+      counts[key]++;
+      studentCounts[key]++;
+      counts.required += required;
+      studentCounts.required += required;
+      counts.attended += attended;
+      studentCounts.attended += attended;
       return { ...row, effectiveStatus };
     });
+    for (const student of students.values()) {
+      student.attendancePercent = student.counts.required
+        ? Math.round((student.counts.attended / student.counts.required) * 10000) / 100
+        : null;
+    }
     return {
       range: { from: input.fromDate ?? null, to: input.toDate ?? null },
       counts,
+      students: [...students.values()],
       attendancePercent: counts.required
         ? Math.round((counts.attended / counts.required) * 10000) / 100
         : null,
@@ -637,10 +789,21 @@ export class EnrollmentWorkflowsService {
         where: { id: booking.replacementParticipantId },
         data: { cancelled: true },
       });
-      return tx.makeupBooking.update({
+      const cancelled = await tx.makeupBooking.update({
         where: { id },
         data: { status: 'CANCELLED', activeOriginalId: null },
       });
+      const original = await tx.sessionParticipant.findUniqueOrThrow({
+        where: { id: booking.originalParticipantId },
+      });
+      await this.queueFamilyEmail(
+        tx,
+        original.enrollmentId,
+        'MAKEUP_CANCELLED',
+        id,
+        'Buổi học bù đã được hủy.',
+      );
+      return cancelled;
     });
   }
 
@@ -719,6 +882,13 @@ export class EnrollmentWorkflowsService {
           afterData: { sessionId: state.target.id, reason: input.reason },
         },
       });
+      await this.queueFamilyEmail(
+        tx,
+        state.source.enrollmentId,
+        'MAKEUP_RESCHEDULED',
+        id,
+        `Buổi học bù được chuyển sang ${localStudyTime(state.target.startsAt)}.`,
+      );
       return updated;
     });
   }
@@ -786,10 +956,21 @@ export class EnrollmentWorkflowsService {
             },
           });
       }
-      return tx.classSession.update({
+      const completed = await tx.classSession.update({
         where: { id },
         data: { status: 'COMPLETED', summary: input.summary },
       });
+      for (const participant of session.participants) {
+        const status = input.items.find((item) => item.participantId === participant.id)!.status;
+        await this.queueFamilyEmail(
+          tx,
+          participant.enrollmentId,
+          'ATTENDANCE_FINALIZED',
+          `${id}:${participant.id}`,
+          `Điểm danh buổi ${localStudyTime(session.startsAt)}: ${status === 'PRESENT' ? 'có mặt' : status === 'EXCUSED' ? 'vắng có phép' : 'vắng mặt'}.`,
+        );
+      }
+      return completed;
     });
   }
 
@@ -953,7 +1134,7 @@ export class EnrollmentWorkflowsService {
           },
         });
       }
-      return tx.enrollmentTransfer.create({
+      const transfer = await tx.enrollmentTransfer.create({
         data: {
           enrollmentId: id,
           fromClassId,
@@ -963,6 +1144,14 @@ export class EnrollmentWorkflowsService {
           reason: input.reason,
         },
       });
+      await this.queueFamilyEmail(
+        tx,
+        id,
+        'ENROLLMENT_TRANSFERRED',
+        transfer.id,
+        `Đã chuyển lớp, hiệu lực từ ${localStudyTime(input.effectiveAt)}.`,
+      );
+      return transfer;
     });
   }
 
@@ -979,6 +1168,7 @@ export class EnrollmentWorkflowsService {
           afterData: impact,
         },
       });
+      await this.queueFamilyEmail(tx, id, 'ENROLLMENT_ENDED', id, 'Ghi danh đã kết thúc.');
       return { ...enrollment, impact };
     });
   }
@@ -997,6 +1187,13 @@ export class EnrollmentWorkflowsService {
       };
       for (const enrollment of enrollments) {
         const result = await this.endOne(tx, enrollment.id);
+        await this.queueFamilyEmail(
+          tx,
+          enrollment.id,
+          'STUDENT_STUDY_ENDED',
+          `${studentId}:${enrollment.id}`,
+          'Học sinh đã nghỉ học tại trung tâm.',
+        );
         impact.enrollmentIds.push(enrollment.id);
         impact.pendingLeavesCancelled += result.impact.pendingLeavesCancelled;
         impact.makeupsCancelled += result.impact.makeupsCancelled;

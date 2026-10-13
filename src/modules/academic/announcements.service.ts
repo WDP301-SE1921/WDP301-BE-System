@@ -1,18 +1,14 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { createTransport } from 'nodemailer';
-import type { AppConfiguration } from '../../config/configuration';
+import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicRepository } from './academic.repository';
 import { assertRule, roles, studyDate } from './academic-access.service';
 import { AnnouncementDto, PageDto, ReminderDto } from './academic.dto';
 
 @Injectable()
 export class AnnouncementsService {
-  constructor(
-    private readonly repo: AcademicRepository,
-    private readonly config: ConfigService<AppConfiguration, true>,
-  ) {}
+  constructor(private readonly repo: AcademicRepository) {}
   async create(user: AuthenticatedUser, input: AnnouncementDto): Promise<unknown> {
     roles(user, 'MANAGER');
     return this.repo.db.announcement.create({ data: { ...input, managerId: user.id } });
@@ -23,7 +19,7 @@ export class AnnouncementsService {
       user.role === 'MANAGER'
         ? {}
         : user.role === 'TEACHER'
-          ? { class: { teacherId: user.id } }
+          ? { class: assignedTeacherWhere(user.id, new Date()) }
           : {
               class: {
                 OR: [
@@ -92,7 +88,9 @@ export class AnnouncementsService {
       'TOO_MANY_RECIPIENTS',
       'Limit each announcement to 1000 enrollments',
     );
-    return this.deliver(
+    return this.enqueue(
+      'ANNOUNCEMENT',
+      announcement.id,
       [
         ...new Set(
           enrollments.flatMap((e) =>
@@ -120,46 +118,44 @@ export class AnnouncementsService {
       take: 1001,
     });
     assertRule(rows.length <= 1000, 'TOO_MANY_RECIPIENTS', 'Reduce the reminder range');
-    return this.deliver(
+    return this.enqueue(
+      'TUITION_REMINDER',
+      input.through,
       rows.flatMap((e) =>
         e.studentProfile
           ? [
               {
                 email: e.studentProfile.parentProfile.user.email,
-                title: 'EduGrade - Tuition reminder',
-                content: `${e.studentProfile.fullName}: ${e.class.name}. Enrollment ends on ${e.endDate!.toISOString().slice(0, 10)}. Please contact the center to renew.`,
+                title: 'EduGrade - Nhắc gia hạn học phí',
+                content: `${e.studentProfile.fullName}: lớp ${e.class.name}. Khóa học kết thúc ngày ${e.endDate!.toISOString().slice(0, 10)}. Vui lòng liên hệ trung tâm để gia hạn.`,
               },
             ]
           : [],
       ),
     );
   }
-  private async deliver(
+  private async enqueue(
+    eventType: string,
+    aggregateId: string,
     messages: { email: string; title: string; content: string }[],
   ): Promise<unknown> {
-    const c = this.config.get('academic', { infer: true });
-    if (!c.smtpUrl || !c.mailFrom) throw new ServiceUnavailableException('SMTP is not configured');
-    const transport = createTransport(
-      { url: c.smtpUrl, connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000 },
-      { from: c.mailFrom },
-    );
-    const results: { email: string; sent: boolean }[] = [];
-    try {
-      for (const message of messages) {
-        try {
-          await transport.sendMail({
-            to: message.email,
-            subject: message.title,
-            text: message.content,
-          });
-          results.push({ email: message.email, sent: true });
-        } catch {
-          results.push({ email: message.email, sent: false });
-        }
-      }
-    } finally {
-      transport.close();
-    }
-    return { results, automaticRetry: false };
+    await this.repo.db.outboxEvent.createMany({
+      data: messages.map((message) => ({
+        eventType,
+        aggregateType: eventType === 'ANNOUNCEMENT' ? 'Announcement' : 'TuitionReminder',
+        aggregateId,
+        recipient: message.email,
+        subject: message.title,
+        dedupeKey: `${eventType}:${aggregateId}:${createHash('sha256')
+          .update(message.email + message.content)
+          .digest('hex')}`,
+        payload: { text: message.content },
+      })),
+      skipDuplicates: true,
+    });
+    return {
+      results: messages.map((message) => ({ email: message.email, queued: true })),
+      automaticRetry: true,
+    };
   }
 }

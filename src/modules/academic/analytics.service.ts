@@ -4,6 +4,7 @@ import { Workbook, Worksheet } from 'exceljs';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AcademicAccessService, assertRule, inTerm, roles } from './academic-access.service';
 import { AcademicRepository } from './academic.repository';
+import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AnalyticsBucket, AnalyticsQueryDto, BulkReportExportDto } from './academic.dto';
 
 const DAY_MS = 86400000;
@@ -107,8 +108,15 @@ export class AnalyticsService {
     input: BulkReportExportDto,
   ): Promise<{ buffer: Buffer; type: string; name: string }> {
     roles(user, 'TEACHER');
+    const classes = await this.repo.db.class.findMany({
+      where: assignedTeacherWhere(user.id, new Date()),
+      select: { id: true },
+    });
     const reports = await this.repo.db.learningReport.findMany({
-      where: { id: { in: input.reportIds }, teacherId: user.id },
+      where: {
+        id: { in: input.reportIds },
+        classId: { in: classes.map((classroom) => classroom.id) },
+      },
       orderBy: { createdAt: 'asc' },
     });
     assertRule(
@@ -176,7 +184,7 @@ export class AnalyticsService {
   ): Promise<Dashboard> {
     const classWhere: Prisma.ClassWhereInput = {
       ...(classId ? { id: classId } : {}),
-      ...(user.role === 'TEACHER' ? { teacherId: user.id } : {}),
+      ...(user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {}),
     };
     if (classId) await this.access.classroom(user, classId);
     const classes = await this.repo.db.class.findMany({

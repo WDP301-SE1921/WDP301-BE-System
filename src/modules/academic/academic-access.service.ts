@@ -3,6 +3,7 @@ import { Prisma, UserRole } from '@prisma/client';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AcademicRepository } from './academic.repository';
+import { assignedTeacherAt } from '../registration-flow/class-teacher';
 
 export function assertRule(
   condition: unknown,
@@ -46,7 +47,7 @@ export class AcademicAccessService {
     const classroom = await tx.class.findUnique({ where: { id } });
     assertRule(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
     assertRule(
-      user.role === 'MANAGER' || classroom.teacherId === user.id,
+      user.role === 'MANAGER' || assignedTeacherAt(classroom, new Date()) === user.id,
       'FORBIDDEN',
       'Class is not assigned to this teacher',
       HttpStatus.FORBIDDEN,

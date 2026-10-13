@@ -211,3 +211,26 @@ Chỉ Teacher được phân công mới được gọi `POST /sessions/:id/rost
 - `GET /academic/email-deliveries` và `POST /academic/email-deliveries/:id/retry` dành cho Manager/Staff. Worker retry email pending với backoff và giới hạn số lần thử.
 - `PATCH /auth/me`, `POST /auth/change-password`, `/auth/forgot-password`, `/auth/reset-password` cung cấp self-service profile/password; reset thu hồi các phiên cũ.
 - `GET /audit-logs` dành cho Manager, có bộ lọc actor/entity/action/thời gian.
+
+## Contract BE handoff (13/10/2026)
+
+Các đường dẫn dưới đây tương đối với `/api/v1`; endpoint chuyên cần và email có thêm tiền tố `/academic`.
+
+| API | Thay đổi contract |
+| --- | --- |
+| `POST /classes/:id/teacher-assignments` | Đổi giáo viên theo `effectiveAt`. Trước thời điểm đó giáo viên cũ vẫn phụ trách; các buổi `SCHEDULED` từ thời điểm đó được phân cho giáo viên mới. Gửi lại `teacherId` hiện tại để hủy phân công chờ. Trùng lịch trả `TEACHER_SCHEDULE_CONFLICT`. |
+| `GET /classes/:id` | Trả `pendingTeacher` và `pendingTeacherFrom` khi có phân công chờ, cùng `room` và roster theo placement. |
+| `GET /classes` | Trả `room`, `rosterCount` hiện tại và, khi có `startDate`/`packageMonths`, `availableSeats` tính theo placement trong kỳ. `_count.enrollments` vẫn là tổng theo lớp gốc. |
+| `POST /academic/leaves/:id/end-early` | `effectiveDate` phải là `YYYY-MM-DD`, không trước ngày hiện tại theo UTC+7; ngày sai trả `400 INVALID_EFFECTIVE_DATE`. Chỉ mở lại buổi trong kỳ nghỉ đang kết thúc. |
+| `GET /academic/classes/:id/attendance-summary` | Ngày `YYYY-MM-DD` bao trùm cả ngày UTC+7; Teacher có thể lọc `studentId`. Response thêm `students[]` gồm `studentId`, `fullName`, `counts`, `attendancePercent`. `UNMARKED` ở buổi đã hoàn tất tính vắng. |
+| `POST /auth/change-password` | Sai mật khẩu hiện tại trả `400 AUTH_CURRENT_PASSWORD_INVALID`, không thu hồi phiên. |
+| `POST /auth/reset-password` | Token chỉ dùng một lần; đặt lại thành công thu hồi phiên và các reset token khác, ghi audit `PASSWORD_RESET`. |
+| `POST /account-invitations/:id/resend` | Manager xoay token của lời mời chưa dùng, gia hạn 48 giờ và xếp email mới vào outbox. Response không chứa token. |
+| `POST /teacher-invitations`, `/manager-invitations` | Chỉ response tạo mới có `acceptanceToken` một lần; không API nào trả `tokenHash`. Danh sách lời mời có `acceptedUser` công khai. |
+| `POST /teachers` | Trả `410 TEACHER_INVITATION_REQUIRED`; dùng quy trình mời → nhận → duyệt. |
+| `GET /managers` | Chỉ kiểm role `MANAGER`, không trả `permissions`. Endpoint `PATCH /managers/:id/permissions` đã bỏ. |
+| `POST /academic/email-deliveries/:id/retry` | SMTP lỗi trả `502 EMAIL_DELIVERY_FAILED` sau khi lưu lần thử. Danh sách delivery không trả payload chứa link/token. |
+
+Email điểm danh, nghỉ học, học bù, chuyển lớp, kết thúc học, lời mời, xác minh/reset, thanh toán, thông báo và nhắc học phí được xếp vào outbox. API tạo sự kiện xác nhận đã xếp hàng; trạng thái gửi thực tế xem qua `GET /academic/email-deliveries`. Worker dùng lease 60 giây và `maxAttempts` của từng event; nếu process chết đúng lúc SMTP nhận email thì email có thể được gửi lại.
+
+Migration `20261013000000_outbox_lease` thêm lease cho worker; `20261013001000_pending_class_teacher` thêm phân công giáo viên chờ hiệu lực. Cần chạy `prisma migrate deploy` trước khi chạy code mới. Cấu hình `WEB_ORIGIN` là gốc URL của Web dùng trong link nhận lời mời và đặt lại mật khẩu; nếu không đặt, BE dùng origin đầu tiên trong `CORS_ORIGINS`.

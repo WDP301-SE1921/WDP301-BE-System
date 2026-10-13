@@ -16,7 +16,6 @@ import {
   UpdateParentAccountDto,
   UpdateStaffAccountDto,
   ReviewAccountInvitationDto,
-  UpdateManagerPermissionsDto,
 } from './dto/directory.dto';
 
 @ApiBearerAuth()
@@ -71,7 +70,7 @@ export class DirectoryController {
   }
 
   @Post('teachers')
-  @ApiOperation({ summary: 'Manager: create a teacher account with an initial password' })
+  @ApiOperation({ summary: 'Deprecated: use teacher invitations and review (returns 410)' })
   createTeacher(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: CreateStaffAccountDto,
@@ -149,16 +148,6 @@ export class DirectoryController {
     return this.directory.listManagers(user, query);
   }
 
-  @Patch('managers/:id/permissions')
-  @ApiOperation({ summary: 'Manager: replace another manager permission set' })
-  managerPermissions(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-    @Body() input: UpdateManagerPermissionsDto,
-  ): Promise<unknown> {
-    return this.directory.updateManagerPermissions(user, id, input);
-  }
-
   @Post('teacher-invitations')
   inviteTeacher(
     @CurrentUser() user: AuthenticatedUser,
@@ -212,5 +201,14 @@ export class DirectoryController {
     @Param('id') id: string,
   ): Promise<unknown> {
     return this.directory.revokeInvitation(user, id);
+  }
+
+  @Post('account-invitations/:id/resend')
+  @ApiOperation({ summary: 'Manager: rotate token and resend an unused invitation' })
+  resendInvitation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.directory.resendInvitation(user, id);
   }
 }

@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicAccessService, assertRule, inTerm, roles } from './academic-access.service';
 import { AcademicRepository } from './academic.repository';
 import {
@@ -96,7 +97,7 @@ export class AssessmentService {
     roles(user, 'TEACHER', 'PARENT');
     const where: Prisma.AssignmentWhereInput =
       user.role === 'TEACHER'
-        ? { teacherId: user.id, class: { teacherId: user.id } }
+        ? { class: assignedTeacherWhere(user.id, new Date()) }
         : {
             status: { not: 'DRAFT' },
             recipients: {
@@ -454,12 +455,6 @@ export class AssessmentService {
     roles(user, 'TEACHER');
     const assignment = await tx.assignment.findUniqueOrThrow({ where: { id: assignmentId } });
     await this.access.classroom(user, assignment.classId, tx);
-    assertRule(
-      assignment.teacherId === user.id,
-      'FORBIDDEN',
-      'Assignment belongs to another teacher',
-      HttpStatus.FORBIDDEN,
-    );
     return assignment;
   }
 }

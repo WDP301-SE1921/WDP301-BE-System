@@ -6,12 +6,15 @@ import type { Server } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import * as mysql from 'mysql2/promise';
 import * as request from 'supertest';
+import { createHash } from 'node:crypto';
 
 import { AppModule } from '../../src/app.module';
 import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
+import { DatabaseService } from '../../src/database/orm/database.service';
 
-const TEST_DATABASE_URL = 'mysql://root:admin123@localhost:3306/edugrade_auth_test';
+const TEST_DATABASE_URL =
+  process.env.AUTH_TEST_DATABASE_URL ?? 'mysql://root:admin123@localhost:3306/edugrade_auth_test';
 
 interface AuthEnvelope {
   success: true;
@@ -160,6 +163,52 @@ describe('Auth endpoints (e2e)', () => {
       .post('/api/v1/auth/refresh')
       .send({ refreshToken: replayLogin.data.tokens.refreshToken })
       .expect(401);
+  });
+
+  it('keeps the session after a wrong current password and consumes reset tokens once', async () => {
+    const email = `password-${Date.now()}@example.com`;
+    const registered = await request(httpServer)
+      .post('/api/v1/auth/register')
+      .send({
+        email,
+        password: 'StrongPass123!',
+        displayName: 'Password User',
+        phone: '0901234567',
+      })
+      .expect(201);
+    const { user, tokens } = (registered.body as AuthEnvelope).data;
+    const auth = `Bearer ${tokens.accessToken}`;
+    const wrong = await request(httpServer)
+      .post('/api/v1/auth/change-password')
+      .set('Authorization', auth)
+      .send({ currentPassword: 'WrongPass123!', newPassword: 'NewStrongPass123!' })
+      .expect(400);
+    expect((wrong.body as { error: { code: string } }).error.code).toBe(
+      'AUTH_CURRENT_PASSWORD_INVALID',
+    );
+    await request(httpServer).get('/api/v1/auth/me').set('Authorization', auth).expect(200);
+
+    const db = app!.get(DatabaseService);
+    const token = `reset-${Date.now()}`;
+    await db.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: createHash('sha256').update(token).digest('hex'),
+        expiresAt: new Date(Date.now() + 3600000),
+      },
+    });
+    await request(httpServer)
+      .post('/api/v1/auth/reset-password')
+      .send({ token, newPassword: 'NewStrongPass123!' })
+      .expect(200);
+    const reused = await request(httpServer)
+      .post('/api/v1/auth/reset-password')
+      .send({ token, newPassword: 'AnotherStrongPass123!' })
+      .expect(400);
+    expect((reused.body as { error: { code: string } }).error.code).toBe(
+      'AUTH_INVALID_RESET_TOKEN',
+    );
+    await request(httpServer).get('/api/v1/auth/me').set('Authorization', auth).expect(401);
   });
 });
 
