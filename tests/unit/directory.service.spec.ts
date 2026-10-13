@@ -1,4 +1,6 @@
 import type { Prisma, UserRole } from '@prisma/client';
+import type { ConfigService } from '@nestjs/config';
+import type { AppConfiguration } from '../../src/config/configuration';
 
 import type { AuthenticatedUser } from '../../src/common/types/authenticated-user';
 import type { DatabaseService } from '../../src/database/orm/database.service';
@@ -21,7 +23,10 @@ describe('Parent directory access', () => {
     },
     $transaction: jest.fn(),
   };
-  const service = new DirectoryService(database as unknown as DatabaseService);
+  const service = new DirectoryService(
+    database as unknown as DatabaseService,
+    { get: () => 'http://localhost:3000' } as unknown as ConfigService<AppConfiguration, true>,
+  );
   beforeEach(() => jest.clearAllMocks());
 
   it.each<UserRole>(['STAFF', 'MANAGER'])(

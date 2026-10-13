@@ -352,6 +352,63 @@ describe('Academic workflows (database + HTTP)', () => {
     expect(snapshot.rows[0]).toMatchObject({ required: 1, attended: 1, attendancePercent: 100 });
   });
 
+  it('keeps class ownership until a scheduled teacher change and updates only future sessions', async () => {
+    const classroom = await db.class.create({
+      data: {
+        programId: ids.program,
+        name: 'Future teacher assignment',
+        teacherId: ids.teacher,
+        capacity: 5,
+        monthlyFee: 500000,
+      },
+    });
+    const now = Date.now();
+    const before = await db.classSession.create({
+      data: {
+        classId: classroom.id,
+        lessonId: ids.lesson,
+        teacherId: ids.teacher,
+        startsAt: new Date(now + 86400000),
+        endsAt: new Date(now + 86400000 + 3600000),
+      },
+    });
+    const after = await db.classSession.create({
+      data: {
+        classId: classroom.id,
+        lessonId: ids.lesson,
+        teacherId: ids.teacher,
+        startsAt: new Date(now + 3 * 86400000),
+        endsAt: new Date(now + 3 * 86400000 + 3600000),
+      },
+    });
+    await request(server)
+      .post(`/api/v1/classes/${classroom.id}/teacher-assignments`)
+      .set('Authorization', `Bearer ${tokens.manager}`)
+      .send({
+        teacherId: ids.outsider,
+        effectiveAt: new Date(now + 2 * 86400000).toISOString(),
+        reason: 'Change next week',
+      })
+      .expect(201);
+    expect((await db.class.findUniqueOrThrow({ where: { id: classroom.id } })).teacherId).toBe(
+      ids.teacher,
+    );
+    expect((await db.classSession.findUniqueOrThrow({ where: { id: before.id } })).teacherId).toBe(
+      ids.teacher,
+    );
+    expect((await db.classSession.findUniqueOrThrow({ where: { id: after.id } })).teacherId).toBe(
+      ids.outsider,
+    );
+    await request(server)
+      .get(`/api/v1/classes/${classroom.id}`)
+      .set('Authorization', `Bearer ${tokens.teacher}`)
+      .expect(200);
+    await request(server)
+      .get(`/api/v1/classes/${classroom.id}`)
+      .set('Authorization', `Bearer ${tokens.outsider}`)
+      .expect(403);
+  });
+
   it('exports real Excel and PDF reports and denies other users', async () => {
     await call('manager', 'get', `reports/${ids.report}/download?format=xlsx`).expect(403);
     await call('outsider', 'get', `reports/${ids.report}/download?format=xlsx`).expect(403);
@@ -540,6 +597,20 @@ describe('Academic workflows (database + HTTP)', () => {
     });
     expect(enrollment.classId).toBe(ids.classA);
     expect(enrollment.placements).toHaveLength(2);
+    await db.class.updateMany({
+      where: { id: { in: [ids.classA, ids.classB] } },
+      data: { capacity: 1 },
+    });
+    const termStart = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    const classList = await request(server)
+      .get('/api/v1/classes')
+      .set('Authorization', `Bearer ${tokens.parent}`)
+      .query({ startDate: termStart, packageMonths: 1 })
+      .expect(200);
+    const classes = (classList.body as Envelope<Array<{ id: string; availableSeats: number }>>)
+      .data;
+    expect(classes.find((row) => row.id === ids.classB)?.availableSeats).toBe(0);
+    expect(classes.find((row) => row.id === ids.classA)?.availableSeats).toBe(1);
     await call('staff', 'post', `students/${ids.student}/end-study`).expect(201);
     expect((await db.enrollment.findUniqueOrThrow({ where: { id: ids.enrollment } })).status).toBe(
       'ENDED',
@@ -625,7 +696,7 @@ describe('Academic workflows (database + HTTP)', () => {
     await db.class.update({ where: { id: ids.classB }, data: { capacity: 5 } });
   });
 
-  it('handles feedback and reports missing SMTP without pretending delivery', async () => {
+  it('handles feedback and queues announcement email without SMTP', async () => {
     const feedback = await call('teacher', 'post', `lessons/${ids.lesson}/feedback`)
       .send({ content: 'Add an example' })
       .expect(201);
@@ -653,7 +724,28 @@ describe('Academic workflows (database + HTTP)', () => {
       'manager',
       'post',
       `announcements/${(announcement.body as Envelope<WithId>).data.id}/send-email`,
-    ).expect(503);
+    ).expect(201);
+    expect(
+      await db.outboxEvent.count({
+        where: {
+          eventType: 'ANNOUNCEMENT',
+          aggregateId: (announcement.body as Envelope<WithId>).data.id,
+        },
+      }),
+    ).toBeGreaterThan(0);
+    const queued = await db.outboxEvent.findFirstOrThrow({
+      where: {
+        eventType: 'ANNOUNCEMENT',
+        aggregateId: (announcement.body as Envelope<WithId>).data.id,
+      },
+    });
+    app.get(ConfigService).set('academic.smtpUrl', 'smtp://127.0.0.1:1');
+    app.get(ConfigService).set('academic.mailFrom', 'test@example.com');
+    const failed = await call('manager', 'post', `email-deliveries/${queued.id}/retry`).expect(502);
+    expect((failed.body as { error: { code: string } }).error.code).toBe('EMAIL_DELIVERY_FAILED');
+    const attempt = await db.outboxEvent.findUniqueOrThrow({ where: { id: queued.id } });
+    expect(attempt.attemptCount).toBe(1);
+    expect(attempt.lastError).toBeTruthy();
   });
 });
 

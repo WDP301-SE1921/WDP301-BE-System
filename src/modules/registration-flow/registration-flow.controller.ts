@@ -313,7 +313,10 @@ export class RegistrationFlowController {
   }
 
   @Get('classes/:id')
-  @ApiOperation({ summary: 'Class detail with program, teacher, weekly schedule and enrollments' })
+  @ApiOperation({
+    summary: 'Class detail with program, room, teacher and placement roster',
+    description: 'Future teacher changes appear as pendingTeacher and pendingTeacherFrom.',
+  })
   classDetail(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

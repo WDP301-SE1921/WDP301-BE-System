@@ -13,6 +13,7 @@ import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.fil
 import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
 import { validateEnvironment } from '../../src/config/configuration';
 import { DatabaseService } from '../../src/database/orm/database.service';
+import { AuthService } from '../../src/modules/auth/auth.service';
 import type { ParentSuggestionDto } from '../../src/modules/registration-flow/dto/registration-flow.dto';
 
 interface Envelope<T> {
@@ -664,11 +665,49 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
   describe('manager directory and dashboard', () => {
     type Account = WithId & { email: string; status: string; role: string };
 
-    it('creates, lists, renames and disables staff and teachers without exposing secrets', async () => {
-      for (const [role, path] of [
-        ['STAFF', 'staff'],
-        ['TEACHER', 'teachers'],
-      ] as const) {
+    it('rotates invitation tokens and gives an approved manager full role access', async () => {
+      const email = `invited-manager-${Date.now()}@example.com`;
+      const invited = await call('MANAGER', 'post', 'manager-invitations')
+        .send({ email })
+        .expect(201);
+      const first = (invited.body as Envelope<{ id: string; acceptanceToken: string }>).data;
+      expect(JSON.stringify(invited.body)).not.toContain('tokenHash');
+      const resent = await call('MANAGER', 'post', `account-invitations/${first.id}/resend`).expect(
+        201,
+      );
+      expect(JSON.stringify(resent.body)).not.toMatch(/tokenHash|acceptanceToken/);
+      await request(httpServer)
+        .post('/api/v1/account-invitations/accept')
+        .send({
+          token: first.acceptanceToken,
+          password: 'InitialPass123!',
+          displayName: 'New Manager',
+        })
+        .expect(400);
+      const delivery = await db.outboxEvent.findFirstOrThrow({
+        where: { eventType: 'ACCOUNT_INVITATION', aggregateId: first.id },
+        orderBy: { createdAt: 'desc' },
+      });
+      const link = (delivery.payload as { text: string }).text.split(' ').at(-1)!;
+      const token = new URL(link).searchParams.get('token');
+      expect(token).toBeTruthy();
+      await request(httpServer)
+        .post('/api/v1/account-invitations/accept')
+        .send({ token, password: 'InitialPass123!', displayName: 'New Manager' })
+        .expect(201);
+      await call('MANAGER', 'post', `account-invitations/${first.id}/review`)
+        .send({ decision: 'APPROVE' })
+        .expect(201);
+      const managerToken = (await app!.get(AuthService).login(email, 'InitialPass123!')).tokens
+        .accessToken;
+      await request(httpServer)
+        .get('/api/v1/managers')
+        .set('Authorization', `Bearer ${managerToken}`)
+        .expect(200);
+    });
+
+    it('creates, lists, renames and disables staff without exposing secrets', async () => {
+      for (const [role, path] of [['STAFF', 'staff']] as const) {
         const email = `new${path}@example.com`;
         const created = await call('MANAGER', 'post', path)
           .send({
@@ -712,6 +751,13 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
           (disabled.body as Envelope<{ items: Account[] }>).data.items.map((row) => row.id),
         ).toContain(account.id);
       }
+      await call('MANAGER', 'post', 'teachers')
+        .send({
+          email: 'direct.teacher@example.com',
+          password: 'InitialPass123!',
+          displayName: 'Direct',
+        })
+        .expect(410);
       // Other roles' accounts are invisible through these endpoints.
       const managerId = (await db.user.findFirstOrThrow({ where: { role: 'MANAGER' } })).id;
       await call('MANAGER', 'get', `staff/${managerId}`).expect(404);

@@ -238,6 +238,8 @@ model Class {
   isActive              Boolean               @default(true)
   monthlyFee            Decimal               @db.Decimal(14, 2)
   teacherId             String?               @db.VarChar(191)
+  pendingTeacherId      String?               @db.VarChar(191)
+  pendingTeacherFrom    DateTime?
   roomId                String?               @db.VarChar(191)
   scheduleConfirmedAt   DateTime?
   scheduleConfirmedById String?               @db.VarChar(191)
@@ -258,6 +260,7 @@ model Class {
 
   @@index([programId, isOpen])
   @@index([roomId])
+  @@index([pendingTeacherFrom])
   @@index([scheduleConfirmedById])
   @@map("classes")
 }
@@ -913,11 +916,14 @@ model OutboxEvent {
   attemptCount  Int          @default(0)
   maxAttempts   Int          @default(5)
   nextAttemptAt DateTime     @default(now())
+  leaseToken    String?      @db.VarChar(64)
+  leaseExpiresAt DateTime?
   lastError     String?      @db.Text
   createdAt     DateTime     @default(now())
   sentAt        DateTime?
 
   @@index([status, nextAttemptAt])
+  @@index([status, leaseExpiresAt])
   @@index([aggregateId])
   @@map("outbox_events")
 }

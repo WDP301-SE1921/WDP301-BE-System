@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import * as bcrypt from 'bcrypt';
-import { createTransport } from 'nodemailer';
 
 import { AppError } from '../../common/errors/app.error';
 import type { AppConfiguration } from '../../config/configuration';
@@ -173,7 +172,11 @@ export class AuthService {
       !account?.passwordHash ||
       !(await bcrypt.compare(input.currentPassword, account.passwordHash))
     ) {
-      throw this.invalidCredentialsError();
+      throw new AppError(
+        'AUTH_CURRENT_PASSWORD_INVALID',
+        'Current password is incorrect',
+        HttpStatus.BAD_REQUEST,
+      );
     }
     const passwordHash = await bcrypt.hash(input.newPassword, PASSWORD_HASH_ROUNDS);
     await this.db.$transaction([
@@ -181,6 +184,10 @@ export class AuthService {
       this.db.authSession.updateMany({
         where: { userId: user.id, id: { not: user.sessionId }, revokedAt: null },
         data: { revokedAt: new Date() },
+      }),
+      this.db.passwordResetToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: new Date() },
       }),
       this.db.auditLog.create({
         data: {
@@ -198,18 +205,29 @@ export class AuthService {
     const user = await this.usersService.findByEmailWithPassword(email);
     if (!user || user.status !== 'ACTIVE') return { accepted: true };
     const token = randomBytes(32).toString('base64url');
-    await this.db.passwordResetToken.create({
-      data: {
-        userId: user.id,
-        tokenHash: this.hashToken(token),
-        expiresAt: new Date(Date.now() + RESET_PASSWORD_TTL_MS),
-      },
+    const tokenHash = this.hashToken(token);
+    const link = new URL('/reset-password', this.config.get('webOrigin', { infer: true }));
+    link.searchParams.set('token', token);
+    await this.db.$transaction(async (tx) => {
+      const record = await tx.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash,
+          expiresAt: new Date(Date.now() + RESET_PASSWORD_TTL_MS),
+        },
+      });
+      await tx.outboxEvent.create({
+        data: {
+          eventType: 'PASSWORD_RESET',
+          aggregateType: 'PasswordResetToken',
+          aggregateId: record.id,
+          recipient: user.email,
+          subject: 'EduGrade - Đặt lại mật khẩu',
+          dedupeKey: `password-reset:${record.id}`,
+          payload: { tokenHash, text: `Mở liên kết để đặt lại mật khẩu: ${link.toString()}` },
+        },
+      });
     });
-    await this.sendAccountEmail(
-      user.email,
-      'EduGrade - Reset your password',
-      `Use this password reset token: ${token}`,
-    );
     return { accepted: true };
   }
 
@@ -227,14 +245,37 @@ export class AuthService {
       );
     }
     const passwordHash = await bcrypt.hash(input.newPassword, PASSWORD_HASH_ROUNDS);
-    await this.db.$transaction([
-      this.db.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: now } }),
-      this.db.user.update({ where: { id: record.userId }, data: { passwordHash } }),
-      this.db.authSession.updateMany({
+    await this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${record.userId} FOR UPDATE`;
+      const claimed = await tx.passwordResetToken.updateMany({
+        where: { id: record.id, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (claimed.count !== 1) {
+        throw new AppError(
+          'AUTH_INVALID_RESET_TOKEN',
+          'Reset token is invalid or expired',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      await tx.user.update({ where: { id: record.userId }, data: { passwordHash } });
+      await tx.passwordResetToken.updateMany({
+        where: { userId: record.userId, usedAt: null },
+        data: { usedAt: now },
+      });
+      await tx.authSession.updateMany({
         where: { userId: record.userId, revokedAt: null },
         data: { revokedAt: now },
-      }),
-    ]);
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: record.userId,
+          action: 'PASSWORD_RESET',
+          entityType: 'User',
+          entityId: record.userId,
+        },
+      });
+    });
     return { reset: true };
   }
 
@@ -329,56 +370,28 @@ export class AuthService {
 
   private async issueEmailVerification(userId: string, email: string): Promise<{ sent: boolean }> {
     const token = randomBytes(32).toString('base64url');
-    await this.db.emailVerificationToken.create({
-      data: {
-        userId,
-        tokenHash: this.hashToken(token),
-        expiresAt: new Date(Date.now() + VERIFY_EMAIL_TTL_MS),
-      },
-    });
-    const academicConfig = this.config.get('academic', { infer: true });
-    if (!academicConfig.smtpUrl || !academicConfig.mailFrom) return { sent: false };
-    const transport = createTransport(
-      {
-        url: academicConfig.smtpUrl,
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000,
-      },
-      { from: academicConfig.mailFrom },
-    );
-    try {
-      await transport.sendMail({
-        to: email,
-        subject: 'EduGrade - Verify your email',
-        text: `Use this verification token to activate your EduGrade account: ${token}`,
+    const tokenHash = this.hashToken(token);
+    await this.db.$transaction(async (tx) => {
+      const record = await tx.emailVerificationToken.create({
+        data: {
+          userId,
+          tokenHash,
+          expiresAt: new Date(Date.now() + VERIFY_EMAIL_TTL_MS),
+        },
       });
-      return { sent: true };
-    } finally {
-      transport.close();
-    }
-  }
-
-  private async sendAccountEmail(email: string, subject: string, text: string): Promise<boolean> {
-    const academicConfig = this.config.get('academic', { infer: true });
-    if (!academicConfig.smtpUrl || !academicConfig.mailFrom) return false;
-    const transport = createTransport(
-      {
-        url: academicConfig.smtpUrl,
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000,
-      },
-      { from: academicConfig.mailFrom },
-    );
-    try {
-      await transport.sendMail({ to: email, subject, text });
-      return true;
-    } catch {
-      return false;
-    } finally {
-      transport.close();
-    }
+      await tx.outboxEvent.create({
+        data: {
+          eventType: 'EMAIL_VERIFICATION',
+          aggregateType: 'EmailVerificationToken',
+          aggregateId: record.id,
+          recipient: email,
+          subject: 'EduGrade - Xác minh email',
+          dedupeKey: `email-verification:${record.id}`,
+          payload: { tokenHash, text: `Mã xác minh tài khoản EduGrade: ${token}` },
+        },
+      });
+    });
+    return { sent: true };
   }
 
   private hashesMatch(storedHash: string, presentedHash: string): boolean {

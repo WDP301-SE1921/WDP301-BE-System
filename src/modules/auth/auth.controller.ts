@@ -182,7 +182,11 @@ export class AuthController {
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Change password and revoke the other sessions' })
+  @ApiOperation({
+    summary: 'Change password and revoke the other sessions',
+    description:
+      'Wrong current password returns 400 AUTH_CURRENT_PASSWORD_INVALID without revoking this session.',
+  })
   changePassword(
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: ChangePasswordDto,

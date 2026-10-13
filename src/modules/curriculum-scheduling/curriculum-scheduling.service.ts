@@ -4,6 +4,7 @@ import { Prisma, type ClassWeeklySchedule, type Lesson } from '@prisma/client';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
+import { assignedTeacherAt, assignedTeacherWhere } from '../registration-flow/class-teacher';
 import {
   CreateCurriculumUnitDto,
   CurriculumLessonDto,
@@ -38,6 +39,12 @@ type PlannedSlot = {
   kind: 'LESSON' | 'MONTHLY_TEST';
   monthKey: string;
 };
+
+function slotsTeacherIds(classroom: ClassWithSchedule, slots: PlannedSlot[]): string[] {
+  return [...new Set(slots.map((slot) => assignedTeacherAt(classroom, slot.startsAt)))].filter(
+    (id): id is string => !!id,
+  );
+}
 
 @Injectable()
 export class CurriculumSchedulingService {
@@ -78,7 +85,7 @@ export class CurriculumSchedulingService {
       user.role === 'TEACHER'
         ? (
             await this.db.class.findMany({
-              where: { teacherId: user.id },
+              where: assignedTeacherWhere(user.id, new Date()),
               include: { program: true },
             })
           ).map((row) => row.programId)
@@ -944,7 +951,12 @@ export class CurriculumSchedulingService {
           'Schedule preview is stale; preview again',
         );
       }
-      await tx.$queryRaw`SELECT id FROM users WHERE id = ${classroom.teacherId} FOR UPDATE`;
+      const teacherIds = [
+        ...new Set(slotsTeacherIds(classroom, this.plan(unit, classroom, input))),
+      ];
+      for (const teacherId of teacherIds) {
+        await tx.$queryRaw`SELECT id FROM users WHERE id = ${teacherId} FOR UPDATE`;
+      }
       const slots = this.plan(unit, classroom, input);
       const conflicts = await this.findConflicts(tx, classroom, slots);
       this.assert(
@@ -967,7 +979,7 @@ export class CurriculumSchedulingService {
         data: slots.map((slot) => ({
           classId,
           lessonId: slot.lessonId,
-          teacherId: classroom.teacherId!,
+          teacherId: assignedTeacherAt(classroom, slot.startsAt)!,
           roomId: classroom.roomId,
           generationId: generation.id,
           startsAt: slot.startsAt,
@@ -1325,7 +1337,7 @@ export class CurriculumSchedulingService {
     if (user.role === 'TEACHER') {
       const classroom = await this.db.class.findUnique({ where: { id: classId } });
       this.assert(
-        classroom?.teacherId === user.id,
+        classroom && assignedTeacherAt(classroom, new Date()) === user.id,
         'FORBIDDEN',
         'Class is not assigned to this teacher',
         HttpStatus.FORBIDDEN,
@@ -1354,7 +1366,7 @@ export class CurriculumSchedulingService {
     this.assert(row, 'GENERATION_NOT_FOUND', 'Generation not found', HttpStatus.NOT_FOUND);
     if (user.role === 'TEACHER')
       this.assert(
-        row.class.teacherId === user.id,
+        assignedTeacherAt(row.class, new Date()) === user.id,
         'FORBIDDEN',
         'Class is not assigned to this teacher',
         HttpStatus.FORBIDDEN,
@@ -1746,13 +1758,28 @@ export class CurriculumSchedulingService {
         endsAt: { gt: first },
         OR: [
           { classId: classroom.id },
-          { teacherId: classroom.teacherId! },
+          { teacherId: { in: slotsTeacherIds(classroom, slots) } },
           ...(classroom.roomId ? [{ roomId: classroom.roomId }] : []),
         ],
       },
-      select: { id: true, classId: true, teacherId: true, startsAt: true, endsAt: true },
+      select: {
+        id: true,
+        classId: true,
+        teacherId: true,
+        roomId: true,
+        startsAt: true,
+        endsAt: true,
+      },
     });
-    return rows.filter((row) => slots.some((slot) => overlaps(slot, row)));
+    return rows.filter((row) =>
+      slots.some(
+        (slot) =>
+          overlaps(slot, row) &&
+          (row.classId === classroom.id ||
+            row.teacherId === assignedTeacherAt(classroom, slot.startsAt) ||
+            (classroom.roomId && row.roomId === classroom.roomId)),
+      ),
+    );
   }
 
   private scheduleSnapshot(unit: UnitWithLessons, classroom: ClassWithSchedule): string {
@@ -1779,6 +1806,8 @@ export class CurriculumSchedulingService {
             id: classroom.id,
             programId: classroom.programId,
             teacherId: classroom.teacherId,
+            pendingTeacherId: classroom.pendingTeacherId,
+            pendingTeacherFrom: classroom.pendingTeacherFrom,
             teacherStatus: classroom.teacher?.status,
             schedules: classroom.weeklySchedules
               .map((row) => ({

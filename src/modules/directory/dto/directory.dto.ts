@@ -1,8 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
-  ArrayUnique,
-  IsArray,
   IsDateString,
   IsEmail,
   IsIn,
@@ -160,12 +158,4 @@ export class AcceptAccountInvitationDto {
 export class ReviewAccountInvitationDto {
   @ApiPropertyOptional() @IsIn(['APPROVE', 'REJECT']) decision!: 'APPROVE' | 'REJECT';
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(2000) note?: string;
-}
-
-export class UpdateManagerPermissionsDto {
-  @ApiPropertyOptional({ type: [String] })
-  @IsArray()
-  @ArrayUnique()
-  @IsString({ each: true })
-  permissions!: string[];
 }

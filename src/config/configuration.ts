@@ -5,6 +5,7 @@ export interface AppConfiguration {
   port: number;
   databaseUrl: string;
   corsOrigins: string[];
+  webOrigin: string;
   swaggerEnabled: boolean;
   throttleLimitPerMinute: number;
   academic: {
@@ -88,12 +89,17 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
   if (nodeEnv === 'production' && corsOrigins.some((origin) => origin === '*')) {
     throw new Error('CORS_ORIGINS cannot contain a wildcard in production');
   }
+  const webOrigin = environment.WEB_ORIGIN?.trim() || corsOrigins[0];
+  if (!webOrigin || !/^https?:$/.test(new URL(webOrigin).protocol)) {
+    throw new Error('WEB_ORIGIN must be an HTTP(S) origin');
+  }
 
   return {
     nodeEnv,
     port: parsePort(environment.PORT),
     databaseUrl: required(environment, 'DATABASE_URL'),
     corsOrigins,
+    webOrigin: new URL(webOrigin).origin,
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
     throttleLimitPerMinute: parsePositiveInteger(environment, 'THROTTLE_LIMIT_PER_MINUTE', 120),
     academic: {

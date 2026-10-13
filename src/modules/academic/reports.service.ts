@@ -3,7 +3,9 @@ import { Workbook } from 'exceljs';
 import * as PDFDocument from 'pdfkit';
 import { resolve } from 'node:path';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicRepository } from './academic.repository';
+import { attendanceContribution } from './attendance-calculation';
 import { AcademicAccessService, assertRule, roles } from './academic-access.service';
 import { AcademicAiService, isRecord } from '../../integrations/academic-ai.service';
 import { PageDto, ReportDto } from './academic.dto';
@@ -37,8 +39,12 @@ export class ReportsService {
   async create(user: AuthenticatedUser, input: ReportDto): Promise<unknown> {
     roles(user, 'TEACHER');
     await this.access.classroom(user, input.classId);
-    const from = new Date(input.from),
-      to = new Date(input.to);
+    const from = new Date(
+      /^\d{4}-\d{2}-\d{2}$/.test(input.from) ? `${input.from}T00:00:00.000+07:00` : input.from,
+    );
+    const to = new Date(
+      /^\d{4}-\d{2}-\d{2}$/.test(input.to) ? `${input.to}T23:59:59.999+07:00` : input.to,
+    );
     assertRule(
       from <= to && to.getTime() - from.getTime() <= 366 * 86400000,
       'INVALID_REPORT_RANGE',
@@ -121,10 +127,9 @@ export class ReportsService {
         const student = p.enrollment.studentProfile;
         if (!student) continue;
         const row = ensure(student.id, student.fullName);
-        if (p.attendance === 'PRESENT' || p.attendance === 'ABSENT') {
-          row.required++;
-          if (p.attendance === 'PRESENT' || p.sourceBookings.length) row.attended++;
-        }
+        const contribution = attendanceContribution(p.attendance, p.sourceBookings.length > 0);
+        row.required += contribution.required;
+        row.attended += contribution.attended;
       }
       for (const grade of grades) {
         const student = grade.submission.recipient.enrollment.studentProfile;
@@ -197,11 +202,11 @@ export class ReportsService {
   async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
     roles(user, 'TEACHER');
     const classes = await this.repo.db.class.findMany({
-      where: { teacherId: user.id },
+      where: assignedTeacherWhere(user.id, new Date()),
       select: { id: true },
     });
     return this.repo.db.learningReport.findMany({
-      where: { teacherId: user.id, classId: { in: classes.map((c) => c.id) } },
+      where: { classId: { in: classes.map((c) => c.id) } },
       select: { id: true, classId: true, createdAt: true },
       take: page.limit,
       skip: (page.page - 1) * page.limit,
@@ -217,7 +222,6 @@ export class ReportsService {
     roles(user, 'TEACHER');
     assertRule(format === 'xlsx' || format === 'pdf', 'INVALID_FORMAT', 'Use xlsx or pdf');
     const report = await this.repo.db.learningReport.findUniqueOrThrow({ where: { id } });
-    assertRule(report.teacherId === user.id, 'FORBIDDEN', 'Report belongs to another teacher');
     await this.access.classroom(user, report.classId);
     const snapshot = report.snapshot as unknown as ReportSnapshot;
     if (format === 'xlsx') {

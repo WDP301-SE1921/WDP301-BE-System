@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, type UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'node:crypto';
@@ -6,6 +7,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
+import type { AppConfiguration } from '../../config/configuration';
 import {
   CreateStaffAccountDto,
   AuditLogQueryDto,
@@ -17,7 +19,6 @@ import {
   UpdateParentAccountDto,
   UpdateStaffAccountDto,
   ReviewAccountInvitationDto,
-  UpdateManagerPermissionsDto,
 } from './dto/directory.dto';
 
 const PASSWORD_HASH_ROUNDS = 12;
@@ -27,7 +28,6 @@ const DAY_MS = 86_400_000;
 
 type ManagedRole = Extract<UserRole, 'STAFF' | 'TEACHER'>;
 type InvitedRole = Extract<UserRole, 'TEACHER' | 'MANAGER'>;
-const MANAGER_PERMISSIONS = ['MANAGE_MANAGERS', 'MANAGE_ACCOUNTS', 'MANAGE_CLASSES'] as const;
 
 // The password hash must never leave the service, so every query selects these columns explicitly.
 const accountSelect = {
@@ -43,7 +43,10 @@ const accountSelect = {
 
 @Injectable()
 export class DirectoryService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly config: ConfigService<AppConfiguration, true>,
+  ) {}
 
   async listAccounts(
     user: AuthenticatedUser,
@@ -85,6 +88,12 @@ export class DirectoryService {
     input: CreateStaffAccountDto,
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
+    this.assert(
+      role !== 'TEACHER',
+      'TEACHER_INVITATION_REQUIRED',
+      'Create a teacher through the invitation and review workflow',
+      HttpStatus.GONE,
+    );
     this.assert(
       Buffer.byteLength(input.password, 'utf8') <= BCRYPT_MAX_BYTES,
       'VALIDATION_ERROR',
@@ -340,12 +349,12 @@ export class DirectoryService {
   }
 
   async listManagers(user: AuthenticatedUser, query: ListAccountsDto): Promise<unknown> {
-    await this.requireManagerPermission(user, 'MANAGE_MANAGERS');
+    this.requireRoles(user, 'MANAGER');
     const where = this.accountWhere('MANAGER', query);
     const [items, total] = await Promise.all([
       this.db.user.findMany({
         where,
-        select: { ...accountSelect, permissions: true },
+        select: accountSelect,
         orderBy: { createdAt: 'asc' },
         skip: (query.page - 1) * query.limit,
         take: query.limit,
@@ -355,59 +364,26 @@ export class DirectoryService {
     return { items, page: query.page, limit: query.limit, total };
   }
 
-  async updateManagerPermissions(
-    user: AuthenticatedUser,
-    id: string,
-    input: UpdateManagerPermissionsDto,
-  ): Promise<unknown> {
-    await this.requireManagerPermission(user, 'MANAGE_MANAGERS');
-    this.assert(
-      id !== user.id,
-      'SELF_PERMISSION_CHANGE',
-      'A manager cannot change their own permissions',
-    );
-    const invalid = input.permissions.filter(
-      (permission) => !(MANAGER_PERMISSIONS as readonly string[]).includes(permission),
-    );
-    this.assert(
-      !invalid.length,
-      'INVALID_PERMISSION',
-      `Unknown permissions: ${invalid.join(', ')}`,
-      HttpStatus.BAD_REQUEST,
-    );
-    return this.db.$transaction(async (tx) => {
-      const target = await tx.user.findFirst({ where: { id, role: 'MANAGER' } });
-      this.assert(target, 'MANAGER_NOT_FOUND', 'Manager not found', HttpStatus.NOT_FOUND);
-      const updated = await tx.user.update({
-        where: { id },
-        data: { permissions: input.permissions },
-        select: { ...accountSelect, permissions: true },
-      });
-      await tx.auditLog.create({
-        data: {
-          actorUserId: user.id,
-          action: 'MANAGER_PERMISSIONS_UPDATED',
-          entityType: 'User',
-          entityId: id,
-          beforeData: { permissions: target.permissions },
-          afterData: { permissions: input.permissions },
-        },
-      });
-      return updated;
-    });
-  }
-
   async invite(
     user: AuthenticatedUser,
     role: InvitedRole,
     input: CreateAccountInvitationDto,
   ): Promise<unknown> {
-    await this.requireManagerPermission(
-      user,
-      role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
-    );
-    const existing = await this.db.user.count({ where: { email: input.email } });
-    this.assert(!existing, 'AUTH_EMAIL_EXISTS', 'Email is already registered', HttpStatus.CONFLICT);
+    this.requireRoles(user, 'MANAGER');
+    const existing = await this.db.user.findUnique({ where: { email: input.email } });
+    if (existing) {
+      const latest = await this.db.accountInvitation.findFirst({
+        where: { email: input.email, role, acceptedUserId: existing.id },
+        orderBy: { createdAt: 'desc' },
+        select: { status: true },
+      });
+      this.assert(
+        existing.role === role && existing.status === 'DISABLED' && latest?.status === 'REJECTED',
+        'AUTH_EMAIL_EXISTS',
+        'Email is already registered',
+        HttpStatus.CONFLICT,
+      );
+    }
     const pending = await this.db.accountInvitation.count({
       where: {
         email: input.email,
@@ -423,16 +399,30 @@ export class DirectoryService {
       HttpStatus.CONFLICT,
     );
     const token = randomBytes(32).toString('base64url');
-    const invitation = await this.db.accountInvitation.create({
-      data: {
-        email: input.email,
-        role,
-        invitedById: user.id,
-        tokenHash: createHash('sha256').update(token).digest('hex'),
-        expiresAt: new Date(Date.now() + 48 * 3600000),
-      },
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const invitation = await this.db.$transaction(async (tx) => {
+      const created = await tx.accountInvitation.create({
+        data: {
+          email: input.email,
+          role,
+          invitedById: user.id,
+          tokenHash,
+          expiresAt: new Date(Date.now() + 48 * 3600000),
+        },
+      });
+      await this.queueInvitation(tx, created.id, created.email, token, tokenHash);
+      return created;
     });
-    return { ...invitation, acceptanceToken: token };
+    return {
+      id: invitation.id,
+      email: invitation.email,
+      role: invitation.role,
+      status: invitation.status,
+      invitedById: invitation.invitedById,
+      expiresAt: invitation.expiresAt,
+      createdAt: invitation.createdAt,
+      acceptanceToken: token,
+    };
   }
 
   async invitations(
@@ -440,15 +430,13 @@ export class DirectoryService {
     role: InvitedRole,
     page: DirectoryPageDto,
   ): Promise<unknown> {
-    await this.requireManagerPermission(
-      user,
-      role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
-    );
+    this.requireRoles(user, 'MANAGER');
     const where = { role } as const;
     const [items, total] = await Promise.all([
       this.db.accountInvitation.findMany({
         where,
         omit: { tokenHash: true },
+        include: { acceptedUser: { select: accountSelect } },
         orderBy: { createdAt: 'desc' },
         skip: (page.page - 1) * page.limit,
         take: page.limit,
@@ -456,6 +444,54 @@ export class DirectoryService {
       this.db.accountInvitation.count({ where }),
     ]);
     return { items, page: page.page, limit: page.limit, total };
+  }
+
+  async resendInvitation(user: AuthenticatedUser, id: string): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    return this.db.$transaction(async (tx) => {
+      const claimed = await tx.accountInvitation.updateMany({
+        where: { id, status: 'INVITED' },
+        data: { tokenHash, expiresAt: new Date(Date.now() + 48 * 3600000) },
+      });
+      this.assert(
+        claimed.count === 1,
+        'INVITATION_LOCKED',
+        'Only an unused invitation can be resent',
+      );
+      const invitation = await tx.accountInvitation.findUniqueOrThrow({
+        where: { id },
+        omit: { tokenHash: true },
+      });
+      await this.queueInvitation(tx, id, invitation.email, token, tokenHash);
+      return invitation;
+    });
+  }
+
+  private async queueInvitation(
+    tx: Prisma.TransactionClient,
+    id: string,
+    email: string,
+    token: string,
+    tokenHash: string,
+  ): Promise<void> {
+    const link = new URL('/accept-invitation', this.config.get('webOrigin', { infer: true }));
+    link.searchParams.set('token', token);
+    await tx.outboxEvent.create({
+      data: {
+        eventType: 'ACCOUNT_INVITATION',
+        aggregateType: 'AccountInvitation',
+        aggregateId: id,
+        recipient: email,
+        subject: 'EduGrade - Lời mời tham gia',
+        dedupeKey: `account-invitation:${id}:${tokenHash}`,
+        payload: {
+          tokenHash,
+          text: `Bạn được mời tham gia EduGrade. Mở liên kết để tạo tài khoản: ${link.toString()}`,
+        },
+      },
+    });
   }
 
   async acceptInvitation(input: AcceptAccountInvitationDto): Promise<unknown> {
@@ -475,21 +511,48 @@ export class DirectoryService {
     );
     const passwordHash = await bcrypt.hash(input.password, PASSWORD_HASH_ROUNDS);
     return this.db.$transaction(async (tx) => {
-      const account = await tx.user.create({
-        data: {
-          email: invitation.email,
-          displayName: input.displayName.trim(),
-          passwordHash,
-          role: invitation.role,
-          status: 'DISABLED',
-          emailVerifiedAt: new Date(),
-          ...(invitation.role === 'MANAGER' ? { permissions: [] } : {}),
-        },
-        select: accountSelect,
+      const claimed = await tx.accountInvitation.updateMany({
+        where: { id: invitation.id, tokenHash, status: 'INVITED', expiresAt: { gt: new Date() } },
+        data: { status: 'ACCEPTED', acceptedAt: new Date() },
       });
+      this.assert(claimed.count === 1, 'INVITATION_INVALID', 'Invitation is invalid or expired');
+      const prior = await tx.user.findUnique({ where: { email: invitation.email } });
+      let account;
+      if (prior) {
+        const latest = await tx.accountInvitation.findFirst({
+          where: { email: invitation.email, role: invitation.role, acceptedUserId: prior.id },
+          orderBy: { createdAt: 'desc' },
+          select: { status: true },
+        });
+        this.assert(
+          prior.role === invitation.role &&
+            prior.status === 'DISABLED' &&
+            latest?.status === 'REJECTED',
+          'AUTH_EMAIL_EXISTS',
+          'Email is already registered',
+          HttpStatus.CONFLICT,
+        );
+        account = await tx.user.update({
+          where: { id: prior.id },
+          data: { displayName: input.displayName.trim(), passwordHash },
+          select: accountSelect,
+        });
+      } else {
+        account = await tx.user.create({
+          data: {
+            email: invitation.email,
+            displayName: input.displayName.trim(),
+            passwordHash,
+            role: invitation.role,
+            status: 'DISABLED',
+            emailVerifiedAt: new Date(),
+          },
+          select: accountSelect,
+        });
+      }
       await tx.accountInvitation.update({
         where: { id: invitation.id },
-        data: { status: 'ACCEPTED', acceptedUserId: account.id, acceptedAt: new Date() },
+        data: { acceptedUserId: account.id },
       });
       return account;
     });
@@ -502,28 +565,34 @@ export class DirectoryService {
   ): Promise<unknown> {
     const invitation = await this.db.accountInvitation.findUnique({ where: { id } });
     this.assert(invitation, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
-    await this.requireManagerPermission(
-      user,
-      invitation.role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
-    );
+    this.requireRoles(user, 'MANAGER');
     this.assert(
       invitation.status === 'ACCEPTED' && invitation.acceptedUserId,
       'INVITATION_NOT_ACCEPTED',
       'Invitation has not been accepted',
     );
     return this.db.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: invitation.acceptedUserId! },
-        data: { status: input.decision === 'APPROVE' ? 'ACTIVE' : 'DISABLED' },
-      });
-      const updated = await tx.accountInvitation.update({
-        where: { id },
+      const claimed = await tx.accountInvitation.updateMany({
+        where: { id, status: 'ACCEPTED' },
         data: {
           status: input.decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',
           reviewedById: user.id,
           reviewedAt: new Date(),
           reviewNote: input.note,
         },
+      });
+      this.assert(
+        claimed.count === 1,
+        'INVITATION_NOT_ACCEPTED',
+        'Invitation has already been reviewed',
+      );
+      await tx.user.update({
+        where: { id: invitation.acceptedUserId! },
+        data: { status: input.decision === 'APPROVE' ? 'ACTIVE' : 'DISABLED' },
+      });
+      const updated = await tx.accountInvitation.findUniqueOrThrow({
+        where: { id },
+        omit: { tokenHash: true },
       });
       await tx.auditLog.create({
         data: {
@@ -541,38 +610,21 @@ export class DirectoryService {
   async revokeInvitation(user: AuthenticatedUser, id: string): Promise<unknown> {
     const invitation = await this.db.accountInvitation.findUnique({ where: { id } });
     this.assert(invitation, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
-    await this.requireManagerPermission(
-      user,
-      invitation.role === 'MANAGER' ? 'MANAGE_MANAGERS' : 'MANAGE_ACCOUNTS',
-    );
+    this.requireRoles(user, 'MANAGER');
     this.assert(
       invitation.status === 'INVITED',
       'INVITATION_LOCKED',
       'Only an unused invitation can be revoked',
     );
-    return this.db.accountInvitation.update({
-      where: { id },
+    const claimed = await this.db.accountInvitation.updateMany({
+      where: { id, status: 'INVITED' },
       data: { status: 'REVOKED', reviewedById: user.id, reviewedAt: new Date() },
     });
-  }
-
-  private async requireManagerPermission(
-    user: AuthenticatedUser,
-    permission: string,
-  ): Promise<void> {
-    this.requireRoles(user, 'MANAGER');
-    const manager = await this.db.user.findUnique({
-      where: { id: user.id },
-      select: { permissions: true },
+    this.assert(claimed.count === 1, 'INVITATION_LOCKED', 'Invitation has already changed');
+    return this.db.accountInvitation.findUniqueOrThrow({
+      where: { id },
+      omit: { tokenHash: true },
     });
-    const permissions = manager?.permissions;
-    if (permissions === null) return;
-    this.assert(
-      Array.isArray(permissions) && permissions.includes(permission),
-      'FORBIDDEN',
-      'Manager permission is required',
-      HttpStatus.FORBIDDEN,
-    );
   }
 
   private accountWhere(role: UserRole, query: ListAccountsDto): Prisma.UserWhereInput {
