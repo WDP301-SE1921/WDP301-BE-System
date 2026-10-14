@@ -25,7 +25,10 @@
     "prisma:validate": "prisma validate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "seed": "pnpm run db:seed",
+    "reseed": "pnpm run db:reseed",
     "db:seed": "ts-node --transpile-only src/database/seed.ts",
+    "db:reseed": "ts-node --transpile-only src/database/reseed.ts",
     "db:seed:prod": "node dist/database/seed.js"
   },
   "dependencies": {
