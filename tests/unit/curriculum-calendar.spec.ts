@@ -44,8 +44,15 @@ describe('curriculum session preview', () => {
       { id: 'lesson-1', title: 'Bài 1', kind: 'LESSON', sequence: 1, status: 'APPROVED' },
       { id: 'lesson-2', title: 'Bài 2', kind: 'LESSON', sequence: 2, status: 'APPROVED' },
       {
-        id: 'test-1',
-        title: 'Kiểm tra',
+        id: 'lesson-3',
+        title: 'Bài 3',
+        kind: 'LESSON',
+        sequence: 3,
+        status: 'APPROVED',
+      },
+      {
+        id: 'legacy-test',
+        title: 'Kiểm tra cũ',
         kind: 'MONTHLY_TEST',
         sequence: 1,
         monthKey: '2027-01',
@@ -94,7 +101,7 @@ describe('curriculum session preview', () => {
       toDate: '2027-01-10',
     })) as { slots: Array<{ lessonId: string; kind: string }> };
     expect(first.slots.map((slot) => slot.lessonId)).toEqual(['lesson-1', 'lesson-2']);
-    expect(second.slots.map((slot) => slot.lessonId)).toEqual(['test-1']);
-    expect(second.slots[0].kind).toBe('MONTHLY_TEST');
+    expect(second.slots.map((slot) => slot.lessonId)).toEqual(['lesson-3']);
+    expect(second.slots[0].kind).toBe('LESSON');
   });
 });

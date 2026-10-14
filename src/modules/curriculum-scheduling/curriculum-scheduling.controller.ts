@@ -31,6 +31,9 @@ import {
   SessionRescheduleDto,
   SessionCancelDto,
   ImportCommitDto,
+  SubmitCurriculumUnitDto,
+  TechnicalReviewDto,
+  ReviseCurriculumUnitDto,
 } from './curriculum-scheduling.dto';
 import { CurriculumSchedulingService } from './curriculum-scheduling.service';
 
@@ -76,8 +79,28 @@ export class CurriculumSchedulingController {
   }
 
   @Post('curriculum-units/:id/submit')
-  submit(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
-    return this.service.submitUnit(user, id);
+  submit(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: SubmitCurriculumUnitDto,
+  ): Promise<unknown> {
+    return this.service.submitUnit(user, id, input);
+  }
+
+  @Get('curriculum-units/:id/reviewers')
+  @ApiOperation({ summary: 'List active teachers responsible for the curriculum program' })
+  reviewers(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.service.reviewers(user, id);
+  }
+
+  @Post('curriculum-units/:id/technical-review')
+  @ApiOperation({ summary: 'Selected teacher: review curriculum before manager confirmation' })
+  technicalReview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: TechnicalReviewDto,
+  ): Promise<unknown> {
+    return this.service.technicalReview(user, id, input);
   }
 
   @Post('curriculum-units/:id/validation')
@@ -160,7 +183,7 @@ export class CurriculumSchedulingController {
   }
 
   @Post('curriculum-units/:id/monthly-tests')
-  @ApiOperation({ summary: 'Designer: create or replace a monthly test in a draft unit' })
+  @ApiOperation({ summary: 'Deprecated: tests are now created by teachers outside curricula' })
   monthlyTest(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -176,9 +199,13 @@ export class CurriculumSchedulingController {
   }
 
   @Post('curriculum-units/:id/revisions')
-  @ApiOperation({ summary: 'Designer: copy an approved unit into a new draft version' })
-  revise(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
-    return this.service.reviseUnit(user, id);
+  @ApiOperation({ summary: 'Designer: copy approved lessons into a future curriculum period' })
+  revise(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ReviseCurriculumUnitDto,
+  ): Promise<unknown> {
+    return this.service.reviseUnit(user, id, input);
   }
 
   @Post('classes/:id/session-preview')

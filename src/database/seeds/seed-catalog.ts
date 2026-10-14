@@ -247,6 +247,9 @@ export async function seedCatalog(
           reviewedAt: createdAt,
           approvedAt: createdAt,
           reviewedById: users.manager.id,
+          reviewerTeacherId: users[subject.teacher].id,
+          technicalReviewedAt: createdAt,
+          technicalReviewNote: 'Giáo viên phụ trách đã duyệt nội dung chuyên môn.',
         },
       });
       const unit = await tx.curriculumUnit.upsert({
@@ -263,7 +266,10 @@ export async function seedCatalog(
           reviewedAt: createdAt,
           approvedAt: createdAt,
           reviewedById: users.manager.id,
-          reviewNote: 'Đã kiểm tra nội dung, thứ tự bài và kiểm tra tháng.',
+          reviewerTeacherId: users[subject.teacher].id,
+          technicalReviewedAt: createdAt,
+          technicalReviewNote: 'Giáo viên phụ trách đã duyệt nội dung chuyên môn.',
+          reviewNote: 'Trung tâm xác nhận áp dụng giáo trình đã được giáo viên duyệt.',
         },
       });
       result.units[key] = unit;
@@ -281,8 +287,11 @@ export async function seedCatalog(
               title: `${subject.name} ${grade} - ${status === 'DRAFT' ? 'Bản đang soạn' : 'Bản chờ duyệt'}`,
               version,
               basedOnId: unit.id,
+              fromDate: monthStart(today, 3),
+              toDate: addDays(monthStart(today, 6), -1),
               status,
               submittedAt: status === 'PENDING_REVIEW' ? localInstant(addDays(today, -2), 9) : null,
+              reviewerTeacherId: status === 'PENDING_REVIEW' ? users[subject.teacher].id : null,
             },
           });
           await tx.lesson.upsert({
@@ -305,8 +314,15 @@ export async function seedCatalog(
       const classPlans = Object.values(result.classes)
         .filter((c) => c.programId === program.id && c.isActive && c.teacherId)
         .map((c) => slotsForRange(c.weeklySchedules, dateOnly(from), dateOnly(to)));
+      // Preserve old demo curricula and sessions when the additive seed is rerun.
+      const legacyTests = await tx.lesson.findMany({
+        where: { unitId: unit.id, kind: 'MONTHLY_TEST' },
+        orderBy: { sequence: 'asc' },
+      });
       const regularCount = Math.max(
-        ...classPlans.map((slots) => slots.length - lastMonthlySlots(slots).size),
+        ...classPlans.map((slots) =>
+          legacyTests.length ? slots.length - lastMonthlySlots(slots).size : slots.length,
+        ),
       );
       const topics = TOPICS[key];
       result.lessons[key] = [];
@@ -332,32 +348,7 @@ export async function seedCatalog(
         });
         result.lessons[key].push(lesson);
       }
-      for (const month of [
-        ...new Set(classPlans.flatMap((slots) => slots.map((slot) => slot.date.slice(0, 7)))),
-      ]) {
-        const questions = topics
-          .map((topic, index) => `${index + 1}. ${topic.exercise}`)
-          .join('\n');
-        const answers = topics.map((topic, index) => `${index + 1}. ${topic.answer}`).join('\n');
-        const lesson = await tx.lesson.upsert({
-          where: { id: demoId(`test_${key}_${month}`) },
-          update: {},
-          create: {
-            id: demoId(`test_${key}_${month}`),
-            unitId: unit.id,
-            programId: program.id,
-            designerId: users[subject.designer].id,
-            title: `Kiểm tra ${subject.name} ${grade} tháng ${month}`,
-            content: `## Phạm vi\n${topics.map((topic) => topic.title).join('; ')}\n\n## Câu hỏi\n${questions}\n\n## Đáp án và hướng dẫn chấm\n${answers}\nMỗi câu 2,5 điểm; đánh giá lập luận và cách trình bày.`,
-            kind: 'MONTHLY_TEST',
-            monthKey: month,
-            sequence: Number(month.slice(5)),
-            status: 'APPROVED',
-            createdAt,
-          },
-        });
-        result.lessons[key].push(lesson);
-      }
+      result.lessons[key].push(...legacyTests);
     }
   }
 

@@ -24,10 +24,14 @@ export class AssessmentService {
     roles(user, 'TEACHER');
     await this.access.classroom(user, input.classId);
     this.validateDefinition(input);
+    await this.validateSession(user, input);
     const { questions, dueAt, ...data } = input;
     return this.repo.db.assignment.create({
       data: {
         ...data,
+        kind: input.kind ?? 'HOMEWORK',
+        sessionId: input.sessionId ?? null,
+        testType: input.testType ?? null,
         teacherId: user.id,
         dueAt: new Date(dueAt),
         questions: {
@@ -51,12 +55,16 @@ export class AssessmentService {
         'ASSIGNMENT_LOCKED',
         'Only a draft in the same class can be edited',
       );
+      await this.validateSession(user, input, tx);
       await tx.assignmentQuestion.deleteMany({ where: { assignmentId: id } });
       const { questions, dueAt, ...data } = input;
       return tx.assignment.update({
         where: { id },
         data: {
           ...data,
+          kind: input.kind ?? 'HOMEWORK',
+          sessionId: input.sessionId ?? null,
+          testType: input.testType ?? null,
           dueAt: new Date(dueAt),
           questions: {
             create: questions.map((q, position) => ({
@@ -72,6 +80,16 @@ export class AssessmentService {
   }
 
   private validateDefinition(input: AssignmentDto): void {
+    assertRule(
+      (input.kind ?? 'HOMEWORK') === 'TEST'
+        ? !!input.sessionId &&
+            !!input.testType &&
+            ['FIFTEEN_MINUTES', 'ONE_PERIOD', 'MIDTERM', 'FINAL'].includes(input.testType)
+        : !input.testType,
+      'INVALID_ASSESSMENT_TYPE',
+      'Tests require a session and test type; homework cannot have a test type',
+      HttpStatus.BAD_REQUEST,
+    );
     assertRule(
       new Date(input.dueAt) > new Date(),
       'INVALID_DUE_DATE',
@@ -91,6 +109,42 @@ export class AssessmentService {
           'Essay questions require a grading rubric',
         );
     }
+  }
+
+  private async validateSession(
+    user: AuthenticatedUser,
+    input: { classId: string; kind?: string; sessionId?: string | null; testType?: string | null },
+    tx: Prisma.TransactionClient = this.repo.db,
+  ): Promise<void> {
+    if (input.kind === 'TEST')
+      assertRule(
+        input.sessionId &&
+          input.testType &&
+          ['FIFTEEN_MINUTES', 'ONE_PERIOD', 'MIDTERM', 'FINAL'].includes(input.testType),
+        'INVALID_ASSESSMENT_TYPE',
+        'Tests require a session and test type',
+        HttpStatus.BAD_REQUEST,
+      );
+    if (!input.sessionId) return;
+    const session = await tx.classSession.findUnique({ where: { id: input.sessionId } });
+    assertRule(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+    assertRule(
+      session.classId === input.classId,
+      'INVALID_ASSESSMENT_SESSION',
+      'The selected session belongs to another class',
+      HttpStatus.BAD_REQUEST,
+    );
+    assertRule(
+      session.teacherId === user.id,
+      'FORBIDDEN',
+      'The selected session is not assigned to this teacher',
+      HttpStatus.FORBIDDEN,
+    );
+    assertRule(
+      session.status === 'SCHEDULED' && session.endsAt > new Date(),
+      'INVALID_ASSESSMENT_SESSION',
+      'Choose a scheduled session that has not ended',
+    );
   }
 
   async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
@@ -114,6 +168,10 @@ export class AssessmentService {
       select: {
         id: true,
         classId: true,
+        kind: true,
+        sessionId: true,
+        testType: true,
+        session: { select: { id: true, startsAt: true, endsAt: true, status: true } },
         title: true,
         dueAt: true,
         status: true,
@@ -130,6 +188,7 @@ export class AssessmentService {
     const assignment = await this.repo.db.assignment.findUniqueOrThrow({
       where: { id },
       include: {
+        session: { select: { id: true, startsAt: true, endsAt: true, status: true } },
         questions: { orderBy: { position: 'asc' } },
         recipients: {
           where:
@@ -157,6 +216,10 @@ export class AssessmentService {
     return {
       id: assignment.id,
       classId: assignment.classId,
+      kind: assignment.kind,
+      sessionId: assignment.sessionId,
+      testType: assignment.testType,
+      session: assignment.session,
       title: assignment.title,
       instructions: assignment.instructions,
       dueAt: assignment.dueAt,
@@ -183,6 +246,7 @@ export class AssessmentService {
         'ASSIGNMENT_LOCKED',
         'Only an unexpired draft can be published',
       );
+      await this.validateSession(user, assignment, tx);
       const enrollments = await tx.enrollment.findMany({
         where: { id: { in: input.enrollmentIds } },
         include: { placements: true },

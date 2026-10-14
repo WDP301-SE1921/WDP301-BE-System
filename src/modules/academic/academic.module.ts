@@ -7,6 +7,7 @@ import { AcademicAccessService } from './academic-access.service';
 import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
+import { AssignmentImportService } from './assignment-import.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
 import { AnnouncementsService } from './announcements.service';
@@ -20,6 +21,7 @@ import { EmailDeliveriesService } from './email-deliveries.service';
     CatalogService,
     EnrollmentWorkflowsService,
     AssessmentService,
+    AssignmentImportService,
     GradingWorkerService,
     ReportsService,
     AnnouncementsService,

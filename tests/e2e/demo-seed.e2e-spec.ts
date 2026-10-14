@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { PrismaClient } from '@prisma/client';
 import { execFileSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import type { Server } from 'node:http';
 import * as bcrypt from 'bcrypt';
 import * as mysql from 'mysql2/promise';
@@ -20,10 +21,7 @@ import {
   referenceDate,
   studyDay,
 } from '../../src/database/seeds/seed-calendar';
-import {
-  lastMonthlySlots,
-  slotsForRange,
-} from '../../src/modules/curriculum-scheduling/curriculum-scheduling.service';
+import { slotsForRange } from '../../src/modules/curriculum-scheduling/curriculum-scheduling.service';
 import { AuthService } from '../../src/modules/auth/auth.service';
 import { EmailDeliveriesService } from '../../src/modules/academic/email-deliveries.service';
 import { GradingWorkerService } from '../../src/modules/academic/grading-worker.service';
@@ -121,16 +119,13 @@ describe('Demo seed against MySQL and shared APIs', () => {
       const lessons = unit.lessons
         .filter((lesson) => lesson.kind === 'LESSON')
         .sort((a, b) => a.sequence - b.sequence);
-      expect(lessons.length).toBeGreaterThanOrEqual(slots.length - lastMonthlySlots(slots).size);
+      expect(lessons.length).toBeGreaterThanOrEqual(slots.length);
       expect(lessons.map((lesson) => lesson.sequence)).toEqual(
         Array.from({ length: lessons.length }, (_, index) => index + 1),
       );
-      for (const month of lastMonthlySlots(slots).keys())
-        expect(
-          unit.lessons.filter(
-            (lesson) => lesson.kind === 'MONTHLY_TEST' && lesson.monthKey === month,
-          ),
-        ).toHaveLength(1);
+      expect(unit.lessons.filter((lesson) => lesson.kind === 'MONTHLY_TEST')).toHaveLength(0);
+      expect(unit.reviewerTeacherId).not.toBeNull();
+      expect(unit.technicalReviewedAt).not.toBeNull();
       expect(
         unit.lessons.every(
           (lesson) => lesson.status === 'APPROVED' && !lesson.content.includes('CHƯA ĐIỀN'),
@@ -371,7 +366,10 @@ describe('Demo seed against MySQL and shared APIs', () => {
     const migrations = await db.$queryRaw<
       Array<{ count: bigint }>
     >`SELECT COUNT(*) AS count FROM _prisma_migrations WHERE finished_at IS NOT NULL`;
-    expect(Number(migrations[0].count)).toBe(17);
+    const expectedMigrations = readdirSync('prisma/migrations', { withFileTypes: true }).filter(
+      (entry) => entry.isDirectory(),
+    ).length;
+    expect(Number(migrations[0].count)).toBe(expectedMigrations);
   }, 120_000);
 });
 

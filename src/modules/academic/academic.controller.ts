@@ -20,6 +20,7 @@ import { AcademicStorageService } from '../../integrations/academic-storage.serv
 import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
+import { AssignmentImportService } from './assignment-import.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
 import { AnnouncementsService } from './announcements.service';
@@ -29,6 +30,7 @@ import {
   AnnouncementDto,
   AttendanceQueryDto,
   AssignmentDto,
+  AssignmentImportDto,
   AttendanceDto,
   ClassDto,
   DecisionDto,
@@ -64,6 +66,7 @@ export class AcademicController {
     private readonly catalog: CatalogService,
     private readonly workflows: EnrollmentWorkflowsService,
     private readonly assessment: AssessmentService,
+    private readonly assignmentImport: AssignmentImportService,
     private readonly grading: GradingWorkerService,
     private readonly reports: ReportsService,
     private readonly storage: AcademicStorageService,
@@ -339,6 +342,30 @@ export class AcademicController {
     @Body() input: AssignmentDto,
   ): Promise<unknown> {
     return this.assessment.create(user, input);
+  }
+  @Post('assignments/import-preview')
+  @ApiOperation({
+    summary: 'Assigned teacher: preview questions from CSV, DOCX or a text PDF; no draft is saved',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'classId'],
+      properties: { file: { type: 'string', format: 'binary' }, classId: { type: 'string' } },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 1, fieldSize: 191 },
+    }),
+  )
+  importAssignment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: AssignmentImportDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<unknown> {
+    return this.assignmentImport.preview(user, input.classId, file);
   }
   @Get('assignments') assignments(
     @CurrentUser() user: AuthenticatedUser,

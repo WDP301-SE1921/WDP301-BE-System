@@ -96,6 +96,7 @@ model User {
   teachingSessions           ClassSession[]           @relation("SessionTeacher")
   designedLessons            Lesson[]
   designedUnits              CurriculumUnit[]
+  reviewingCurriculumUnits   CurriculumUnit[]         @relation("CurriculumReviewer")
   scheduleGenerations        ScheduleGeneration[]
   createdAt                  DateTime                 @default(now())
   updatedAt                  DateTime                 @updatedAt
@@ -406,37 +407,42 @@ model CurriculumTrack {
 }
 
 model CurriculumUnit {
-  id             String                    @id @default(cuid()) @db.VarChar(191)
-  trackId        String                    @db.VarChar(191)
-  programId      String                    @db.VarChar(191)
-  designerId     String                    @db.VarChar(191)
-  basedOnId      String?                   @db.VarChar(191)
-  version        Int                       @default(1)
-  revision       Int                       @default(1)
-  submittedAt    DateTime?
-  reviewedAt     DateTime?
-  reviewedById   String?                   @db.VarChar(191)
-  reviewNote     String?                   @db.Text
-  title          String                    @db.VarChar(255)
-  fromDate       DateTime                  @db.Date
-  toDate         DateTime                  @db.Date
-  status         CurriculumUnitStatus      @default(DRAFT)
-  approvedAt     DateTime?
-  track          CurriculumTrack           @relation(fields: [trackId], references: [id], onDelete: Restrict)
-  program        Program                   @relation(fields: [programId], references: [id], onDelete: Restrict)
-  designer       User                      @relation(fields: [designerId], references: [id], onDelete: Restrict)
-  basedOn        CurriculumUnit?           @relation("CurriculumUnitVersion", fields: [basedOnId], references: [id], onDelete: Restrict)
-  revisions      CurriculumUnit[]          @relation("CurriculumUnitVersion")
-  lessons        Lesson[]
-  generations    ScheduleGeneration[]
-  importPreviews CurriculumImportPreview[]
-  importCommits  CurriculumImportCommit[]
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
+  id                  String                    @id @default(cuid()) @db.VarChar(191)
+  trackId             String                    @db.VarChar(191)
+  programId           String                    @db.VarChar(191)
+  designerId          String                    @db.VarChar(191)
+  basedOnId           String?                   @db.VarChar(191)
+  version             Int                       @default(1)
+  revision            Int                       @default(1)
+  submittedAt         DateTime?
+  reviewedAt          DateTime?
+  reviewedById        String?                   @db.VarChar(191)
+  reviewNote          String?                   @db.Text
+  reviewerTeacherId   String?                   @db.VarChar(191)
+  technicalReviewedAt DateTime?
+  technicalReviewNote String?                   @db.Text
+  title               String                    @db.VarChar(255)
+  fromDate            DateTime                  @db.Date
+  toDate              DateTime                  @db.Date
+  status              CurriculumUnitStatus      @default(DRAFT)
+  approvedAt          DateTime?
+  track               CurriculumTrack           @relation(fields: [trackId], references: [id], onDelete: Restrict)
+  program             Program                   @relation(fields: [programId], references: [id], onDelete: Restrict)
+  designer            User                      @relation(fields: [designerId], references: [id], onDelete: Restrict)
+  reviewerTeacher     User?                     @relation("CurriculumReviewer", fields: [reviewerTeacherId], references: [id], onDelete: Restrict)
+  basedOn             CurriculumUnit?           @relation("CurriculumUnitVersion", fields: [basedOnId], references: [id], onDelete: Restrict)
+  revisions           CurriculumUnit[]          @relation("CurriculumUnitVersion")
+  lessons             Lesson[]
+  generations         ScheduleGeneration[]
+  importPreviews      CurriculumImportPreview[]
+  importCommits       CurriculumImportCommit[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
 
   @@unique([programId, fromDate, toDate, version])
   @@index([programId, status])
   @@index([trackId, status])
+  @@index([reviewerTeacherId, status])
   @@map("curriculum_units")
 }
 
@@ -634,6 +640,7 @@ model ClassSession {
   participants SessionParticipant[]
   leaves       LeaveRequest[]
   mutations    SessionMutation[]
+  assessments  Assignment[]
 
   @@unique([classId, startsAt])
   @@index([teacherId, startsAt])
@@ -747,6 +754,9 @@ model Assignment {
   id                 String                @id @default(cuid()) @db.VarChar(191)
   classId            String                @db.VarChar(191)
   teacherId          String                @db.VarChar(191)
+  kind               String                @default("HOMEWORK") @db.VarChar(16)
+  testType           String?               @db.VarChar(32)
+  sessionId          String?               @db.VarChar(191)
   title              String                @db.VarChar(255)
   instructions       String                @db.Text
   dueAt              DateTime
@@ -754,11 +764,13 @@ model Assignment {
   status             AssignmentStatus      @default(DRAFT)
   answersPublishedAt DateTime?
   class              Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
+  session            ClassSession?         @relation(fields: [sessionId], references: [id], onDelete: Restrict)
   questions          AssignmentQuestion[]
   recipients         AssignmentRecipient[]
   createdAt          DateTime              @default(now())
 
   @@index([classId, status])
+  @@index([sessionId])
   @@map("assignments")
 }
 
@@ -904,23 +916,23 @@ model LinkInvitation {
 }
 
 model OutboxEvent {
-  id            String       @id @default(cuid()) @db.VarChar(191)
-  eventType     String       @db.VarChar(191)
-  aggregateType String       @db.VarChar(191)
-  aggregateId   String       @db.VarChar(191)
-  recipient     String       @db.VarChar(255)
-  subject       String       @db.VarChar(255)
-  dedupeKey     String       @unique @db.VarChar(191)
-  payload       Json
-  status        OutboxStatus @default(PENDING)
-  attemptCount  Int          @default(0)
-  maxAttempts   Int          @default(5)
-  nextAttemptAt DateTime     @default(now())
-  leaseToken    String?      @db.VarChar(64)
+  id             String       @id @default(cuid()) @db.VarChar(191)
+  eventType      String       @db.VarChar(191)
+  aggregateType  String       @db.VarChar(191)
+  aggregateId    String       @db.VarChar(191)
+  recipient      String       @db.VarChar(255)
+  subject        String       @db.VarChar(255)
+  dedupeKey      String       @unique @db.VarChar(191)
+  payload        Json
+  status         OutboxStatus @default(PENDING)
+  attemptCount   Int          @default(0)
+  maxAttempts    Int          @default(5)
+  nextAttemptAt  DateTime     @default(now())
+  leaseToken     String?      @db.VarChar(64)
   leaseExpiresAt DateTime?
-  lastError     String?      @db.Text
-  createdAt     DateTime     @default(now())
-  sentAt        DateTime?
+  lastError      String?      @db.Text
+  createdAt      DateTime     @default(now())
+  sentAt         DateTime?
 
   @@index([status, nextAttemptAt])
   @@index([status, leaseExpiresAt])

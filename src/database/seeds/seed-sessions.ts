@@ -46,12 +46,15 @@ export async function seedSessions(
     );
     const last = lastMonthlySlots(slots);
     const regular = catalog.lessons[programKey].filter((lesson) => lesson.kind === 'LESSON');
+    const legacyTests = catalog.lessons[programKey].filter(
+      (lesson) => lesson.kind === 'MONTHLY_TEST',
+    );
     let regularIndex = 0;
     result[key] = [];
     for (const [index, slot] of slots.entries()) {
       const lesson =
-        last.get(slot.date.slice(0, 7)) === index
-          ? catalog.lessons[programKey].find(
+        legacyTests.length && last.get(slot.date.slice(0, 7)) === index
+          ? legacyTests.find(
               (row) => row.kind === 'MONTHLY_TEST' && row.monthKey === slot.date.slice(0, 7),
             )
           : regular[regularIndex++];

@@ -171,6 +171,25 @@ export class QuestionDto {
 }
 export class AssignmentDto {
   @ApiProperty() @IsString() @MinLength(1) classId!: string;
+  @ApiPropertyOptional({ enum: ['HOMEWORK', 'TEST'], default: 'HOMEWORK' })
+  @IsOptional()
+  @IsEnum({ HOMEWORK: 'HOMEWORK', TEST: 'TEST' })
+  kind?: 'HOMEWORK' | 'TEST';
+  @ApiPropertyOptional({ description: 'Scheduled session in this class; required for a test.' })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(191)
+  sessionId?: string;
+  @ApiPropertyOptional({ enum: ['FIFTEEN_MINUTES', 'ONE_PERIOD', 'MIDTERM', 'FINAL'] })
+  @IsOptional()
+  @IsEnum({
+    FIFTEEN_MINUTES: 'FIFTEEN_MINUTES',
+    ONE_PERIOD: 'ONE_PERIOD',
+    MIDTERM: 'MIDTERM',
+    FINAL: 'FINAL',
+  })
+  testType?: 'FIFTEEN_MINUTES' | 'ONE_PERIOD' | 'MIDTERM' | 'FINAL';
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MaxLength(10000) instructions!: string;
   @ApiProperty() @IsDateString() dueAt!: string;
@@ -182,6 +201,9 @@ export class AssignmentDto {
   @ValidateNested({ each: true })
   @Type(() => QuestionDto)
   questions!: QuestionDto[];
+}
+export class AssignmentImportDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) classId!: string;
 }
 export class RecipientsDto {
   @ApiProperty({ type: [String] })

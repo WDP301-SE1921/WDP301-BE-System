@@ -71,7 +71,18 @@ export class CatalogService {
 
   async approveLesson(user: AuthenticatedUser, id: string): Promise<unknown> {
     roles(user, 'MANAGER');
-    return this.repo.db.lesson.update({ where: { id }, data: { status: 'APPROVED' } });
+    return this.repo.transaction(async (tx) => {
+      const lesson = await tx.lesson.findUniqueOrThrow({
+        where: { id },
+        include: { unit: { select: { status: true } } },
+      });
+      assertRule(
+        !lesson.unitId || lesson.unit?.status === 'APPROVED',
+        'UNIT_APPROVAL_REQUIRED',
+        'Approve the complete curriculum through teacher review and manager confirmation',
+      );
+      return tx.lesson.update({ where: { id }, data: { status: 'APPROVED' } });
+    });
   }
 
   async lessons(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
@@ -111,7 +122,20 @@ export class CatalogService {
     );
     return this.repo.transaction(async (tx) => {
       const classroom = await tx.class.findUniqueOrThrow({ where: { id: input.classId } });
-      const lesson = await tx.lesson.findUniqueOrThrow({ where: { id: input.lessonId } });
+      const lesson = await tx.lesson.findUniqueOrThrow({
+        where: { id: input.lessonId },
+        include: { unit: { select: { status: true } } },
+      });
+      assertRule(
+        lesson.kind !== 'MONTHLY_TEST',
+        'TESTS_MANAGED_BY_TEACHER',
+        'Teachers create tests separately for a chosen class session',
+      );
+      assertRule(
+        !lesson.unitId || lesson.unit?.status === 'APPROVED',
+        'UNIT_APPROVAL_REQUIRED',
+        'Use lessons from a curriculum confirmed by the center',
+      );
       assertRule(
         classroom.isOpen &&
           lesson.status === 'APPROVED' &&
@@ -342,6 +366,11 @@ export class CatalogService {
     roles(user, 'CURRICULUM_DESIGNER');
     const lesson = await this.repo.db.lesson.findUniqueOrThrow({ where: { id } });
     assertRule(lesson.designerId === user.id, 'FORBIDDEN', 'Lesson belongs to another designer');
+    assertRule(
+      !lesson.unitId,
+      'UNIT_REVISION_REQUIRED',
+      'Create a future curriculum period instead of revising a lesson independently',
+    );
     return this.repo.db.lesson.create({
       data: {
         ...input,
