@@ -25,9 +25,11 @@ import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
 import { AnnouncementsService } from './announcements.service';
 import { EmailDeliveriesService } from './email-deliveries.service';
+import { AnalyticsService } from './analytics.service';
 import { AcademicErrorsFilter } from './academic-errors.filter';
 import {
   AnnouncementDto,
+  AnalyticsQueryDto,
   AttendanceQueryDto,
   AssignmentDto,
   AssignmentImportDto,
@@ -72,7 +74,28 @@ export class AcademicController {
     private readonly storage: AcademicStorageService,
     private readonly announcements: AnnouncementsService,
     private readonly emailDeliveries: EmailDeliveriesService,
+    private readonly analytics: AnalyticsService,
   ) {}
+
+  @Get('analytics')
+  @ApiOperation({ summary: 'Manager/teacher/designer: role-scoped activity statistics' })
+  analyticsDashboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AnalyticsQueryDto,
+  ): Promise<unknown> {
+    return this.analytics.dashboard(user, query);
+  }
+
+  @Get('analytics/export')
+  @ApiOperation({ summary: 'Manager/teacher/designer: export the selected statistics as XLSX' })
+  async exportAnalytics(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AnalyticsQueryDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    const file = await this.analytics.exportDashboard(user, query);
+    res.type(file.type).attachment(file.name).send(file.buffer);
+  }
 
   @Get('email-deliveries')
   @ApiOperation({

@@ -12,6 +12,7 @@ import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
 import { AnnouncementsService } from './announcements.service';
 import { EmailDeliveriesService } from './email-deliveries.service';
+import { AnalyticsService } from './analytics.service';
 
 @Module({
   controllers: [AcademicController],
@@ -26,6 +27,7 @@ import { EmailDeliveriesService } from './email-deliveries.service';
     ReportsService,
     AnnouncementsService,
     EmailDeliveriesService,
+    AnalyticsService,
     AcademicAiService,
     AcademicStorageService,
   ],
