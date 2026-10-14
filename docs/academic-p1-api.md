@@ -4,6 +4,28 @@ Branch: `feature/academic-workflows`. API prefix: `/api/v1/academic`.
 Authentication: existing Bearer access token from `/api/v1/auth/login`.
 Database: MySQL. Request examples and DTO fields are available at `/api/docs`.
 
+## Curriculum review and assessment import update — 14 October 2026
+
+Apply migration `20261014010000_curriculum_teacher_review_and_assessments` before running the updated application. It adds nullable reviewer metadata and assessment session/type fields; existing approved curricula, assignments (default `HOMEWORK`) and historical sessions remain intact. Legacy pending curricula without a reviewer must be returned to draft by the manager and submitted again with a responsible teacher.
+
+- Curriculum submission requires `{ reviewerTeacherId }`. `GET academic/curriculum-units/:id/reviewers` returns active teachers currently responsible for a class of the same program. Designers/managers can read this list.
+- `POST academic/curriculum-units/:id/technical-review` accepts `{ approved, note?, expectedRevision }` from the selected teacher only. Rejection needs a note and returns the draft. Acceptance records `technicalReviewedAt` while status remains `PENDING_REVIEW`. Manager approval requires this acceptance. Manager changes invalidate it; it cannot be bypassed by approving a unit-owned lesson through legacy APIs.
+- Structural validation remains available. New curriculum import/generation uses regular lessons only; no final-month test is imposed. Historical `MONTHLY_TEST` rows and sessions remain readable. New curriculum revisions select `{ title, fromDate, toDate }` for a period after both today in UTC+7 and the original period.
+- Assignments accept `kind` (`HOMEWORK` by default or `TEST`), optional `sessionId` and `testType`. Tests require a scheduled, nonelapsed session of the same class assigned to the teacher. Types are `FIFTEEN_MINUTES`, `ONE_PERIOD`, `MIDTERM`, `FINAL`. Publishing rechecks the session. Curriculum lesson links are not replaced by tests.
+- `POST academic/assignments/import-preview` accepts multipart `classId` and `file`; teacher/class access is checked before extraction. CSV columns: `kind,prompt,choices,correctAnswer,rubric,maxScore`; choices use `|`, UTF-8 and quoted multiline cells are supported. DOCX/PDF with text require configured AI. Response: `{ fileName, format, title?, instructions?, questions, warnings, usedAi }`.
+- Import preview never creates/publishes an assignment. Missing answer keys/rubrics remain missing for teacher completion; AI-generated keys without source evidence are discarded. Limits: 5 MiB, 100 questions, 100,000 text characters, 100 PDF pages. Scanned/encrypted PDFs report a readable error; OCR is not implemented. Save and publish use the existing assignment endpoints after review.
+
+## Dashboard analytics update — 14 October 2026
+
+`GET academic/analytics` and `GET academic/analytics/export` are registered for MANAGER, TEACHER and CURRICULUM_DESIGNER. STAFF/PARENT are rejected. Both require ISO `from`, `to` and `bucket` (`DAY`, `WEEK`, `MONTH`), with optional `classId`; the range must be valid and at most 366 days. Use full UTC+7 day boundaries for calendar filters. Export returns an XLSX binary with the same authorization and selected range.
+
+- Managers can inspect center data; a class filter also limits confirmed payments to that class. Teachers see currently assigned classes and must own a requested class. Teacher responses do not expose center revenue. Designers see their authored content and cannot use a class filter.
+- Revenue, completed sessions, attendance and published-grade metrics use the selected range. Capacity/reserved seats use the current term and current placement; classes and assignments are labeled according to their actual scope. Grade averages are normalized percentages. A missing attendance denominator returns `null`.
+- Trends use Vietnam calendar day/week/month buckets. Month advancement uses the local calendar before shifting back to UTC, retaining every month across 28/30/31-day boundaries and year changes. They contain actual recorded values; there are no fabricated growth rates or historical student-count series. Existing row limits remain enforced.
+- This update adds no migration. The curriculum/assessment migration above is still required by the combined application.
+
+The sections below describe the original P1 baseline; the update above supersedes monthly-test scheduling and single-step approval for unit-owned content.
+
 ## Scope
 
 Implemented backend workflows:

@@ -59,7 +59,8 @@ Nguồn cấu trúc: [CLASS_CURRICULUM_INPUT_TEMPLATE](../../WDP301-FE-System/do
 - Có 16 chương trình môn/khối và 21 lớp, gồm lớp song song, lớp đầy, đóng đăng ký, tạm ngừng và chưa phân công.
 - Các lớp cùng môn/khối liên kết cùng chương trình và học phần đã duyệt.
 - Học phần trải từ đầu tháng trước đến hết tháng thứ hai sau tháng tham chiếu: tổng cộng bốn tháng.
-- Số bài thường tính từ lịch tuần của lớp cần nhiều bài nhất; thứ tự từ 1 và liên tục. Có một bài kiểm tra cho mỗi tháng có lịch học, gắn vào buổi cuối tháng của từng lớp.
+- Dataset mới từ 14/10/2026 có đủ bài học thường cho mọi buổi theo lịch tuần của lớp cần nhiều bài nhất; thứ tự từ 1 và liên tục. Không tạo kiểm tra tháng trong giáo trình. Giáo viên tạo bài kiểm tra riêng theo buổi và loại kiểm tra trong luồng bài tập.
+- Các bản đã duyệt mẫu ghi nhận giáo viên phụ trách thẩm định chuyên môn trước khi quản lý xác nhận. Chạy seed lại trên dataset cũ vẫn giữ nguyên giáo trình/buổi kiểm tra và những thay đổi đã có; không tự sửa bản đã áp dụng.
 - Bài học có mục tiêu, nội dung, bài tập, đáp án/hướng dẫn chấm và ghi chú tài liệu, theo cấu trúc mẫu.
 - Có bản lưu trữ, bản đã duyệt, bản nháp và bản chờ duyệt; góp ý và bài sửa liên kết bằng `basedOnId`/`resolutionLessonId`.
 
