@@ -29,6 +29,8 @@
     "reseed": "pnpm run db:reseed",
     "db:seed": "ts-node --transpile-only src/database/seed.ts",
     "db:reseed": "ts-node --transpile-only src/database/reseed.ts",
+    "seed:dashboard": "ts-node --transpile-only src/database/seed-dashboard.ts",
+    "reseed:dashboard": "pnpm run db:reseed && pnpm run seed:dashboard",
     "db:seed:prod": "node dist/database/seed.js"
   },
   "dependencies": {
