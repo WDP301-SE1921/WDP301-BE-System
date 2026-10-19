@@ -331,7 +331,18 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             toDate: true,
           },
         },
-        classes: { select: { id: true, name: true, isActive: true, isOpen: true } },
+        // teacherId + weekly slots let curriculum designers see whether a unit can be
+        // reviewed and how many lessons each class needs, without the class list API.
+        classes: {
+          select: {
+            id: true,
+            name: true,
+            isActive: true,
+            isOpen: true,
+            teacherId: true,
+            weeklySchedules: { select: { weekday: true, startTime: true, endTime: true } },
+          },
+        },
       },
     });
     this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
