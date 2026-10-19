@@ -37,6 +37,7 @@ import {
   ClassDto,
   DecisionDto,
   EndLeaveEarlyDto,
+  EmailDeliveryFilterDto,
   FeedbackDto,
   GradeDto,
   LeaveDto,
@@ -100,10 +101,14 @@ export class AcademicController {
   @Get('email-deliveries')
   @ApiOperation({
     summary: 'Manager/staff: inspect persisted email deliveries',
-    description: 'Delivery metadata omits payloads that may contain account tokens.',
+    description:
+      'Delivery metadata omits payloads that may contain account tokens. Optional status filters one state; total counts the filtered rows.',
   })
-  deliveries(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
-    return this.emailDeliveries.list(user, page);
+  deliveries(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: EmailDeliveryFilterDto,
+  ): Promise<unknown> {
+    return this.emailDeliveries.list(user, query);
   }
 
   @Post('email-deliveries/:id/retry')

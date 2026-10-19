@@ -7,7 +7,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import type { AppConfiguration } from '../../config/configuration';
 import { DatabaseService } from '../../database/orm/database.service';
 import { assertRule, roles } from './academic-access.service';
-import type { PageDto } from './academic.dto';
+import type { EmailDeliveryFilterDto } from './academic.dto';
 
 @Injectable()
 export class EmailDeliveriesService implements OnModuleInit, OnModuleDestroy {
@@ -34,16 +34,18 @@ export class EmailDeliveriesService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer);
   }
 
-  async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async list(user: AuthenticatedUser, page: EmailDeliveryFilterDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
+    const where = page.status ? { status: page.status } : {};
     const [items, total] = await Promise.all([
       this.db.outboxEvent.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         omit: { payload: true },
         skip: (page.page - 1) * page.limit,
         take: page.limit,
       }),
-      this.db.outboxEvent.count(),
+      this.db.outboxEvent.count({ where }),
     ]);
     return { items, page: page.page, limit: page.limit, total };
   }

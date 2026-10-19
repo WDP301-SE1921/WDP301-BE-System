@@ -765,6 +765,23 @@ describe('Academic workflows (database + HTTP)', () => {
     const attempt = await db.outboxEvent.findUniqueOrThrow({ where: { id: queued.id } });
     expect(attempt.attemptCount).toBe(1);
     expect(attempt.lastError).toBeTruthy();
+    await db.outboxEvent.update({ where: { id: queued.id }, data: { status: 'FAILED' } });
+    const failedList = await call(
+      'staff',
+      'get',
+      'email-deliveries?status=FAILED&limit=100',
+    ).expect(200);
+    const failedPage = (
+      failedList.body as Envelope<{ items: { id: string; status: string }[]; total: number }>
+    ).data;
+    expect(failedPage.items.map((item) => item.id)).toContain(queued.id);
+    expect(failedPage.items.every((item) => item.status === 'FAILED')).toBe(true);
+    expect(failedPage.total).toBe(await db.outboxEvent.count({ where: { status: 'FAILED' } }));
+    const sent = await call('manager', 'get', 'email-deliveries?status=SENT').expect(200);
+    expect(
+      (sent.body as Envelope<{ items: { id: string }[] }>).data.items.map((item) => item.id),
+    ).not.toContain(queued.id);
+    await call('manager', 'get', 'email-deliveries?status=LOST').expect(400);
   });
 });
 

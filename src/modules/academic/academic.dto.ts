@@ -23,6 +23,7 @@ import {
   AttendanceStatus,
   FeedbackStatus,
   LeaveKind,
+  OutboxStatus,
   QuestionKind,
   RequestStatus,
 } from '@prisma/client';
@@ -30,6 +31,12 @@ import {
 export class PageDto {
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) page = 1;
   @ApiPropertyOptional({ default: 20 }) @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
+}
+export class EmailDeliveryFilterDto extends PageDto {
+  @ApiPropertyOptional({ enum: OutboxStatus, description: 'Only deliveries in this state.' })
+  @IsOptional()
+  @IsEnum(OutboxStatus)
+  status?: OutboxStatus;
 }
 export class LeaveFilterDto extends PageDto {
   @ApiPropertyOptional({ enum: RequestStatus })
