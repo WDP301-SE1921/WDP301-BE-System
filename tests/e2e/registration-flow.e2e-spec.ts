@@ -597,6 +597,20 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
           }>
         ).data.enrollments.items[0].studentProfile.parentProfile.user.email,
       ).toBe('parentmain@example.com');
+      // The assigned teacher sees the same roster without the parent contact.
+      const teacher = await db.user.findFirstOrThrow({ where: { role: 'TEACHER' } });
+      await db.class.update({ where: { id: classes.two }, data: { teacherId: teacher.id } });
+      const teacherView = await call('TEACHER', 'get', `classes/${classes.two}`)
+        .query({ at: `${tomorrow}T12:00:00.000Z` })
+        .expect(200);
+      await db.class.update({ where: { id: classes.two }, data: { teacherId: null } });
+      const teacherRow = (
+        teacherView.body as Envelope<{
+          enrollments: { items: { studentProfile: Record<string, unknown> }[] };
+        }>
+      ).data.enrollments.items[0].studentProfile;
+      expect(teacherRow.fullName).toBeDefined();
+      expect(teacherRow).not.toHaveProperty('parentProfile');
       await call('STAFF', 'get', 'classes/does-not-exist').expect(404);
       const payments = await call('STAFF', 'get', 'payments').expect(200);
       const ledger = (payments.body as Envelope<{ total: number; totalAmount: string }>).data;

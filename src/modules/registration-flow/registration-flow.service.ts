@@ -1693,9 +1693,13 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
               id: true,
               fullName: true,
               grade: true,
-              parentProfile: {
-                select: { phone: true, user: { select: { email: true, displayName: true } } },
-              },
+              // Parent contact is for the back office; a teacher roster lists students only.
+              parentProfile:
+                user.role === 'TEACHER'
+                  ? false
+                  : {
+                      select: { phone: true, user: { select: { email: true, displayName: true } } },
+                    },
             },
           },
         },
