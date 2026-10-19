@@ -521,6 +521,56 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       expect(await status()).toMatchObject({ status: 'EXPIRED', label: 'Đã hết hạn' });
     });
 
+    it('lets staff and managers fix a student profile but keeps the grade locked while enrolled', async () => {
+      const renamed = await call('STAFF', 'patch', `students/${kids.A}`)
+        .send({ fullName: '  Kid A Renamed ', dateOfBirth: '2013-05-06' })
+        .expect(200);
+      expect((renamed.body as Envelope<{ fullName: string }>).data.fullName).toBe('Kid A Renamed');
+      const audit = await db.auditLog.findFirstOrThrow({
+        where: { action: 'STUDENT_PROFILE_UPDATED', entityId: kids.A },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(audit.afterData).toMatchObject({
+        fullName: 'Kid A Renamed',
+        dateOfBirth: '2013-05-06',
+      });
+      const locked = await call('MANAGER', 'patch', `students/${kids.A}`)
+        .send({ grade: 6 })
+        .expect(409);
+      expect(locked.body).toMatchObject({ error: { code: 'STUDENT_GRADE_LOCKED' } });
+      await call('TEACHER', 'patch', `students/${kids.A}`).send({ fullName: 'X' }).expect(403);
+      await call('PARENT', 'patch', `students/${kids.A}`).send({ fullName: 'X' }).expect(403);
+      await call('STAFF', 'patch', 'students/missing-student').send({ fullName: 'X' }).expect(404);
+      await call('STAFF', 'patch', `students/${kids.A}`).send({ fullName: 'Kid A' }).expect(200);
+    });
+
+    it('marks students without a current class and filters them', async () => {
+      type Item = WithId & {
+        currentClasses: WithId[];
+        attendancePercent: number | null;
+        pendingMakeups: number;
+        onLongLeave: boolean;
+      };
+      const list = async (query: Record<string, string>): Promise<Item[]> =>
+        (
+          (
+            await call('STAFF', 'get', 'students')
+              .query({ search: 'Kid', ...query })
+              .expect(200)
+          ).body as Envelope<{ items: Item[] }>
+        ).data.items;
+      // Paid enrollments start tomorrow, so nobody is studying yet.
+      expect((await list({})).find((item) => item.id === kids.A)).toMatchObject({
+        currentClasses: [],
+        attendancePercent: null,
+        pendingMakeups: 0,
+        onLongLeave: false,
+      });
+      expect((await list({ quick: 'no-class' })).map((item) => item.id)).toContain(kids.A);
+      expect(await list({ quick: 'pending-makeup' })).toEqual([]);
+      await call('STAFF', 'get', 'students').query({ quick: 'unknown' }).expect(400);
+    });
+
     it('lets staff read students, enrollments, schedules, classes and payments', async () => {
       const students = await call('STAFF', 'get', 'students').query({ search: 'Kid' }).expect(200);
       const page = (students.body as Envelope<{ items: WithId[]; total: number }>).data;

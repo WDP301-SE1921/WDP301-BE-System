@@ -355,6 +355,26 @@ describe('Academic workflows (database + HTTP)', () => {
     expect(recorded).not.toContain(upcomingParticipant.id);
     await db.sessionParticipant.delete({ where: { id: upcomingParticipant.id } });
     await db.classSession.delete({ where: { id: upcoming.id } });
+    type ListedStudent = {
+      id: string;
+      currentClasses: { id: string }[];
+      attendancePercent: number | null;
+      pendingMakeups: number;
+    };
+    const studentRows = async (quick?: string): Promise<ListedStudent[]> =>
+      (
+        (
+          await request(server)
+            .get('/api/v1/students')
+            .query(quick ? { quick, limit: 100 } : { limit: 100 })
+            .set('Authorization', `Bearer ${tokens.staff}`)
+            .expect(200)
+        ).body as Envelope<{ items: ListedStudent[] }>
+      ).data.items;
+    const before = (await studentRows()).find((item) => item.id === ids.student);
+    expect(before?.currentClasses.map((item) => item.id)).toContain(ids.classA);
+    expect(before).toMatchObject({ attendancePercent: 0, pendingMakeups: 1 });
+    expect((await studentRows('pending-makeup')).map((item) => item.id)).toContain(ids.student);
     await call('manager', 'post', 'makeups')
       .send({ originalParticipantId: source.id, targetSessionId: target.id })
       .expect(403);
@@ -378,6 +398,11 @@ describe('Academic workflows (database + HTTP)', () => {
     expect((await db.makeupBooking.findUniqueOrThrow({ where: { id: booking.id } })).status).toBe(
       'COMPLETED',
     );
+    expect((await studentRows()).find((item) => item.id === ids.student)).toMatchObject({
+      attendancePercent: 100,
+      pendingMakeups: 0,
+    });
+    expect((await studentRows('pending-makeup')).map((item) => item.id)).not.toContain(ids.student);
     const report = await call('teacher', 'post', 'reports')
       .send({
         classId: ids.classA,
