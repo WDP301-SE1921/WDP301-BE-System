@@ -26,7 +26,7 @@ const BCRYPT_MAX_BYTES = 72;
 const HCM_OFFSET_MS = 7 * 3_600_000;
 const DAY_MS = 86_400_000;
 
-type ManagedRole = Extract<UserRole, 'STAFF' | 'TEACHER'>;
+type ManagedRole = Extract<UserRole, 'STAFF' | 'TEACHER' | 'CURRICULUM_DESIGNER'>;
 type InvitedRole = Extract<UserRole, 'TEACHER' | 'MANAGER'>;
 
 // The password hash must never leave the service, so every query selects these columns explicitly.

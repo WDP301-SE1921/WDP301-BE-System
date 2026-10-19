@@ -756,8 +756,11 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .expect(200);
     });
 
-    it('creates, lists, renames and disables staff without exposing secrets', async () => {
-      for (const [role, path] of [['STAFF', 'staff']] as const) {
+    it('creates, lists, renames and disables staff and designers without exposing secrets', async () => {
+      for (const [role, path] of [
+        ['STAFF', 'staff'],
+        ['CURRICULUM_DESIGNER', 'curriculum-designers'],
+      ] as const) {
         const email = `new${path}@example.com`;
         const created = await call('MANAGER', 'post', path)
           .send({

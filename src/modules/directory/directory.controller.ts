@@ -96,6 +96,39 @@ export class DirectoryController {
     return this.directory.updateAccount(user, 'TEACHER', id, input);
   }
 
+  @Get('curriculum-designers')
+  @ApiOperation({ summary: 'Manager: list curriculum designer accounts (BE-10)' })
+  listDesigners(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListAccountsDto,
+  ): Promise<unknown> {
+    return this.directory.listAccounts(user, 'CURRICULUM_DESIGNER', query);
+  }
+
+  @Post('curriculum-designers')
+  @ApiOperation({ summary: 'Manager: create a curriculum designer account' })
+  createDesigner(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CreateStaffAccountDto,
+  ): Promise<unknown> {
+    return this.directory.createAccount(user, 'CURRICULUM_DESIGNER', input);
+  }
+
+  @Get('curriculum-designers/:id')
+  getDesigner(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.directory.getAccount(user, 'CURRICULUM_DESIGNER', id);
+  }
+
+  @Patch('curriculum-designers/:id')
+  @ApiOperation({ summary: 'Manager: rename or disable/enable a curriculum designer' })
+  updateDesigner(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateStaffAccountDto,
+  ): Promise<unknown> {
+    return this.directory.updateAccount(user, 'CURRICULUM_DESIGNER', id, input);
+  }
+
   @Get('parents')
   @ApiOperation({ summary: 'Manager/staff: list parent accounts' })
   listParents(
