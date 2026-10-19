@@ -376,6 +376,27 @@ describe('Academic workflows (database + HTTP)', () => {
       rows: { required: number; attended: number; attendancePercent: number }[];
     };
     expect(snapshot.rows[0]).toMatchObject({ required: 1, attended: 1, attendancePercent: 100 });
+    const studentReport = await call('teacher', 'post', 'reports')
+      .send({
+        classId: ids.classA,
+        studentId: ids.student,
+        from: new Date(now - 7 * 86400000).toISOString(),
+        to: new Date(now + 10000).toISOString(),
+      })
+      .expect(201);
+    const listed = (
+      (await call('teacher', 'get', 'reports').expect(200)).body as Envelope<
+        { id: string; scope: string | null; studentId: string | null; from: string; to: string }[]
+      >
+    ).data;
+    expect(listed.find((item) => item.id === ids.report)).toMatchObject({
+      scope: 'CLASS',
+      studentId: null,
+      from: new Date(now - 7 * 86400000).toISOString(),
+    });
+    expect(
+      listed.find((item) => item.id === (studentReport.body as Envelope<WithId>).data.id),
+    ).toMatchObject({ scope: 'STUDENT', studentId: ids.student });
     const range = new URLSearchParams({
       fromDate: new Date(now - 7 * 86400000).toISOString(),
       toDate: new Date(now + 10000).toISOString(),
