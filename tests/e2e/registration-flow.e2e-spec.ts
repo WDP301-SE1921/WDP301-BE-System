@@ -588,6 +588,15 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         (detail.body as Envelope<{ weeklySchedules: unknown[]; enrollments: { total: number } }>)
           .data,
       ).toMatchObject({ enrollments: { total: 2 } });
+      expect(
+        (
+          detail.body as Envelope<{
+            enrollments: {
+              items: { studentProfile: { parentProfile: { user: { email: string } } } }[];
+            };
+          }>
+        ).data.enrollments.items[0].studentProfile.parentProfile.user.email,
+      ).toBe('parentmain@example.com');
       await call('STAFF', 'get', 'classes/does-not-exist').expect(404);
       const payments = await call('STAFF', 'get', 'payments').expect(200);
       const ledger = (payments.body as Envelope<{ total: number; totalAmount: string }>).data;

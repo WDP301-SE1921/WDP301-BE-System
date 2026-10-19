@@ -1688,7 +1688,16 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           startDate: true,
           endDate: true,
           packageMonths: true,
-          studentProfile: { select: { id: true, fullName: true, grade: true } },
+          studentProfile: {
+            select: {
+              id: true,
+              fullName: true,
+              grade: true,
+              parentProfile: {
+                select: { phone: true, user: { select: { email: true, displayName: true } } },
+              },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page.page - 1) * page.limit,
