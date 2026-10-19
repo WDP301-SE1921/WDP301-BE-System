@@ -245,7 +245,7 @@ Các đường dẫn tương đối với `/api/v1`.
 | `GET/POST /curriculum-designers`, `GET/PATCH /curriculum-designers/:id` | Manager | Tài khoản Thiết kế giáo trình, cùng body, response và audit như `/staff`. |
 | `GET /parents` | Manager, Staff | `parentProfile.students` liệt kê con (`id`, `fullName`, `grade`, `status`); `paidAmount` là tổng thanh toán `CONFIRMED` của các con. |
 | `DELETE /parents/:id` | Manager | Xóa tài khoản phụ huynh chưa dùng (không có hồ sơ con, đơn đăng ký hay hoạt động trong audit); trường hợp khác trả `409 PARENT_IN_USE`, khi đó khóa tài khoản qua `PATCH /parents/:id`. Ghi audit `PARENT_ACCOUNT_DELETE`. |
-| `GET /classes/:id` | Như cũ | `enrollments.items[].studentProfile.parentProfile` có `phone` và `user.email`, `user.displayName` của phụ huynh. |
+| `GET /classes/:id` | Như cũ | Với Manager và Staff, `enrollments.items[].studentProfile.parentProfile` có `phone` và `user.email`, `user.displayName` của phụ huynh. Teacher không nhận trường này. |
 
 Email điểm danh, nghỉ học, học bù, chuyển lớp, kết thúc học, lời mời, xác minh/reset, thanh toán, thông báo và nhắc học phí được xếp vào outbox. API tạo sự kiện xác nhận đã xếp hàng; trạng thái gửi thực tế xem qua `GET /academic/email-deliveries`. Worker dùng lease 60 giây và `maxAttempts` của từng event; nếu process chết đúng lúc SMTP nhận email thì email có thể được gửi lại.
 
