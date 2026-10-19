@@ -521,6 +521,56 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       expect(await status()).toMatchObject({ status: 'EXPIRED', label: 'Đã hết hạn' });
     });
 
+    it('lets staff and managers fix a student profile but keeps the grade locked while enrolled', async () => {
+      const renamed = await call('STAFF', 'patch', `students/${kids.A}`)
+        .send({ fullName: '  Kid A Renamed ', dateOfBirth: '2013-05-06' })
+        .expect(200);
+      expect((renamed.body as Envelope<{ fullName: string }>).data.fullName).toBe('Kid A Renamed');
+      const audit = await db.auditLog.findFirstOrThrow({
+        where: { action: 'STUDENT_PROFILE_UPDATED', entityId: kids.A },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(audit.afterData).toMatchObject({
+        fullName: 'Kid A Renamed',
+        dateOfBirth: '2013-05-06',
+      });
+      const locked = await call('MANAGER', 'patch', `students/${kids.A}`)
+        .send({ grade: 6 })
+        .expect(409);
+      expect(locked.body).toMatchObject({ error: { code: 'STUDENT_GRADE_LOCKED' } });
+      await call('TEACHER', 'patch', `students/${kids.A}`).send({ fullName: 'X' }).expect(403);
+      await call('PARENT', 'patch', `students/${kids.A}`).send({ fullName: 'X' }).expect(403);
+      await call('STAFF', 'patch', 'students/missing-student').send({ fullName: 'X' }).expect(404);
+      await call('STAFF', 'patch', `students/${kids.A}`).send({ fullName: 'Kid A' }).expect(200);
+    });
+
+    it('marks students without a current class and filters them', async () => {
+      type Item = WithId & {
+        currentClasses: WithId[];
+        attendancePercent: number | null;
+        pendingMakeups: number;
+        onLongLeave: boolean;
+      };
+      const list = async (query: Record<string, string>): Promise<Item[]> =>
+        (
+          (
+            await call('STAFF', 'get', 'students')
+              .query({ search: 'Kid', ...query })
+              .expect(200)
+          ).body as Envelope<{ items: Item[] }>
+        ).data.items;
+      // Paid enrollments start tomorrow, so nobody is studying yet.
+      expect((await list({})).find((item) => item.id === kids.A)).toMatchObject({
+        currentClasses: [],
+        attendancePercent: null,
+        pendingMakeups: 0,
+        onLongLeave: false,
+      });
+      expect((await list({ quick: 'no-class' })).map((item) => item.id)).toContain(kids.A);
+      expect(await list({ quick: 'pending-makeup' })).toEqual([]);
+      await call('STAFF', 'get', 'students').query({ quick: 'unknown' }).expect(400);
+    });
+
     it('lets staff read students, enrollments, schedules, classes and payments', async () => {
       const students = await call('STAFF', 'get', 'students').query({ search: 'Kid' }).expect(200);
       const page = (students.body as Envelope<{ items: WithId[]; total: number }>).data;
@@ -538,6 +588,29 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         (detail.body as Envelope<{ weeklySchedules: unknown[]; enrollments: { total: number } }>)
           .data,
       ).toMatchObject({ enrollments: { total: 2 } });
+      expect(
+        (
+          detail.body as Envelope<{
+            enrollments: {
+              items: { studentProfile: { parentProfile: { user: { email: string } } } }[];
+            };
+          }>
+        ).data.enrollments.items[0].studentProfile.parentProfile.user.email,
+      ).toBe('parentmain@example.com');
+      // The assigned teacher sees the same roster without the parent contact.
+      const teacher = await db.user.findFirstOrThrow({ where: { role: 'TEACHER' } });
+      await db.class.update({ where: { id: classes.two }, data: { teacherId: teacher.id } });
+      const teacherView = await call('TEACHER', 'get', `classes/${classes.two}`)
+        .query({ at: `${tomorrow}T12:00:00.000Z` })
+        .expect(200);
+      await db.class.update({ where: { id: classes.two }, data: { teacherId: null } });
+      const teacherRow = (
+        teacherView.body as Envelope<{
+          enrollments: { items: { studentProfile: Record<string, unknown> }[] };
+        }>
+      ).data.enrollments.items[0].studentProfile;
+      expect(teacherRow.fullName).toBeDefined();
+      expect(teacherRow).not.toHaveProperty('parentProfile');
       await call('STAFF', 'get', 'classes/does-not-exist').expect(404);
       const payments = await call('STAFF', 'get', 'payments').expect(200);
       const ledger = (payments.body as Envelope<{ total: number; totalAmount: string }>).data;
@@ -706,8 +779,11 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .expect(200);
     });
 
-    it('creates, lists, renames and disables staff without exposing secrets', async () => {
-      for (const [role, path] of [['STAFF', 'staff']] as const) {
+    it('creates, lists, renames and disables staff and designers without exposing secrets', async () => {
+      for (const [role, path] of [
+        ['STAFF', 'staff'],
+        ['CURRICULUM_DESIGNER', 'curriculum-designers'],
+      ] as const) {
         const email = `new${path}@example.com`;
         const created = await call('MANAGER', 'post', path)
           .send({
@@ -772,6 +848,9 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .send({ email: 'x@example.com', password: 'InitialPass123!', displayName: 'X' })
         .expect(403);
       await call('STAFF', 'get', 'staff').expect(403);
+      await call('STAFF', 'get', 'curriculum-designers').expect(403);
+      await call('CURRICULUM_DESIGNER', 'get', 'curriculum-designers').expect(403);
+      await call('STAFF', 'delete', 'parents/any').expect(403);
       for (const role of ['TEACHER', 'CURRICULUM_DESIGNER', 'PARENT'] as UserRole[]) {
         await call(role, 'get', 'teachers').expect(403);
         await call(role, 'post', 'staff')
@@ -791,8 +870,38 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       const list = await call('MANAGER', 'get', 'parents')
         .query({ search: 'parentmain' })
         .expect(200);
-      const parent = (list.body as Envelope<{ items: Account[] }>).data.items[0];
+      const parent = (
+        list.body as Envelope<{
+          items: (Account & {
+            paidAmount: number;
+            parentProfile: { students: { fullName: string }[] };
+          })[];
+        }>
+      ).data.items[0];
       expect(parent.email).toBe('parentmain@example.com');
+      expect(parent.parentProfile.students.map((child) => child.fullName)).toContain('Kid B');
+      const confirmed = await db.payment.aggregate({
+        _sum: { amount: true },
+        where: { registrationOrder: { targetStudent: { parentProfile: { userId: parent.id } } } },
+      });
+      expect(parent.paidAmount).toBe(Number(confirmed._sum.amount ?? 0));
+      const inUse = await call('MANAGER', 'delete', `parents/${parent.id}`).expect(409);
+      expect(inUse.body).toMatchObject({ error: { code: 'PARENT_IN_USE' } });
+      const unused = await db.user.create({
+        data: {
+          email: 'unused.parent@example.com',
+          role: 'PARENT',
+          parentProfile: { create: {} },
+        },
+      });
+      await call('MANAGER', 'delete', `parents/${unused.id}`).expect(200);
+      expect(await db.user.findUnique({ where: { id: unused.id } })).toBeNull();
+      expect(
+        await db.auditLog.count({
+          where: { action: 'PARENT_ACCOUNT_DELETE', entityId: unused.id },
+        }),
+      ).toBe(1);
+      await call('MANAGER', 'delete', 'parents/missing').expect(404);
       const detail = await call('MANAGER', 'get', `parents/${parent.id}`).expect(200);
       expect(
         (detail.body as Envelope<{ parentProfile: { students: unknown[] } }>).data.parentProfile

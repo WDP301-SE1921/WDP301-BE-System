@@ -208,7 +208,7 @@ Chỉ Teacher được phân công mới được gọi `POST /sessions/:id/rost
 
 - `GET /academic/classes/:id/attendance-summary` và `GET /academic/me/students/:id/attendance` dùng chung công thức `(present + madeUp) / required`; buổi nghỉ có phép không vào mẫu số.
 - `POST /academic/leaves/:id/end-early` giữ lịch sử đã nghỉ và chỉ mở lại các buổi tương lai. `POST /academic/makeups/:id/reschedule` đổi chỗ học bù trong một transaction.
-- `GET /academic/email-deliveries` và `POST /academic/email-deliveries/:id/retry` dành cho Manager/Staff. Worker retry email pending với backoff và giới hạn số lần thử.
+- `GET /academic/email-deliveries` và `POST /academic/email-deliveries/:id/retry` dành cho Manager/Staff. Danh sách nhận thêm `status` (`PENDING`, `PROCESSING`, `SENT`, `FAILED`); `total` là số dòng sau lọc. Worker retry email pending với backoff và giới hạn số lần thử.
 - `PATCH /auth/me`, `POST /auth/change-password`, `/auth/forgot-password`, `/auth/reset-password` cung cấp self-service profile/password; reset thu hồi các phiên cũ.
 - `GET /audit-logs` dành cho Manager, có bộ lọc actor/entity/action/thời gian.
 
@@ -222,7 +222,7 @@ Các đường dẫn dưới đây tương đối với `/api/v1`; endpoint chuy
 | `GET /classes/:id` | Trả `pendingTeacher` và `pendingTeacherFrom` khi có phân công chờ, cùng `room` và roster theo placement. |
 | `GET /classes` | Trả `room`, `rosterCount` hiện tại và, khi có `startDate`/`packageMonths`, `availableSeats` tính theo placement trong kỳ. `_count.enrollments` vẫn là tổng theo lớp gốc. |
 | `POST /academic/leaves/:id/end-early` | `effectiveDate` phải là `YYYY-MM-DD`, không trước ngày hiện tại theo UTC+7; ngày sai trả `400 INVALID_EFFECTIVE_DATE`. Chỉ mở lại buổi trong kỳ nghỉ đang kết thúc. |
-| `GET /academic/classes/:id/attendance-summary` | Ngày `YYYY-MM-DD` bao trùm cả ngày UTC+7; Teacher có thể lọc `studentId`. Response thêm `students[]` gồm `studentId`, `fullName`, `counts`, `attendancePercent`. `UNMARKED` ở buổi đã hoàn tất tính vắng. |
+| `GET /academic/classes/:id/attendance-summary` | Ngày `YYYY-MM-DD` bao trùm cả ngày UTC+7; Teacher (lớp được phân công), Manager và Staff (mọi lớp, lớp không tồn tại trả 404) có thể lọc `studentId`. Response thêm `students[]` gồm `studentId`, `fullName`, `counts`, `attendancePercent`. `UNMARKED` ở buổi đã hoàn tất tính vắng. |
 | `POST /auth/change-password` | Sai mật khẩu hiện tại trả `400 AUTH_CURRENT_PASSWORD_INVALID`, không thu hồi phiên. |
 | `POST /auth/reset-password` | Token chỉ dùng một lần; đặt lại thành công thu hồi phiên và các reset token khác, ghi audit `PASSWORD_RESET`. |
 | `POST /account-invitations/:id/resend` | Manager xoay token của lời mời chưa dùng, gia hạn 48 giờ và xếp email mới vào outbox. Response không chứa token. |
@@ -230,6 +230,22 @@ Các đường dẫn dưới đây tương đối với `/api/v1`; endpoint chuy
 | `POST /teachers` | Trả `410 TEACHER_INVITATION_REQUIRED`; dùng quy trình mời → nhận → duyệt. |
 | `GET /managers` | Chỉ kiểm role `MANAGER`, không trả `permissions`. Endpoint `PATCH /managers/:id/permissions` đã bỏ. |
 | `POST /academic/email-deliveries/:id/retry` | SMTP lỗi trả `502 EMAIL_DELIVERY_FAILED` sau khi lưu lần thử. Danh sách delivery không trả payload chứa link/token. |
+
+## Contract cho màn Web mới (19/10/2026)
+
+Các đường dẫn tương đối với `/api/v1`.
+
+| API | Quyền | Thay đổi contract |
+| --- | --- | --- |
+| `GET /academic/makeup-sources` | Như cũ | Thêm `completedOnly=true`: chỉ trả buổi vắng đã ghi nhận (buổi `COMPLETED`), bỏ các buổi tương lai mà danh sách học bù cho xếp trước. Dùng cho số "chờ học bù". |
+| `GET /academic/reports` | Như cũ | Mỗi dòng thêm `from`, `to`, `scope` (`CLASS`, `STUDENT`; `null` với báo cáo tạo trước khi lưu phạm vi), `studentId`, `studentName`. |
+| `GET /academic/students/:id/grades` | Manager, Staff | Bài đã giao (không gồm `DRAFT`) của học sinh, mới nhất trước, tối đa 500 dòng. Mỗi dòng có `class`, `maxScore`, lần nộp mới nhất (`submission`) và điểm đã công bố mới nhất (`grade`, `null` khi chưa công bố). Học sinh không tồn tại trả `404 STUDENT_NOT_FOUND`. |
+| `PATCH /students/:id` | Manager, Staff | Body như `PATCH /me/students/:id` (`fullName`, `grade`, `dateOfBirth`). Đổi khối khi còn enrollment hiện tại hoặc tương lai trả `409 STUDENT_GRADE_LOCKED`. Ghi audit `STUDENT_PROFILE_UPDATED`. |
+| `GET /students` | Manager, Staff | Mỗi dòng thêm `currentClasses` (lớp theo placement hôm nay), `attendancePercent` (cùng công thức chuyên cần, `null` khi chưa có buổi đã chốt), `pendingMakeups`, `onLongLeave`. Thêm `quick`: `no-class` (đang học nhưng không có lớp hiện tại), `long-leave` (nghỉ dài hạn đã duyệt bao trùm hôm nay), `pending-makeup` (có buổi vắng đã ghi nhận chưa xếp học bù). |
+| `GET/POST /curriculum-designers`, `GET/PATCH /curriculum-designers/:id` | Manager | Tài khoản Thiết kế giáo trình, cùng body, response và audit như `/staff`. |
+| `GET /parents` | Manager, Staff | `parentProfile.students` liệt kê con (`id`, `fullName`, `grade`, `status`); `paidAmount` là tổng thanh toán `CONFIRMED` của các con. |
+| `DELETE /parents/:id` | Manager | Xóa tài khoản phụ huynh chưa dùng (không có hồ sơ con, đơn đăng ký hay hoạt động trong audit); trường hợp khác trả `409 PARENT_IN_USE`, khi đó khóa tài khoản qua `PATCH /parents/:id`. Ghi audit `PARENT_ACCOUNT_DELETE`. |
+| `GET /classes/:id` | Như cũ | Với Manager và Staff, `enrollments.items[].studentProfile.parentProfile` có `phone` và `user.email`, `user.displayName` của phụ huynh. Teacher không nhận trường này. |
 
 Email điểm danh, nghỉ học, học bù, chuyển lớp, kết thúc học, lời mời, xác minh/reset, thanh toán, thông báo và nhắc học phí được xếp vào outbox. API tạo sự kiện xác nhận đã xếp hàng; trạng thái gửi thực tế xem qua `GET /academic/email-deliveries`. Worker dùng lease 60 giây và `maxAttempts` của từng event; nếu process chết đúng lúc SMTP nhận email thì email có thể được gửi lại.
 

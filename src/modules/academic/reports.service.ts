@@ -22,6 +22,8 @@ export interface ReportRow {
 interface ReportSnapshot {
   from: string;
   to: string;
+  /** Học sinh được chọn khi tạo; null là toàn lớp. Snapshot cũ không có trường này. */
+  studentId?: string | null;
   className: string;
   generatedAt: string;
   rows: ReportRow[];
@@ -154,6 +156,7 @@ export class ReportsService {
       return {
         from: input.from,
         to: input.to,
+        studentId: input.studentId ?? null,
         className: classroom.name,
         generatedAt: new Date().toISOString(),
         teachingProgress: {
@@ -205,12 +208,27 @@ export class ReportsService {
       where: assignedTeacherWhere(user.id, new Date()),
       select: { id: true },
     });
-    return this.repo.db.learningReport.findMany({
+    const reports = await this.repo.db.learningReport.findMany({
       where: { classId: { in: classes.map((c) => c.id) } },
-      select: { id: true, classId: true, createdAt: true },
+      select: { id: true, classId: true, createdAt: true, snapshot: true },
       take: page.limit,
       skip: (page.page - 1) * page.limit,
       orderBy: { createdAt: 'desc' },
+    });
+    // The list exposes scope and range only; per-student rows stay in the export.
+    return reports.map(({ snapshot, ...report }) => {
+      const data = snapshot as unknown as ReportSnapshot;
+      const scoped = typeof data.studentId === 'string';
+      return {
+        ...report,
+        from: data.from,
+        to: data.to,
+        scope: !('studentId' in data) ? null : scoped ? 'STUDENT' : 'CLASS',
+        studentId: scoped ? data.studentId : null,
+        studentName: scoped
+          ? (data.rows.find((row) => row.studentId === data.studentId)?.name ?? null)
+          : null,
+      };
     });
   }
 

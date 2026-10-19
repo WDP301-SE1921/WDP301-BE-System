@@ -482,7 +482,8 @@ export class EnrollmentWorkflowsService {
         cancelled: false,
         kind: 'REGULAR',
         attendance: { notIn: ['PRESENT', 'EXCUSED'] },
-        session: { status: { not: 'CANCELLED' } },
+        // completedOnly: the absence already happened (UNMARKED in a completed session counts as absent).
+        session: query.completedOnly ? { status: 'COMPLETED' } : { status: { not: 'CANCELLED' } },
         sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
         enrollment: {
           status: 'ACTIVE',
@@ -607,13 +608,20 @@ export class EnrollmentWorkflowsService {
     user: AuthenticatedUser,
     input: AttendanceQueryDto & { classId?: string; studentId?: string },
   ): Promise<unknown> {
+    // Manager and staff read any class (student detail, class roster); teachers only their own classes.
+    const backOffice = user.role === 'MANAGER' || user.role === 'STAFF';
     assertRule(
-      (user.role === 'TEACHER' && !!input.classId) || (user.role === 'PARENT' && !!input.studentId),
+      ((user.role === 'TEACHER' || backOffice) && !!input.classId) ||
+        (user.role === 'PARENT' && !!input.studentId),
       'FORBIDDEN',
       'Attendance scope is not allowed',
       HttpStatus.FORBIDDEN,
     );
     if (user.role === 'TEACHER') await this.access.classroom(user, input.classId!);
+    if (backOffice) {
+      const exists = await this.repo.db.class.count({ where: { id: input.classId } });
+      assertRule(exists === 1, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+    }
     if (user.role === 'PARENT') {
       const owned = await this.repo.db.studentProfile.count({
         where: { id: input.studentId, parentProfile: { userId: user.id } },

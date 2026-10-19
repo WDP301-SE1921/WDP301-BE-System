@@ -1,12 +1,19 @@
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import { HttpStatus, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Prisma, type Class, type ClassWeeklySchedule, type Subject } from '@prisma/client';
+import {
+  Prisma,
+  type Class,
+  type ClassWeeklySchedule,
+  type StudentProfile,
+  type Subject,
+} from '@prisma/client';
 import { createHash } from 'node:crypto';
 
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
+import { attendanceContribution } from '../academic/attendance-calculation';
 import {
   ClassDto,
   ClassScheduleSlotDto,
@@ -123,30 +130,71 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         'Student profile does not belong to this parent',
         HttpStatus.FORBIDDEN,
       );
-      if (input.grade !== undefined && input.grade !== student.grade) {
-        const currentOrFuture = await tx.enrollment.count({
-          where: {
-            studentProfileId: id,
-            status: 'ACTIVE',
-            OR: [{ endDate: null }, { endDate: { gt: todayLocalDate() } }],
-          },
-        });
-        this.assert(
-          !currentOrFuture,
-          'STUDENT_GRADE_LOCKED',
-          'Cannot change grade while the student has current or future enrollments',
-        );
-      }
-      return tx.studentProfile.update({
-        where: { id },
+      return this.applyStudentUpdate(tx, student, input);
+    });
+  }
+
+  /** Staff/manager fix a child profile with the parent-app rules; the change is audited. */
+  async updateStudent(
+    user: AuthenticatedUser,
+    id: string,
+    input: UpdateStudentDto,
+  ): Promise<unknown> {
+    this.requireRoles(user, 'STAFF', 'MANAGER');
+    return this.transaction(async (tx) => {
+      const student = await tx.studentProfile.findUnique({ where: { id } });
+      this.assert(student, 'STUDENT_NOT_FOUND', 'Student profile not found', HttpStatus.NOT_FOUND);
+      const updated = await this.applyStudentUpdate(tx, student, input);
+      const snapshot = (
+        value: typeof student,
+      ): { fullName: string; grade: number; dateOfBirth: string | null } => ({
+        fullName: value.fullName,
+        grade: value.grade,
+        dateOfBirth: value.dateOfBirth ? value.dateOfBirth.toISOString().slice(0, 10) : null,
+      });
+      await tx.auditLog.create({
         data: {
-          ...(input.fullName === undefined ? {} : { fullName: input.fullName.trim() }),
-          ...(input.grade === undefined ? {} : { grade: input.grade }),
-          ...(input.dateOfBirth === undefined
-            ? {}
-            : { dateOfBirth: input.dateOfBirth ? localDate(input.dateOfBirth) : null }),
+          actorUserId: user.id,
+          action: 'STUDENT_PROFILE_UPDATED',
+          entityType: 'StudentProfile',
+          entityId: id,
+          beforeData: snapshot(student),
+          afterData: snapshot(updated),
         },
       });
+      return updated;
+    });
+  }
+
+  /** Grade is locked while the student has a current or future enrollment (grade-specific classes). */
+  private async applyStudentUpdate(
+    tx: Prisma.TransactionClient,
+    student: { id: string; grade: number },
+    input: UpdateStudentDto,
+  ): Promise<StudentProfile> {
+    if (input.grade !== undefined && input.grade !== student.grade) {
+      const currentOrFuture = await tx.enrollment.count({
+        where: {
+          studentProfileId: student.id,
+          status: 'ACTIVE',
+          OR: [{ endDate: null }, { endDate: { gt: todayLocalDate() } }],
+        },
+      });
+      this.assert(
+        !currentOrFuture,
+        'STUDENT_GRADE_LOCKED',
+        'Cannot change grade while the student has current or future enrollments',
+      );
+    }
+    return tx.studentProfile.update({
+      where: { id: student.id },
+      data: {
+        ...(input.fullName === undefined ? {} : { fullName: input.fullName.trim() }),
+        ...(input.grade === undefined ? {} : { grade: input.grade }),
+        ...(input.dateOfBirth === undefined
+          ? {}
+          : { dateOfBirth: input.dateOfBirth ? localDate(input.dateOfBirth) : null }),
+      },
     });
   }
 
@@ -1457,6 +1505,35 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   async listStudents(user: AuthenticatedUser, query: ListStudentsDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
     const search = query.search?.trim();
+    const today = todayLocalDate();
+    const now = new Date();
+    const current: Prisma.EnrollmentWhereInput = {
+      status: 'ACTIVE',
+      startDate: { lte: today },
+      endDate: { gt: today },
+    };
+    // Same rule as academic makeup sources with completedOnly: a recorded absence not yet made up.
+    const pendingMakeup: Prisma.SessionParticipantWhereInput = {
+      kind: 'REGULAR',
+      cancelled: false,
+      attendance: { notIn: ['PRESENT', 'EXCUSED'] },
+      session: { status: 'COMPLETED' },
+      sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
+    };
+    const onLeave: Prisma.LeaveRequestWhereInput = {
+      kind: 'PERIOD_PAUSE',
+      status: 'APPROVED',
+      fromDate: { lte: today },
+      toDate: { gte: today },
+    };
+    const quick: Prisma.StudentProfileWhereInput =
+      query.quick === 'no-class'
+        ? { status: 'ACTIVE', enrollments: { none: current } }
+        : query.quick === 'long-leave'
+          ? { enrollments: { some: { status: 'ACTIVE', leaveRequests: { some: onLeave } } } }
+          : query.quick === 'pending-makeup'
+            ? { enrollments: { some: { status: 'ACTIVE', participants: { some: pendingMakeup } } } }
+            : {};
     const where: Prisma.StudentProfileWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.grade ? { grade: query.grade } : {}),
@@ -1469,6 +1546,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             ],
           }
         : {}),
+      ...quick,
     };
     const [items, total] = await Promise.all([
       this.db.studentProfile.findMany({
@@ -1487,7 +1565,94 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       }),
       this.db.studentProfile.count({ where }),
     ]);
-    return { items, page: query.page, limit: query.limit, total };
+    const ids = items.map((item) => item.id);
+    const [enrollments, participants, leaves] = ids.length
+      ? await Promise.all([
+          this.db.enrollment.findMany({
+            where: { ...current, studentProfileId: { in: ids } },
+            select: {
+              studentProfileId: true,
+              class: { select: { id: true, name: true } },
+              placements: {
+                where: {
+                  effectiveFrom: { lte: now },
+                  OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+                },
+                select: { class: { select: { id: true, name: true } } },
+                take: 1,
+              },
+            },
+          }),
+          this.db.sessionParticipant.findMany({
+            where: {
+              kind: 'REGULAR',
+              cancelled: false,
+              session: { status: 'COMPLETED' },
+              enrollment: { studentProfileId: { in: ids } },
+            },
+            select: {
+              attendance: true,
+              enrollment: { select: { studentProfileId: true, status: true } },
+              sourceBookings: {
+                where: { status: { in: ['BOOKED', 'COMPLETED'] } },
+                select: { status: true },
+              },
+            },
+          }),
+          this.db.leaveRequest.findMany({
+            where: { ...onLeave, enrollment: { status: 'ACTIVE', studentProfileId: { in: ids } } },
+            select: { enrollment: { select: { studentProfileId: true } } },
+          }),
+        ])
+      : [[], [], []];
+    const stats = new Map(
+      ids.map((id) => [
+        id,
+        {
+          classes: new Map<string, { id: string; name: string }>(),
+          required: 0,
+          attended: 0,
+          pendingMakeups: 0,
+        },
+      ]),
+    );
+    for (const row of enrollments) {
+      const classroom = row.placements[0]?.class ?? row.class;
+      stats.get(row.studentProfileId!)?.classes.set(classroom.id, classroom);
+    }
+    for (const row of participants) {
+      const entry = stats.get(row.enrollment.studentProfileId!);
+      if (!entry) continue;
+      const madeUp = row.sourceBookings.some((booking) => booking.status === 'COMPLETED');
+      const contribution = attendanceContribution(row.attendance, madeUp);
+      entry.required += contribution.required;
+      entry.attended += contribution.attended;
+      if (
+        row.enrollment.status === 'ACTIVE' &&
+        row.attendance !== 'PRESENT' &&
+        row.attendance !== 'EXCUSED' &&
+        !row.sourceBookings.length
+      )
+        entry.pendingMakeups++;
+    }
+    const onLongLeave = new Set(leaves.map((row) => row.enrollment.studentProfileId));
+    return {
+      items: items.map((item) => {
+        const entry = stats.get(item.id)!;
+        return {
+          ...item,
+          currentClasses: [...entry.classes.values()],
+          attendancePercent: entry.required
+            ? Math.round((entry.attended / entry.required) * 10000) / 100
+            : null,
+          pendingMakeups: entry.pendingMakeups,
+          onLongLeave: onLongLeave.has(item.id),
+        };
+      }),
+      page: query.page,
+      limit: query.limit,
+      total,
+    };
   }
 
   async studentEnrollments(user: AuthenticatedUser, studentId: string): Promise<unknown> {
@@ -1598,7 +1763,20 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           startDate: true,
           endDate: true,
           packageMonths: true,
-          studentProfile: { select: { id: true, fullName: true, grade: true } },
+          studentProfile: {
+            select: {
+              id: true,
+              fullName: true,
+              grade: true,
+              // Parent contact is for the back office; a teacher roster lists students only.
+              parentProfile:
+                user.role === 'TEACHER'
+                  ? false
+                  : {
+                      select: { phone: true, user: { select: { email: true, displayName: true } } },
+                    },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page.page - 1) * page.limit,

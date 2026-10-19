@@ -438,8 +438,8 @@ describe('Parent mobile contracts and isolation', () => {
         .post('/api/v1/academic/assignments')
         .set('Authorization', `Bearer ${teacherToken}`)
         .send(input);
-    await post({ ...body, sessionId: ids.makeup }).expect(409);
-    await post({ ...body, kind: 'HOMEWORK' }).expect(409);
+    await post({ ...body, sessionId: ids.makeup }).expect(400);
+    await post({ ...body, kind: 'HOMEWORK' }).expect(400);
     const valid = await post(body).expect(201);
     const assignment = (valid.body as Envelope<{ id: string }>).data;
     const changed = await request(server)

@@ -25,6 +25,7 @@ import {
   AttendanceStatus,
   FeedbackStatus,
   LeaveKind,
+  OutboxStatus,
   QuestionKind,
   RequestStatus,
 } from '@prisma/client';
@@ -44,6 +45,12 @@ export class PageDto {
 }
 export class StudentPageDto extends PageDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(191) studentId?: string;
+}
+export class EmailDeliveryFilterDto extends PageDto {
+  @ApiPropertyOptional({ enum: OutboxStatus, description: 'Only deliveries in this state.' })
+  @IsOptional()
+  @IsEnum(OutboxStatus)
+  status?: OutboxStatus;
 }
 export class LeaveFilterDto extends PageDto {
   @ApiPropertyOptional({ enum: RequestStatus })
@@ -74,6 +81,17 @@ export class MakeupSourceFilterDto extends PageDto {
   @IsString()
   @MaxLength(191)
   studentId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Only absences already recorded in completed sessions (excludes future sessions that can be made up in advance).',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  completedOnly?: boolean;
 }
 export class AttendanceQueryDto extends PageDto {
   @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
@@ -202,6 +220,9 @@ export class AssignmentDto {
   @ValidateNested({ each: true })
   @Type(() => QuestionDto)
   questions!: QuestionDto[];
+}
+export class AssignmentImportDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) classId!: string;
 }
 export class RecipientsDto {
   @ApiProperty({ type: [String] })

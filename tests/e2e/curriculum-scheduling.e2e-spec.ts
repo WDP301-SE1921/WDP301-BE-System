@@ -182,26 +182,39 @@ describe('Shared curriculum and generated sessions', () => {
       .expect(201);
     const lesson1 = (lesson.body as Envelope<Id>).data.id;
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
-      .send({})
+      .send({ reviewerTeacherId: ids.TEACHER })
       .expect(201);
     await call('MANAGER', 'post', `curriculum-units/${unitId}/request-changes`)
-      .send({ reason: 'Thêm bài và kiểm tra tháng' })
+      .send({ reason: 'Thêm bài học cho các buổi còn lại' })
       .expect(201);
     const lesson2 = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/lessons`)
       .send({ title: 'Bài 2', content: 'Nội dung 2', sequence: 2 })
       .expect(201);
-    const test = await call(
+    const removedTest = await call(
       'CURRICULUM_DESIGNER',
       'post',
       `curriculum-units/${unitId}/monthly-tests`,
     )
       .send({ monthKey: '2027-01', title: 'Kiểm tra tháng 1', content: 'Đề kiểm tra' })
+      .expect(409);
+    expect(removedTest.body).toMatchObject({ error: { code: 'TESTS_MANAGED_BY_TEACHER' } });
+    const lesson3 = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/lessons`)
+      .send({ title: 'Bài 3', content: 'Nội dung 3', sequence: 3 })
       .expect(201);
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/approve`)
       .send({})
       .expect(403);
-    await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
-      .send({})
+    const submitted = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
+      .send({ reviewerTeacherId: ids.TEACHER })
+      .expect(201);
+    await call('MANAGER', 'post', `curriculum-units/${unitId}/approve`).send({}).expect(409);
+    await call('TEACHER', 'get', `curriculum-units?status=PENDING_REVIEW`).expect(200);
+    await call('TEACHER', 'post', `curriculum-units/${unitId}/technical-review`)
+      .send({
+        approved: true,
+        note: 'Nội dung phù hợp với học sinh khối 8.',
+        expectedRevision: (submitted.body as Envelope<{ revision: number }>).data.revision,
+      })
       .expect(201);
     await call('MANAGER', 'post', `curriculum-units/${unitId}/approve`).send({}).expect(201);
     await call('CURRICULUM_DESIGNER', 'patch', `curriculum-units/${unitId}/lessons/${lesson1}`)
@@ -218,9 +231,9 @@ describe('Shared curriculum and generated sessions', () => {
     expect(previewSlots.map((slot) => slot.lessonId)).toEqual([
       lesson1,
       (lesson2.body as Envelope<Id>).data.id,
-      (test.body as Envelope<Id>).data.id,
+      (lesson3.body as Envelope<Id>).data.id,
     ]);
-    expect(previewSlots[2].kind).toBe('MONTHLY_TEST');
+    expect(previewSlots[2].kind).toBe('LESSON');
 
     const [first, concurrent] = await Promise.all([
       call('MANAGER', 'post', `classes/${ids.A}/session-generations`)
@@ -297,11 +310,11 @@ describe('Shared curriculum and generated sessions', () => {
       'post',
       `curriculum-units/${unitId}/revisions`,
     )
-      .send({})
+      .send({ title: 'Học phần tháng 2', fromDate: '2027-02-01', toDate: '2027-02-28' })
       .expect(201);
     expect((revision.body as Envelope<{ status: string; version: number }>).data).toMatchObject({
       status: 'DRAFT',
-      version: 2,
+      version: 1,
     });
     const sessionId = generated.sessions[0].id;
     await call('TEACHER', 'post', `sessions/${sessionId}/roster`).send({}).expect(201);
@@ -347,7 +360,7 @@ describe('Shared curriculum and generated sessions', () => {
       .expect(201);
     const id = (created.body as Envelope<Id>).data.id;
     const csv = Buffer.from(
-      'kind,sequence,title,content,monthKey\nLESSON,1,Tập hợp,Nội dung 1,\nLESSON,2,Số tự nhiên,Nội dung 2,\nMONTHLY_TEST,,Kiểm tra tháng 2,Đề kiểm tra,2027-02\n',
+      'kind,sequence,title,content,monthKey\nLESSON,1,Tập hợp,Nội dung 1,\nLESSON,2,Số tự nhiên,Nội dung 2,\n',
     );
     const preview = await call(
       'CURRICULUM_DESIGNER',
@@ -406,7 +419,7 @@ describe('Shared curriculum and generated sessions', () => {
       .expect(201);
     expect(
       (imported.body as Envelope<{ lessonCount: number; testCount: number }>).data,
-    ).toMatchObject({ lessonCount: 2, testCount: 1 });
+    ).toMatchObject({ lessonCount: 2, testCount: 0 });
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${id}/import-commit`)
       .set('Idempotency-Key', 'import-february')
       .send(body)

@@ -122,12 +122,27 @@ export class RegistrationFlowController {
   }
 
   @Get('students')
-  @ApiOperation({ summary: 'Staff/manager: search student profiles with their parent' })
+  @ApiOperation({
+    summary:
+      'Staff/manager: search student profiles with their parent, current classes, attendance percent and pending makeups',
+  })
   students(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListStudentsDto,
   ): Promise<unknown> {
     return this.flow.listStudents(user, query);
+  }
+
+  @Patch('students/:id')
+  @ApiOperation({
+    summary: 'Staff/manager: fix a student profile (grade locked while enrolled), audited',
+  })
+  updateStudentProfile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateStudentDto,
+  ): Promise<unknown> {
+    return this.flow.updateStudent(user, id, input);
   }
 
   @Get('students/:id/enrollments')

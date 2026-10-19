@@ -246,8 +246,23 @@ describe('Academic workflows (database + HTTP)', () => {
       200,
     );
     expect((hidden.body as Envelope<{ grades: unknown[] }[]>).data[0].grades).toHaveLength(0);
+    type StudentGrade = { id: string; maxScore: number; grade: { totalScore: number } | null };
+    const studentGrades = async (role: string): Promise<StudentGrade[]> =>
+      (
+        (await call(role, 'get', `students/${ids.student}/grades`).expect(200)).body as Envelope<
+          StudentGrade[]
+        >
+      ).data;
+    expect((await studentGrades('manager')).find((row) => row.id === ids.assignment)).toMatchObject(
+      { grade: null },
+    );
+    await call('teacher', 'get', `students/${ids.student}/grades`).expect(403);
+    await call('manager', 'get', 'students/missing-student/grades').expect(404);
     await call('teacher', 'post', `grades/${ids.grade}/approve`).expect(201);
     await call('teacher', 'post', `grades/${ids.grade}/publish`).expect(201);
+    expect((await studentGrades('staff')).find((row) => row.id === ids.assignment)).toMatchObject({
+      grade: { totalScore: 10 },
+    });
     const visible = await call('parent', 'get', `assignments/${ids.assignment}/submissions`).expect(
       200,
     );
@@ -314,6 +329,52 @@ describe('Academic workflows (database + HTTP)', () => {
         endsAt: new Date(now + 86400000 + 3600000),
       },
     });
+    // A future session can be made up in advance, but it is not a recorded absence yet.
+    const upcoming = await db.classSession.create({
+      data: {
+        classId: ids.classA,
+        lessonId: ids.lesson,
+        teacherId: ids.teacher,
+        startsAt: new Date(now + 3 * 86400000),
+        endsAt: new Date(now + 3 * 86400000 + 3600000),
+      },
+    });
+    const upcomingParticipant = await db.sessionParticipant.create({
+      data: { sessionId: upcoming.id, enrollmentId: ids.enrollment },
+    });
+    const sourceIds = async (query: string): Promise<string[]> =>
+      (
+        (await call('staff', 'get', `makeup-sources?studentId=${ids.student}${query}`).expect(200))
+          .body as Envelope<{ id: string }[]>
+      ).data.map((item) => item.id);
+    expect(await sourceIds('')).toEqual(
+      expect.arrayContaining([source.id, upcomingParticipant.id]),
+    );
+    const recorded = await sourceIds('&completedOnly=true');
+    expect(recorded).toContain(source.id);
+    expect(recorded).not.toContain(upcomingParticipant.id);
+    await db.sessionParticipant.delete({ where: { id: upcomingParticipant.id } });
+    await db.classSession.delete({ where: { id: upcoming.id } });
+    type ListedStudent = {
+      id: string;
+      currentClasses: { id: string }[];
+      attendancePercent: number | null;
+      pendingMakeups: number;
+    };
+    const studentRows = async (quick?: string): Promise<ListedStudent[]> =>
+      (
+        (
+          await request(server)
+            .get('/api/v1/students')
+            .query(quick ? { quick, limit: 100 } : { limit: 100 })
+            .set('Authorization', `Bearer ${tokens.staff}`)
+            .expect(200)
+        ).body as Envelope<{ items: ListedStudent[] }>
+      ).data.items;
+    const before = (await studentRows()).find((item) => item.id === ids.student);
+    expect(before?.currentClasses.map((item) => item.id)).toContain(ids.classA);
+    expect(before).toMatchObject({ attendancePercent: 0, pendingMakeups: 1 });
+    expect((await studentRows('pending-makeup')).map((item) => item.id)).toContain(ids.student);
     await call('manager', 'post', 'makeups')
       .send({ originalParticipantId: source.id, targetSessionId: target.id })
       .expect(403);
@@ -337,6 +398,11 @@ describe('Academic workflows (database + HTTP)', () => {
     expect((await db.makeupBooking.findUniqueOrThrow({ where: { id: booking.id } })).status).toBe(
       'COMPLETED',
     );
+    expect((await studentRows()).find((item) => item.id === ids.student)).toMatchObject({
+      attendancePercent: 100,
+      pendingMakeups: 0,
+    });
+    expect((await studentRows('pending-makeup')).map((item) => item.id)).not.toContain(ids.student);
     const report = await call('teacher', 'post', 'reports')
       .send({
         classId: ids.classA,
@@ -350,6 +416,46 @@ describe('Academic workflows (database + HTTP)', () => {
       rows: { required: number; attended: number; attendancePercent: number }[];
     };
     expect(snapshot.rows[0]).toMatchObject({ required: 1, attended: 1, attendancePercent: 100 });
+    const studentReport = await call('teacher', 'post', 'reports')
+      .send({
+        classId: ids.classA,
+        studentId: ids.student,
+        from: new Date(now - 7 * 86400000).toISOString(),
+        to: new Date(now + 10000).toISOString(),
+      })
+      .expect(201);
+    const listed = (
+      (await call('teacher', 'get', 'reports').expect(200)).body as Envelope<
+        { id: string; scope: string | null; studentId: string | null; from: string; to: string }[]
+      >
+    ).data;
+    expect(listed.find((item) => item.id === ids.report)).toMatchObject({
+      scope: 'CLASS',
+      studentId: null,
+      from: new Date(now - 7 * 86400000).toISOString(),
+    });
+    expect(
+      listed.find((item) => item.id === (studentReport.body as Envelope<WithId>).data.id),
+    ).toMatchObject({ scope: 'STUDENT', studentId: ids.student });
+    const range = new URLSearchParams({
+      fromDate: new Date(now - 7 * 86400000).toISOString(),
+      toDate: new Date(now + 10000).toISOString(),
+    });
+    for (const role of ['manager', 'staff']) {
+      const summary = await call(
+        role,
+        'get',
+        `classes/${ids.classA}/attendance-summary?${range}`,
+      ).expect(200);
+      const body = (
+        summary.body as Envelope<{ students: { studentId: string; attendancePercent: number }[] }>
+      ).data;
+      expect(body.students).toEqual([
+        expect.objectContaining({ studentId: ids.student, attendancePercent: 100 }),
+      ]);
+    }
+    await call('manager', 'get', 'classes/missing-class/attendance-summary').expect(404);
+    await call('designer', 'get', `classes/${ids.classA}/attendance-summary`).expect(403);
   });
 
   it('keeps class ownership until a scheduled teacher change and updates only future sessions', async () => {
@@ -746,6 +852,23 @@ describe('Academic workflows (database + HTTP)', () => {
     const attempt = await db.outboxEvent.findUniqueOrThrow({ where: { id: queued.id } });
     expect(attempt.attemptCount).toBe(1);
     expect(attempt.lastError).toBeTruthy();
+    await db.outboxEvent.update({ where: { id: queued.id }, data: { status: 'FAILED' } });
+    const failedList = await call(
+      'staff',
+      'get',
+      'email-deliveries?status=FAILED&limit=100',
+    ).expect(200);
+    const failedPage = (
+      failedList.body as Envelope<{ items: { id: string; status: string }[]; total: number }>
+    ).data;
+    expect(failedPage.items.map((item) => item.id)).toContain(queued.id);
+    expect(failedPage.items.every((item) => item.status === 'FAILED')).toBe(true);
+    expect(failedPage.total).toBe(await db.outboxEvent.count({ where: { status: 'FAILED' } }));
+    const sent = await call('manager', 'get', 'email-deliveries?status=SENT').expect(200);
+    expect(
+      (sent.body as Envelope<{ items: { id: string }[] }>).data.items.map((item) => item.id),
+    ).not.toContain(queued.id);
+    await call('manager', 'get', 'email-deliveries?status=LOST').expect(400);
   });
 });
 

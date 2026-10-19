@@ -127,12 +127,14 @@ export class NotificationEventsService {
   ): Promise<void> {
     const unit = await tx.curriculumUnit.findUniqueOrThrow({
       where: { id },
-      select: { designerId: true, title: true },
+      select: { designerId: true, title: true, reviewerTeacherId: true, technicalReviewedAt: true },
     });
     const recipients =
       type === 'CURRICULUM_SUBMITTED'
         ? await this.recipients.roles(tx, ['MANAGER'])
         : [{ userId: unit.designerId }];
+    if (type === 'CURRICULUM_SUBMITTED' && unit.reviewerTeacherId && !unit.technicalReviewedAt)
+      recipients.push({ userId: unit.reviewerTeacherId });
     await this.send(
       tx,
       actorId,

@@ -481,4 +481,13 @@ export class ListStudentsDto extends PageDto {
   @IsString()
   @MaxLength(191)
   parentUserId?: string;
+
+  @ApiPropertyOptional({
+    enum: ['no-class', 'long-leave', 'pending-makeup'],
+    description:
+      'no-class: active students without a current enrollment; long-leave: approved period pause covering today; pending-makeup: recorded absence not made up.',
+  })
+  @IsOptional()
+  @IsIn(['no-class', 'long-leave', 'pending-makeup'])
+  quick?: 'no-class' | 'long-leave' | 'pending-makeup';
 }

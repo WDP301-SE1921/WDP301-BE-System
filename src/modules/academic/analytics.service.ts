@@ -285,7 +285,11 @@ export class AnalyticsService {
           : Promise.resolve(0),
         user.role === 'MANAGER'
           ? this.repo.db.payment.findMany({
-              where: { status: 'CONFIRMED', confirmedAt: { gte: range.from, lte: range.to } },
+              where: {
+                status: 'CONFIRMED',
+                confirmedAt: { gte: range.from, lte: range.to },
+                ...(classId ? { registrationOrder: { classId } } : {}),
+              },
               select: { amount: true, confirmedAt: true },
               take: MAX_ROWS + 1,
             })
@@ -325,13 +329,7 @@ export class AnalyticsService {
         (item) => item.effectiveFrom <= now && (!item.effectiveTo || item.effectiveTo > now),
       );
       const target = metrics.get(placement?.classId ?? enrollment.classId);
-      const reservesSeat =
-        enrollment.status === 'PENDING_LINK' ||
-        (enrollment.status === 'ACTIVE' &&
-          !!enrollment.startDate &&
-          !!enrollment.endDate &&
-          enrollment.startDate <= now &&
-          enrollment.endDate >= now);
+      const reservesSeat = enrollment.status === 'PENDING_LINK' || inTerm(enrollment, now);
       if (target && reservesSeat) target.reservedSeats++;
     }
     const trend = trendPoints(range);
@@ -390,7 +388,17 @@ export class AnalyticsService {
     );
     const activeStudents = new Set(
       enrollments
-        .filter((item) => item.studentProfileId && inTerm(item, now))
+        .filter((item) => {
+          const placement = item.placements.find(
+            (entry) =>
+              entry.effectiveFrom <= now && (!entry.effectiveTo || entry.effectiveTo > now),
+          );
+          return (
+            item.studentProfileId &&
+            inTerm(item, now) &&
+            metrics.has(placement?.classId ?? item.classId)
+          );
+        })
         .map((item) => item.studentProfileId),
     ).size;
     const summary: Record<string, number | null> = {
@@ -582,7 +590,13 @@ function bucketKey(value: Date, bucket: AnalyticsBucket): string {
 function advanceBucket(value: Date, bucket: AnalyticsBucket): void {
   if (bucket === AnalyticsBucket.DAY) value.setUTCDate(value.getUTCDate() + 1);
   else if (bucket === AnalyticsBucket.WEEK) value.setUTCDate(value.getUTCDate() + 7);
-  else value.setUTCMonth(value.getUTCMonth() + 1);
+  else {
+    // A local month's first day is the previous UTC month's last day.
+    // Advance in UTC+7 before shifting back, otherwise 30/31-day months skip buckets.
+    const local = new Date(value.getTime() + 7 * 3600000);
+    local.setUTCMonth(local.getUTCMonth() + 1);
+    value.setTime(local.getTime() - 7 * 3600000);
+  }
 }
 
 function addAverage(metric: ClassMetric, score: number): void {

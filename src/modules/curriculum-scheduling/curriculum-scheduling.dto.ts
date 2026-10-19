@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
@@ -74,6 +74,20 @@ export class CurriculumUnitFilterDto {
 export class ReviewNoteDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
 }
+
+export class SubmitCurriculumUnitDto {
+  @ApiProperty() @IsString() @MinLength(1) reviewerTeacherId!: string;
+}
+
+export class TechnicalReviewDto {
+  @ApiProperty() @IsBoolean() approved!: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(2000) note?: string;
+  @ApiProperty() @IsInt() @Min(1) expectedRevision!: number;
+}
+
+export class ReviseCurriculumUnitDto extends OmitType(CreateCurriculumUnitDto, [
+  'programId',
+] as const) {}
 
 export class LessonOrderDto {
   @ApiProperty({ type: [String] })

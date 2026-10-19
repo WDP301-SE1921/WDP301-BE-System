@@ -30,20 +30,25 @@ import { ParentGradesResponseDto } from './parent-learning-response.dto';
 import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
+import { AssignmentImportService } from './assignment-import.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
 import { AnnouncementsService } from './announcements.service';
 import { EmailDeliveriesService } from './email-deliveries.service';
+import { AnalyticsService } from './analytics.service';
 import { AcademicErrorsFilter } from './academic-errors.filter';
 import {
   AnnouncementDto,
+  AnalyticsQueryDto,
   AttendanceQueryDto,
   AssignmentDto,
   StudentPageDto,
+  AssignmentImportDto,
   AttendanceDto,
   ClassDto,
   DecisionDto,
   EndLeaveEarlyDto,
+  EmailDeliveryFilterDto,
   FeedbackDto,
   GradeDto,
   LeaveDto,
@@ -76,20 +81,46 @@ export class AcademicController {
     private readonly catalog: CatalogService,
     private readonly workflows: EnrollmentWorkflowsService,
     private readonly assessment: AssessmentService,
+    private readonly assignmentImport: AssignmentImportService,
     private readonly grading: GradingWorkerService,
     private readonly reports: ReportsService,
     private readonly storage: AcademicStorageService,
     private readonly announcements: AnnouncementsService,
     private readonly emailDeliveries: EmailDeliveriesService,
+    private readonly analytics: AnalyticsService,
   ) {}
+
+  @Get('analytics')
+  @ApiOperation({ summary: 'Manager/teacher/designer: role-scoped activity statistics' })
+  analyticsDashboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AnalyticsQueryDto,
+  ): Promise<unknown> {
+    return this.analytics.dashboard(user, query);
+  }
+
+  @Get('analytics/export')
+  @ApiOperation({ summary: 'Manager/teacher/designer: export the selected statistics as XLSX' })
+  async exportAnalytics(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AnalyticsQueryDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    const file = await this.analytics.exportDashboard(user, query);
+    res.type(file.type).attachment(file.name).send(file.buffer);
+  }
 
   @Get('email-deliveries')
   @ApiOperation({
     summary: 'Manager/staff: inspect persisted email deliveries',
-    description: 'Delivery metadata omits payloads that may contain account tokens.',
+    description:
+      'Delivery metadata omits payloads that may contain account tokens. Optional status filters one state; total counts the filtered rows.',
   })
-  deliveries(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
-    return this.emailDeliveries.list(user, page);
+  deliveries(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: EmailDeliveryFilterDto,
+  ): Promise<unknown> {
+    return this.emailDeliveries.list(user, query);
   }
 
   @Post('email-deliveries/:id/retry')
@@ -277,7 +308,8 @@ export class AcademicController {
   }
   @Get('classes/:id/attendance-summary')
   @ApiOperation({
-    summary: 'Teacher: attendance summary and history for an assigned class',
+    summary:
+      'Teacher (assigned class), manager or staff: attendance summary and history for a class',
     description:
       'YYYY-MM-DD bounds include the whole local day (UTC+7). Optional studentId filters one student. Response includes students[] with counts and attendancePercent.',
   })
@@ -331,6 +363,16 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.workflows.endEnrollment(user, id);
   }
+  @Get('students/:id/grades')
+  @ApiOperation({
+    summary: 'Manager/staff: assignments of one student with the latest published grade',
+  })
+  backOfficeStudentGrades(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.assessment.backOfficeStudentGrades(user, id);
+  }
   @Post('students/:id/end-study') endStudent(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -351,6 +393,30 @@ export class AcademicController {
     @Body() input: AssignmentDto,
   ): Promise<unknown> {
     return this.assessment.create(user, input);
+  }
+  @Post('assignments/import-preview')
+  @ApiOperation({
+    summary: 'Assigned teacher: preview questions from CSV, DOCX or a text PDF; no draft is saved',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'classId'],
+      properties: { file: { type: 'string', format: 'binary' }, classId: { type: 'string' } },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 1, fieldSize: 191 },
+    }),
+  )
+  importAssignment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: AssignmentImportDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<unknown> {
+    return this.assignmentImport.preview(user, input.classId, file);
   }
   @ApiOkResponse({
     schema: {
