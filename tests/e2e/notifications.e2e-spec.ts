@@ -947,6 +947,48 @@ describe('Notification inbox, transactions and realtime', () => {
     expect(client.connected).toBe(false);
   });
 
+  it('opens a web socket with a short realtime ticket that REST endpoints reject', async () => {
+    const auth = await app.get(AuthService).login('parent@parent-mobile.test', 'ParentMobile123!');
+    const response = await http(auth.tokens.accessToken, 'post', 'auth/realtime-ticket').expect(
+      200,
+    );
+    const ticket = (response.body as Envelope<{ token: string; expiresIn: number }>).data;
+    expect(ticket.expiresIn).toBe(60);
+    await http(ticket.token, 'get', 'auth/me').expect(401);
+    await http(ticket.token, 'get', 'notifications').expect(401);
+    await http(auth.tokens.refreshToken, 'post', 'auth/realtime-ticket').expect(401);
+
+    const client = await connect(ticket.token);
+    const changed = event(client, 'notifications.read-changed');
+    await http(auth.tokens.accessToken, 'post', 'notifications/read-all').expect(200);
+    await app.get(NotificationsWorker).processDue();
+    await changed;
+
+    const session = await db.authSession.findFirstOrThrow({
+      where: { userId: ids.parent, revokedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    const config = app.get(ConfigService<AppConfiguration, true>).get('jwt', { infer: true });
+    const expired = await app.get(JwtService).signAsync(
+      { sub: ids.parent, sid: session.id, role: 'PARENT', type: 'realtime' },
+      {
+        secret: config.accessSecret,
+        issuer: config.issuer,
+        audience: config.audience,
+        algorithm: 'HS256',
+        expiresIn: -1,
+      },
+    );
+    await expect(connect(expired)).rejects.toThrow('AUTH_UNAUTHORIZED');
+
+    // Revoking the session closes a ticket socket like an access-token socket.
+    const disconnected = event(client, 'disconnect');
+    await http(auth.tokens.accessToken, 'post', 'auth/logout').expect(200);
+    await notify('after-ticket-logout');
+    await app.get(NotificationsWorker).processDue();
+    await disconnected;
+  });
+
   it('stops retrying exhausted dispatches without removing persisted notifications', async () => {
     await app.get(NotificationsWorker).processDue();
     await notify('exhausted-delivery');

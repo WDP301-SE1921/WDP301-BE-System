@@ -4,6 +4,7 @@ export interface JwtPayload {
   sub: string;
   sid: string;
   jti: string;
-  type: 'access' | 'refresh';
+  /** `realtime`: short-lived ticket that only opens a notification socket (web clients). */
+  type: 'access' | 'refresh' | 'realtime';
   role: UserRole;
 }

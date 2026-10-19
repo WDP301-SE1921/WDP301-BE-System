@@ -44,7 +44,7 @@ Targets are typed references, not arbitrary URLs: ASSIGNMENT, SUBMISSION, SESSIO
 
 Connect to `io(BASE_URL + '/notifications', { path: '/socket.io', transports: ['websocket'], auth: { token: ACCESS_TOKEN } })`. A Socket.IO client is required; this is not a bare WebSocket protocol endpoint. Never put tokens in URL query parameters.
 
-The gateway validates signature, HS256, expiry, issuer, audience, access-token type, active account and unrevoked session. Refresh tokens are rejected. User rooms are server-controlled; there is no public join-room or send-notification event.
+The gateway validates signature, HS256, expiry, issuer, audience, token type (access token or realtime ticket), active account and unrevoked session. Refresh tokens are rejected. User rooms are server-controlled; there is no public join-room or send-notification event.
 
 | Server event | Payload | Client action |
 | --- | --- | --- |
@@ -55,7 +55,17 @@ Register listeners before connecting/loading the inbox. Resync via REST on every
 
 Connection errors use AUTH_UNAUTHORIZED, ORIGIN_NOT_ALLOWED, REALTIME_RATE_LIMITED, REALTIME_CONNECTION_LIMIT or REALTIME_UNAVAILABLE. Refresh credentials only for AUTH_UNAUTHORIZED; fix configuration or back off for the other errors.
 
-Sockets close at access-token expiry. Sessions are also checked before each delivery and every 15 seconds, so logout/disabled accounts cannot keep receiving events. On expiry, refresh via the existing auth endpoint, update the token provider and reconnect. If refresh fails, return to login. Disconnect and cancel pending requests when logging out. `notifications-client.example.js` provides a UI-independent client wrapper with debounced fetches and read actions.
+### Web clients: realtime ticket
+
+A browser whose access token stays in an httpOnly cookie must not read it. Its server (BFF) calls `POST /api/v1/auth/realtime-ticket` with the session's Bearer token and passes the returned `{ token, expiresIn: 60 }` to the browser, which sends it as `auth.token` in the handshake. The ticket:
+
+- only opens the socket: every REST endpoint rejects it (JwtStrategy accepts `access` tokens only);
+- must be used within 60 seconds; request a new one for every connection or reconnection (the Socket.IO `auth` callback runs on each attempt);
+- gives the socket one access-token lifetime (`JWT_ACCESS_TTL_SECONDS`) from the handshake, after which the server disconnects it and the client reconnects with a new ticket.
+
+The web origin must be listed in `CORS_ORIGINS`, and the browser connects to the API origin (or a reverse proxy that forwards WebSocket upgrades on `/socket.io`).
+
+Sockets opened with an access token close at access-token expiry. Sessions are also checked before each delivery and every 15 seconds, so logout/disabled accounts cannot keep receiving events. On expiry, refresh via the existing auth endpoint, update the token provider and reconnect. If refresh fails, return to login. Disconnect and cancel pending requests when logging out. `notifications-client.example.js` provides a UI-independent client wrapper with debounced fetches and read actions.
 
 ## Events and audience
 

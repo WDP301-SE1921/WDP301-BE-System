@@ -11,6 +11,8 @@ import { UsersService } from '../users/users.service';
 import type { SafeUser } from '../users/users.repository';
 import { AuthSessionsRepository } from './auth-sessions.repository';
 import type { AuthResponseDto, AuthTokensDto } from './dto/auth-response.dto';
+import type { RealtimeTicketDto } from './dto/realtime-ticket.dto';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import type { JwtPayload } from './jwt-payload';
 
 const PASSWORD_HASH_ROUNDS = 12;
@@ -18,6 +20,8 @@ const BCRYPT_MAX_BYTES = 72;
 const PENDING_REFRESH_TOKEN_HASH = '0'.repeat(64);
 const VERIFY_EMAIL_TTL_MS = 24 * 60 * 60 * 1000;
 const RESET_PASSWORD_TTL_MS = 30 * 60 * 1000;
+/** A ticket only has to survive the socket handshake. */
+export const REALTIME_TICKET_TTL_SECONDS = 60;
 
 @Injectable()
 export class AuthService {
@@ -290,6 +294,37 @@ export class AuthService {
     return { reset: true };
   }
 
+  /**
+   * Issues a realtime ticket for the caller's current session. Web clients keep their access
+   * token in an httpOnly cookie, so their server fetches this ticket for the browser socket.
+   * The ticket is rejected by every REST endpoint (JwtStrategy accepts `access` only).
+   */
+  async createRealtimeTicket(user: AuthenticatedUser): Promise<RealtimeTicketDto> {
+    const config = this.config.get('jwt', { infer: true });
+    const token = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+        sid: user.sessionId,
+        role: user.role,
+        jti: randomUUID(),
+        type: 'realtime',
+      } satisfies JwtPayload,
+      {
+        secret: config.accessSecret,
+        issuer: config.issuer,
+        audience: config.audience,
+        expiresIn: REALTIME_TICKET_TTL_SECONDS,
+        algorithm: 'HS256',
+      },
+    );
+    return { token, expiresIn: REALTIME_TICKET_TTL_SECONDS };
+  }
+
+  /**
+   * Socket handshake: an access token (mobile) or a realtime ticket (web). An access-token
+   * socket closes at the token's expiry; a ticket socket gets one access-token lifetime from
+   * the handshake. Either way the session is re-checked before every delivery.
+   */
   async verifyRealtimeToken(
     token: string,
   ): Promise<{ userId: string; sessionId: string; expiresAt: number } | null> {
@@ -302,19 +337,32 @@ export class AuthService {
         algorithms: ['HS256'],
       });
       if (!Number.isFinite(payload.exp)) return null;
-      const user = await this.validateAccessPayload(payload);
-      return user
-        ? { userId: user.id, sessionId: payload.sid, expiresAt: payload.exp * 1000 }
-        : null;
+      if (payload.type !== 'access' && payload.type !== 'realtime') return null;
+      const user = await this.activeSessionUser(payload.sub, payload.sid);
+      if (!user) return null;
+      const expiresAt =
+        payload.type === 'access'
+          ? payload.exp * 1000
+          : Date.now() + config.accessTtlSeconds * 1000;
+      return { userId: user.id, sessionId: payload.sid, expiresAt };
     } catch {
       return null;
     }
   }
 
+  /** True while the session is unrevoked, unexpired and its account active. */
+  async isRealtimeSessionActive(userId: string, sessionId: string): Promise<boolean> {
+    return !!(await this.activeSessionUser(userId, sessionId));
+  }
+
   async validateAccessPayload(payload: JwtPayload): Promise<SafeUser | null> {
     if (payload.type !== 'access') return null;
-    const session = await this.authSessionsRepository.findActiveSessionWithUser(payload.sid);
-    if (!session || session.userId !== payload.sub) return null;
+    return this.activeSessionUser(payload.sub, payload.sid);
+  }
+
+  private async activeSessionUser(userId: string, sessionId: string): Promise<SafeUser | null> {
+    const session = await this.authSessionsRepository.findActiveSessionWithUser(sessionId);
+    if (!session || session.userId !== userId) return null;
     return this.usersService.toSafeUser(session.user);
   }
 

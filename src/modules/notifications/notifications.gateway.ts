@@ -9,7 +9,7 @@ type Client = Socket<
   Record<string, never>,
   Record<string, (payload: object) => void>,
   Record<string, never>,
-  { token: string; userId: string; expiresAt: number }
+  { userId: string; sessionId: string; expiresAt: number }
 >;
 @WebSocketGateway({
   namespace: '/notifications',
@@ -89,11 +89,18 @@ export class NotificationsGateway implements OnGatewayInit, OnModuleDestroy {
       ).length >= 10
     )
       throw new Error('REALTIME_CONNECTION_LIMIT');
-    socket.data = { token, userId: identity.userId, expiresAt: identity.expiresAt };
+    socket.data = {
+      userId: identity.userId,
+      sessionId: identity.sessionId,
+      expiresAt: identity.expiresAt,
+    };
   }
+  /** The handshake credential may be a short ticket, so later checks use the session itself. */
   private async valid(socket: Client): Promise<boolean> {
-    const identity = await this.auth.verifyRealtimeToken(socket.data.token);
-    if (!identity || identity.userId !== socket.data.userId) {
+    if (
+      Date.now() >= socket.data.expiresAt ||
+      !(await this.auth.isRealtimeSessionActive(socket.data.userId, socket.data.sessionId))
+    ) {
       socket.disconnect(true);
       return false;
     }

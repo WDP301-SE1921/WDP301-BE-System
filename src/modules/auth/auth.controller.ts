@@ -22,6 +22,7 @@ import { AuthService } from './auth.service';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutResponseDto } from './dto/logout-response.dto';
+import { RealtimeTicketDto } from './dto/realtime-ticket.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterParentDto } from './dto/register-parent.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
@@ -30,7 +31,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto/password.dto';
 
 @ApiTags('auth')
-@ApiExtraModels(AuthResponseDto, LogoutResponseDto, SafeUserDto)
+@ApiExtraModels(AuthResponseDto, LogoutResponseDto, RealtimeTicketDto, SafeUserDto)
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -140,6 +141,27 @@ export class AuthController {
   })
   logout(@CurrentUser() user: AuthenticatedUser): Promise<{ revoked: true }> {
     return this.authService.logout(user.sessionId);
+  }
+
+  @Post('realtime-ticket')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Issue a realtime ticket',
+    description:
+      'Returns a 60-second token for the /notifications socket handshake of the current session. It is not accepted by REST endpoints. Web clients whose access token stays in an httpOnly cookie use this instead of exposing the access token.',
+  })
+  @ApiOkResponse({
+    description: 'Ticket for the current session.',
+    schema: successEnvelopeSchema({ $ref: '#/components/schemas/RealtimeTicketDto' }),
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing, expired, or revoked access token.',
+    type: ApiErrorResponseDto,
+  })
+  realtimeTicket(@CurrentUser() user: AuthenticatedUser): Promise<RealtimeTicketDto> {
+    return this.authService.createRealtimeTicket(user);
   }
 
   @Get('me')
