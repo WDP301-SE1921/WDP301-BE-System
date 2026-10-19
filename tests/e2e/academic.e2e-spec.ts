@@ -246,8 +246,23 @@ describe('Academic workflows (database + HTTP)', () => {
       200,
     );
     expect((hidden.body as Envelope<{ grades: unknown[] }[]>).data[0].grades).toHaveLength(0);
+    type StudentGrade = { id: string; maxScore: number; grade: { totalScore: number } | null };
+    const studentGrades = async (role: string): Promise<StudentGrade[]> =>
+      (
+        (await call(role, 'get', `students/${ids.student}/grades`).expect(200)).body as Envelope<
+          StudentGrade[]
+        >
+      ).data;
+    expect((await studentGrades('manager')).find((row) => row.id === ids.assignment)).toMatchObject(
+      { grade: null },
+    );
+    await call('teacher', 'get', `students/${ids.student}/grades`).expect(403);
+    await call('manager', 'get', 'students/missing-student/grades').expect(404);
     await call('teacher', 'post', `grades/${ids.grade}/approve`).expect(201);
     await call('teacher', 'post', `grades/${ids.grade}/publish`).expect(201);
+    expect((await studentGrades('staff')).find((row) => row.id === ids.assignment)).toMatchObject({
+      grade: { totalScore: 10 },
+    });
     const visible = await call('parent', 'get', `assignments/${ids.assignment}/submissions`).expect(
       200,
     );

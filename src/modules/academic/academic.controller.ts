@@ -351,6 +351,13 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.workflows.endEnrollment(user, id);
   }
+  @Get('students/:id/grades')
+  @ApiOperation({
+    summary: 'Manager/staff: assignments of one student with the latest published grade',
+  })
+  studentGrades(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.assessment.studentGrades(user, id);
+  }
   @Post('students/:id/end-study') endStudent(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

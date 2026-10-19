@@ -183,6 +183,69 @@ export class AssessmentService {
     });
   }
 
+  /**
+   * Manager/staff: assignments given to one student with the latest attempt and its published grade.
+   * Draft or approved-but-unpublished grades stay with the teacher, as for parents.
+   */
+  async studentGrades(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+    roles(user, 'MANAGER', 'STAFF');
+    const student = await this.repo.db.studentProfile.findUnique({
+      where: { id: studentId },
+      select: { id: true },
+    });
+    assertRule(student, 'STUDENT_NOT_FOUND', 'Student not found', HttpStatus.NOT_FOUND);
+    const recipients = await this.repo.db.assignmentRecipient.findMany({
+      where: {
+        enrollment: { studentProfileId: studentId },
+        assignment: { status: { not: 'DRAFT' } },
+      },
+      select: {
+        id: true,
+        assignment: {
+          select: {
+            id: true,
+            title: true,
+            kind: true,
+            testType: true,
+            dueAt: true,
+            status: true,
+            class: { select: { id: true, name: true } },
+            questions: { select: { maxScore: true } },
+          },
+        },
+        submissions: {
+          select: {
+            id: true,
+            attemptNo: true,
+            submittedAt: true,
+            grades: {
+              where: { status: 'PUBLISHED' },
+              select: { totalScore: true, publishedAt: true },
+              orderBy: { revision: 'desc' },
+              take: 1,
+            },
+          },
+          orderBy: { attemptNo: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: { assignment: { dueAt: 'desc' } },
+      take: 500,
+    });
+    return recipients.map(({ assignment, submissions }) => {
+      const { questions, ...rest } = assignment;
+      const latest = submissions[0];
+      return {
+        ...rest,
+        maxScore: questions.reduce((sum, question) => sum + question.maxScore, 0),
+        submission: latest
+          ? { id: latest.id, attemptNo: latest.attemptNo, submittedAt: latest.submittedAt }
+          : null,
+        grade: latest?.grades[0] ?? null,
+      };
+    });
+  }
+
   async detail(user: AuthenticatedUser, id: string): Promise<unknown> {
     roles(user, 'TEACHER', 'PARENT');
     const assignment = await this.repo.db.assignment.findUniqueOrThrow({
