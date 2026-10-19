@@ -291,7 +291,8 @@ export class AcademicController {
   }
   @Get('classes/:id/attendance-summary')
   @ApiOperation({
-    summary: 'Teacher: attendance summary and history for an assigned class',
+    summary:
+      'Teacher (assigned class), manager or staff: attendance summary and history for a class',
     description:
       'YYYY-MM-DD bounds include the whole local day (UTC+7). Optional studentId filters one student. Response includes students[] with counts and attendancePercent.',
   })

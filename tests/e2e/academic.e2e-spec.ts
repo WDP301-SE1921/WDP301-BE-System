@@ -350,6 +350,25 @@ describe('Academic workflows (database + HTTP)', () => {
       rows: { required: number; attended: number; attendancePercent: number }[];
     };
     expect(snapshot.rows[0]).toMatchObject({ required: 1, attended: 1, attendancePercent: 100 });
+    const range = new URLSearchParams({
+      fromDate: new Date(now - 7 * 86400000).toISOString(),
+      toDate: new Date(now + 10000).toISOString(),
+    });
+    for (const role of ['manager', 'staff']) {
+      const summary = await call(
+        role,
+        'get',
+        `classes/${ids.classA}/attendance-summary?${range}`,
+      ).expect(200);
+      const body = (
+        summary.body as Envelope<{ students: { studentId: string; attendancePercent: number }[] }>
+      ).data;
+      expect(body.students).toEqual([
+        expect.objectContaining({ studentId: ids.student, attendancePercent: 100 }),
+      ]);
+    }
+    await call('manager', 'get', 'classes/missing-class/attendance-summary').expect(404);
+    await call('designer', 'get', `classes/${ids.classA}/attendance-summary`).expect(403);
   });
 
   it('keeps class ownership until a scheduled teacher change and updates only future sessions', async () => {
