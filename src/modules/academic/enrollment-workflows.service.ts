@@ -452,7 +452,8 @@ export class EnrollmentWorkflowsService {
         cancelled: false,
         kind: 'REGULAR',
         attendance: { notIn: ['PRESENT', 'EXCUSED'] },
-        session: { status: { not: 'CANCELLED' } },
+        // completedOnly: the absence already happened (UNMARKED in a completed session counts as absent).
+        session: query.completedOnly ? { status: 'COMPLETED' } : { status: { not: 'CANCELLED' } },
         sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
         enrollment: {
           status: 'ACTIVE',

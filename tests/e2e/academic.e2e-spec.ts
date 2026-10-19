@@ -314,6 +314,32 @@ describe('Academic workflows (database + HTTP)', () => {
         endsAt: new Date(now + 86400000 + 3600000),
       },
     });
+    // A future session can be made up in advance, but it is not a recorded absence yet.
+    const upcoming = await db.classSession.create({
+      data: {
+        classId: ids.classA,
+        lessonId: ids.lesson,
+        teacherId: ids.teacher,
+        startsAt: new Date(now + 3 * 86400000),
+        endsAt: new Date(now + 3 * 86400000 + 3600000),
+      },
+    });
+    const upcomingParticipant = await db.sessionParticipant.create({
+      data: { sessionId: upcoming.id, enrollmentId: ids.enrollment },
+    });
+    const sourceIds = async (query: string): Promise<string[]> =>
+      (
+        (await call('staff', 'get', `makeup-sources?studentId=${ids.student}${query}`).expect(200))
+          .body as Envelope<{ id: string }[]>
+      ).data.map((item) => item.id);
+    expect(await sourceIds('')).toEqual(
+      expect.arrayContaining([source.id, upcomingParticipant.id]),
+    );
+    const recorded = await sourceIds('&completedOnly=true');
+    expect(recorded).toContain(source.id);
+    expect(recorded).not.toContain(upcomingParticipant.id);
+    await db.sessionParticipant.delete({ where: { id: upcomingParticipant.id } });
+    await db.classSession.delete({ where: { id: upcoming.id } });
     await call('manager', 'post', 'makeups')
       .send({ originalParticipantId: source.id, targetSessionId: target.id })
       .expect(403);

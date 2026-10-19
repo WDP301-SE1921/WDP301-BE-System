@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMaxSize,
@@ -67,6 +67,17 @@ export class MakeupSourceFilterDto extends PageDto {
   @IsString()
   @MaxLength(191)
   studentId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Only absences already recorded in completed sessions (excludes future sessions that can be made up in advance).',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  completedOnly?: boolean;
 }
 export class AttendanceQueryDto extends PageDto {
   @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
