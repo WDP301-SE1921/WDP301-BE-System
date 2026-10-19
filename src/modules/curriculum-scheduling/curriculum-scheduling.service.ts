@@ -1,3 +1,4 @@
+import { NotificationEventsService } from '../notifications/notification-events.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { Prisma, type ClassWeeklySchedule, type Lesson } from '@prisma/client';
@@ -17,6 +18,10 @@ import {
   ImportRowDto,
   UpdateCurriculumUnitDto,
 } from './curriculum-scheduling.dto';
+import type { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
+import type { PageDto } from '../academic/academic.dto';
+import { pageResult } from '../../common/pagination';
+import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
 import { parseCurriculumCsv } from './curriculum-csv';
 
 const DAY_MS = 86_400_000;
@@ -48,7 +53,10 @@ function slotsTeacherIds(classroom: ClassWithSchedule, slots: PlannedSlot[]): st
 
 @Injectable()
 export class CurriculumSchedulingService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly notifications: NotificationEventsService,
+  ) {}
 
   async createUnit(user: AuthenticatedUser, input: CreateCurriculumUnitDto): Promise<unknown> {
     this.requireRole(user, 'CURRICULUM_DESIGNER');
@@ -77,6 +85,96 @@ export class CurriculumSchedulingService {
       },
       include: unitInclude,
     });
+  }
+
+  async studentCurriculum(
+    user: AuthenticatedUser,
+    studentId: string,
+    page: PageDto,
+  ): Promise<ParentCurriculumResponseDto> {
+    this.requireRole(user, 'PARENT');
+    await this.assertParentStudent(user, studentId);
+    const now = new Date();
+    const today = localDate(dateOnly(new Date(now.getTime() + HCM_OFFSET_MS)));
+    const enrollments = await this.db.enrollment.findMany({
+      where: {
+        studentProfileId: studentId,
+        status: 'ACTIVE',
+        startDate: { lte: today },
+        endDate: { gt: today },
+      },
+      select: {
+        startDate: true,
+        endDate: true,
+        class: { select: { id: true, name: true, programId: true } },
+        placements: {
+          where: {
+            effectiveFrom: { lte: now },
+            OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+          },
+          select: { class: { select: { id: true, name: true, programId: true } } },
+        },
+        _count: { select: { placements: true } },
+      },
+    });
+    const scopes = enrollments.flatMap((enrollment) => {
+      const classroom =
+        enrollment.placements[0]?.class ??
+        (enrollment._count.placements === 0 ? enrollment.class : null);
+      return classroom && enrollment.startDate && enrollment.endDate
+        ? [{ classroom, startDate: enrollment.startDate, endDate: enrollment.endDate }]
+        : [];
+    });
+    if (!scopes.length)
+      return { studentId, items: [], page: page.page, limit: page.limit, total: 0 };
+    const where: Prisma.CurriculumUnitWhereInput = {
+      status: 'APPROVED',
+      OR: scopes.map((scope) => ({
+        programId: scope.classroom.programId,
+        fromDate: { lt: scope.endDate },
+        toDate: { gte: scope.startDate },
+      })),
+    };
+    const [units, total] = await Promise.all([
+      this.db.curriculumUnit.findMany({
+        where,
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+        select: {
+          id: true,
+          title: true,
+          programId: true,
+          fromDate: true,
+          toDate: true,
+          version: true,
+          program: { select: { subject: true, grade: true } },
+          lessons: {
+            where: { status: 'APPROVED' },
+            select: { id: true, title: true, sequence: true, kind: true, monthKey: true },
+            orderBy: [{ sequence: 'asc' }, { id: 'asc' }],
+          },
+        },
+        orderBy: [{ fromDate: 'asc' }, { version: 'desc' }, { id: 'asc' }],
+      }),
+      this.db.curriculumUnit.count({ where }),
+    ]);
+    return {
+      studentId,
+      page: page.page,
+      limit: page.limit,
+      total,
+      items: units.map((unit) => ({
+        ...unit,
+        classes: scopes
+          .filter(
+            (scope) =>
+              scope.classroom.programId === unit.programId &&
+              unit.fromDate < scope.endDate &&
+              unit.toDate >= scope.startDate,
+          )
+          .map((scope) => ({ id: scope.classroom.id, name: scope.classroom.name })),
+      })),
+    };
   }
 
   async listUnits(user: AuthenticatedUser, filter: CurriculumUnitFilterDto): Promise<unknown> {
@@ -592,6 +690,14 @@ export class CurriculumSchedulingService {
           entityId: id,
         },
       });
+      await this.notifications.curriculum(
+        tx,
+        user.id,
+        id,
+        'CURRICULUM_SUBMITTED',
+        'Giáo trình đang chờ duyệt.',
+        `CURRICULUM_SUBMITTED:${id}:${unit.revision}`,
+      );
       return result;
     });
   }
@@ -640,6 +746,14 @@ export class CurriculumSchedulingService {
           afterData: { reason: reason.trim() },
         },
       });
+      await this.notifications.curriculum(
+        tx,
+        user.id,
+        id,
+        'CURRICULUM_CHANGES_REQUESTED',
+        'Giáo trình cần được chỉnh sửa.',
+        `CURRICULUM_CHANGES_REQUESTED:${id}:${unit.revision}`,
+      );
       return result;
     });
   }
@@ -766,6 +880,14 @@ export class CurriculumSchedulingService {
             entityId: id,
           },
         });
+        await this.notifications.curriculum(
+          tx,
+          user.id,
+          id,
+          'CURRICULUM_APPROVED',
+          'Giáo trình đã được duyệt.',
+          `CURRICULUM_APPROVED:${id}:${unit.revision}`,
+        );
         return approved;
       },
       { isolationLevel: 'Serializable', timeout: 20_000 },
@@ -995,238 +1117,225 @@ export class CurriculumSchedulingService {
           afterData: { classId, unitId: unit.id, count: slots.length },
         },
       });
+      const generatedSessions = await tx.classSession.findMany({
+        where: { generationId: generation.id },
+      });
+      await this.notifications.send(
+        tx,
+        user.id,
+        'SESSIONS_GENERATED',
+        'CLASS',
+        classId,
+        'Đã có lịch học mới',
+        `Lớp ${classroom.name}: đã xếp ${slots.length} buổi từ ${input.fromDate} đến ${input.toDate}.`,
+        await this.notifications.recipients.sessions(tx, generatedSessions),
+        classId,
+        `generation:${generation.id}`,
+      );
       return this.generationResult(tx, generation.id);
     });
   }
 
   async sessions(user: AuthenticatedUser, query: SessionQueryDto): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
+    const parent = user.role === 'PARENT';
     const today = dateOnly(new Date(Date.now() + HCM_OFFSET_MS));
-    const fromDate = user.role === 'PARENT' ? (query.fromDate ?? today) : query.fromDate;
-    const toDate =
-      user.role === 'PARENT'
-        ? (query.toDate ?? dateOnly(new Date(localDate(fromDate!).getTime() + 30 * DAY_MS)))
-        : query.toDate;
+    const fromDate = parent ? (query.fromDate ?? today) : query.fromDate;
+    const toDate = parent
+      ? (query.toDate ?? dateOnly(new Date(localDate(fromDate!).getTime() + 30 * DAY_MS)))
+      : query.toDate;
     if (fromDate && toDate) this.assertRange(fromDate, toDate);
-    if (user.role === 'PARENT' && query.studentId) {
-      const owned = await this.db.studentProfile.count({
-        where: { id: query.studentId, parentProfile: { userId: user.id } },
-      });
-      this.assert(
-        owned === 1,
-        'FORBIDDEN',
-        'Student does not belong to this parent',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-    const enrollments =
-      user.role === 'PARENT'
-        ? await this.db.enrollment.findMany({
-            where: {
-              status: { not: 'PENDING_LINK' },
-              studentProfile: {
-                parentProfile: { userId: user.id },
-                ...(query.studentId ? { id: query.studentId } : {}),
-              },
+    if (parent && query.studentId) await this.assertParentStudent(user, query.studentId);
+    const enrollments = parent
+      ? await this.db.enrollment.findMany({
+          where: {
+            status: { not: 'PENDING_LINK' },
+            studentProfile: {
+              parentProfile: { userId: user.id },
+              ...(query.studentId ? { id: query.studentId } : {}),
             },
+          },
+          select: parentEnrollmentSelect,
+        })
+      : [];
+    const where: Prisma.ClassSessionWhereInput = {
+      AND: [
+        ...(parent ? [parentSessionWhere(enrollments)] : []),
+        ...(query.classId ? [{ classId: query.classId }] : []),
+        ...(user.role === 'TEACHER' ? [{ teacherId: user.id }] : []),
+        {
+          startsAt: {
+            ...(fromDate ? { gte: new Date(localDate(fromDate).getTime() - HCM_OFFSET_MS) } : {}),
+            ...(toDate
+              ? { lt: new Date(localDate(toDate).getTime() + DAY_MS - HCM_OFFSET_MS) }
+              : {}),
+          },
+        },
+      ],
+    };
+    const items = this.db.classSession
+      .findMany({
+        where,
+        select: {
+          id: true,
+          classId: true,
+          teacherId: true,
+          roomId: true,
+          startsAt: true,
+          endsAt: true,
+          status: true,
+          cancelReason: true,
+          class: { select: { name: true, program: { select: { grade: true, subject: true } } } },
+          teacher: { select: { id: true, displayName: true } },
+          room: { select: { id: true, name: true } },
+          lesson: { select: { id: true, title: true, kind: true, monthKey: true, unitId: true } },
+          participants: {
+            where: { enrollmentId: { in: enrollments.map((item) => item.id) }, cancelled: false },
             select: {
               id: true,
-              status: true,
-              endedAt: true,
-              studentProfileId: true,
-              classId: true,
-              startDate: true,
-              endDate: true,
-              placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
-            },
-          })
-        : [];
-    if (user.role === 'PARENT' && !enrollments.length) return [];
-    const parentClassIds = [
-      ...new Set(
-        enrollments.flatMap((item) => [
-          item.classId,
-          ...item.placements.map((placement) => placement.classId),
-        ]),
-      ),
-    ];
-    const start = fromDate ? localDate(fromDate) : undefined;
-    const endExclusive = toDate ? new Date(localDate(toDate).getTime() + DAY_MS) : undefined;
-    const parentParticipants =
-      user.role === 'PARENT'
-        ? await this.db.sessionParticipant.findMany({
-            where: {
-              enrollmentId: { in: enrollments.map((item) => item.id) },
-              session: {
-                ...(start || endExclusive
-                  ? {
-                      startsAt: {
-                        ...(start ? { gte: new Date(start.getTime() - HCM_OFFSET_MS) } : {}),
-                        ...(endExclusive
-                          ? { lt: new Date(endExclusive.getTime() - HCM_OFFSET_MS) }
-                          : {}),
-                      },
-                    }
-                  : {}),
-                status: { not: 'CANCELLED' },
-              },
-            },
-            select: {
-              id: true,
-              sessionId: true,
-              session: { select: { classId: true } },
               enrollmentId: true,
               kind: true,
               attendance: true,
               cancelled: true,
               enrollment: { select: { studentProfileId: true } },
               sourceBookings: {
-                select: {
-                  id: true,
-                  status: true,
-                  replacement: { select: { sessionId: true } },
-                },
+                select: { id: true, status: true, replacement: { select: { sessionId: true } } },
               },
               replacementBookings: {
-                select: {
-                  id: true,
-                  status: true,
-                  original: { select: { sessionId: true } },
-                },
-                orderBy: { createdAt: 'desc' },
+                select: { id: true, status: true, original: { select: { sessionId: true } } },
+                orderBy: { createdAt: 'desc' as const },
               },
             },
-          })
-        : [];
-    const participantSessionIds = [...new Set(parentParticipants.map((item) => item.sessionId))];
-    const rows = await this.db.classSession.findMany({
-      where: {
-        ...(user.role === 'PARENT'
-          ? {
-              OR: [
-                {
-                  classId: {
-                    in: query.classId
-                      ? parentClassIds.filter((id) => id === query.classId)
-                      : parentClassIds,
-                  },
-                },
-                {
-                  id: {
-                    in: query.classId
-                      ? parentParticipants
-                          .filter((item) => item.session.classId === query.classId)
-                          .map((item) => item.sessionId)
-                      : participantSessionIds,
-                  },
-                },
-              ],
-            }
-          : query.classId
-            ? { classId: query.classId }
-            : {}),
-        ...(start || endExclusive
-          ? {
-              startsAt: {
-                ...(start ? { gte: new Date(start.getTime() - HCM_OFFSET_MS) } : {}),
-                ...(endExclusive ? { lt: new Date(endExclusive.getTime() - HCM_OFFSET_MS) } : {}),
-              },
-            }
-          : {}),
-        ...(user.role === 'TEACHER' ? { teacherId: user.id } : {}),
-        ...(user.role === 'PARENT' ? { status: { not: 'CANCELLED' as const } } : {}),
-      },
-      select: {
-        id: true,
-        classId: true,
-        teacherId: true,
-        startsAt: true,
-        endsAt: true,
-        status: true,
-        class: { select: { name: true, program: { select: { grade: true, subject: true } } } },
-        lesson: { select: { id: true, title: true, kind: true, monthKey: true, unitId: true } },
-      },
-      orderBy: { startsAt: 'asc' },
-      ...(user.role === 'PARENT'
-        ? {}
-        : { skip: (query.page - 1) * query.limit, take: query.limit }),
-    });
-    if (user.role !== 'PARENT') return rows;
-    return rows
-      .filter((session) => {
-        const participant = parentParticipants.some(
-          (item) =>
-            item.sessionId === session.id &&
-            enrollments.some(
-              (enrollment) =>
-                enrollment.id === item.enrollmentId &&
-                (enrollment.status !== 'ENDED' ||
-                  !enrollment.endedAt ||
-                  session.startsAt < enrollment.endedAt),
-            ),
-        );
-        return (
-          participant ||
-          enrollments.some((enrollment) => {
-            if (
-              enrollment.status === 'ENDED' &&
-              enrollment.endedAt &&
-              session.startsAt >= enrollment.endedAt
-            )
-              return false;
-            const day = localDate(
-              new Date(session.startsAt.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10),
-            );
-            if (
-              !enrollment.startDate ||
-              !enrollment.endDate ||
-              day < enrollment.startDate ||
-              day >= enrollment.endDate
-            )
-              return false;
-            if (!enrollment.placements.length) return enrollment.classId === session.classId;
-            return enrollment.placements.some(
-              (placement) =>
-                placement.classId === session.classId &&
-                placement.effectiveFrom <= session.startsAt &&
-                (!placement.effectiveTo || placement.effectiveTo > session.startsAt),
-            );
-          })
-        );
+          },
+        },
+        orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
       })
-      .map((session) => ({
-        ...session,
-        participations: parentParticipants
-          .filter((item) => item.sessionId === session.id)
-          .map((item) => ({
-            participantId: item.id,
-            enrollmentId: item.enrollmentId,
-            studentId: item.enrollment.studentProfileId,
-            kind: item.kind,
-            attendance: item.attendance,
-            cancelled: item.cancelled,
-            sourceMakeups: item.sourceBookings.map((booking) => ({
-              bookingId: booking.id,
-              status: booking.status,
-              targetSessionId: booking.replacement.sessionId,
-            })),
-            replacementMakeups: item.replacementBookings.map((booking) => ({
-              bookingId: booking.id,
-              status: booking.status,
-              sourceSessionId: booking.original.sessionId,
-            })),
-          })),
-      }))
-      .slice((query.page - 1) * query.limit, query.page * query.limit);
+      .then((rows) =>
+        rows.map(({ participants, ...row }) =>
+          parent
+            ? {
+                ...row,
+                participations: participants.map((item) => ({
+                  participantId: item.id,
+                  enrollmentId: item.enrollmentId,
+                  studentId: item.enrollment.studentProfileId,
+                  kind: item.kind,
+                  attendance: item.attendance,
+                  cancelled: item.cancelled,
+                  sourceMakeups: item.sourceBookings.map((booking) => ({
+                    bookingId: booking.id,
+                    status: booking.status,
+                    targetSessionId: booking.replacement.sessionId,
+                  })),
+                  replacementMakeups: item.replacementBookings.map((booking) => ({
+                    bookingId: booking.id,
+                    status: booking.status,
+                    sourceSessionId: booking.original.sessionId,
+                  })),
+                })),
+              }
+            : row,
+        ),
+      );
+    return pageResult(query, items, () => this.db.classSession.count({ where }));
+  }
+
+  private async assertParentStudent(user: AuthenticatedUser, studentId: string): Promise<void> {
+    const owned = await this.db.studentProfile.count({
+      where: { id: studentId, parentProfile: { userId: user.id } },
+    });
+    this.assert(
+      owned === 1,
+      'FORBIDDEN',
+      'Student does not belong to this parent',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   async sessionDetail(user: AuthenticatedUser, id: string, studentId?: string): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
+    if (user.role === 'PARENT') {
+      this.assert(studentId, 'STUDENT_ID_REQUIRED', 'Select a student', HttpStatus.BAD_REQUEST);
+      await this.assertParentStudent(user, studentId);
+      const enrollments = await this.db.enrollment.findMany({
+        where: {
+          status: { not: 'PENDING_LINK' },
+          studentProfile: { id: studentId, parentProfile: { userId: user.id } },
+        },
+        select: parentEnrollmentSelect,
+      });
+      const row = await this.db.classSession.findFirst({
+        where: { AND: [{ id }, parentSessionWhere(enrollments)] },
+        select: {
+          id: true,
+          classId: true,
+          roomId: true,
+          startsAt: true,
+          endsAt: true,
+          status: true,
+          summary: true,
+          cancelReason: true,
+          class: {
+            select: {
+              name: true,
+              roomId: true,
+              program: { select: { subject: true, grade: true } },
+            },
+          },
+          teacher: { select: { id: true, displayName: true } },
+          room: { select: { id: true, name: true } },
+          lesson: {
+            select: {
+              id: true,
+              title: true,
+              kind: true,
+              sequence: true,
+              monthKey: true,
+              unitId: true,
+            },
+          },
+          participants: {
+            where: { enrollmentId: { in: enrollments.map((item) => item.id) }, cancelled: false },
+            select: { id: true, enrollmentId: true, kind: true, attendance: true, cancelled: true },
+            orderBy: { id: 'asc' },
+            take: 1,
+          },
+        },
+      });
+      if (!row) {
+        const exists = await this.db.classSession.count({ where: { id } });
+        this.assert(
+          !exists,
+          'FORBIDDEN',
+          'Session does not belong to this parent',
+          HttpStatus.FORBIDDEN,
+        );
+        throw new AppError('SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+      }
+      const { participants, ...session } = row;
+      const participant = participants[0];
+      return {
+        ...session,
+        participation: participant
+          ? {
+              participantId: participant.id,
+              enrollmentId: participant.enrollmentId,
+              studentId,
+              kind: participant.kind,
+              attendance: participant.attendance,
+              cancelled: participant.cancelled,
+            }
+          : null,
+      };
+    }
     const row = await this.db.classSession.findUnique({
       where: { id },
       include: {
         class: { include: { program: true } },
         teacher: { select: { id: true, displayName: true } },
+        room: { select: { id: true, name: true } },
         lesson: {
           select: {
             id: true,
@@ -1248,87 +1357,6 @@ export class CurriculumSchedulingService {
         'Session is not assigned to this teacher',
         HttpStatus.FORBIDDEN,
       );
-    if (user.role === 'PARENT') {
-      this.assert(studentId, 'STUDENT_ID_REQUIRED', 'Select a student', HttpStatus.BAD_REQUEST);
-      const enrollments = await this.db.enrollment.findMany({
-        where: {
-          status: { not: 'PENDING_LINK' },
-          studentProfile: { id: studentId, parentProfile: { userId: user.id } },
-        },
-        select: {
-          id: true,
-          classId: true,
-          status: true,
-          endedAt: true,
-          startDate: true,
-          endDate: true,
-          placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
-        },
-      });
-      const participant = await this.db.sessionParticipant.findFirst({
-        where: {
-          sessionId: id,
-          enrollment: { studentProfile: { id: studentId, parentProfile: { userId: user.id } } },
-        },
-        select: {
-          id: true,
-          enrollmentId: true,
-          kind: true,
-          attendance: true,
-          cancelled: true,
-          enrollment: { select: { studentProfileId: true } },
-        },
-      });
-      const day = localDate(
-        new Date(row.startsAt.getTime() + HCM_OFFSET_MS).toISOString().slice(0, 10),
-      );
-      const entitled = enrollments.some(
-        (enrollment) =>
-          (enrollment.status !== 'ENDED' ||
-            !enrollment.endedAt ||
-            row.startsAt < enrollment.endedAt) &&
-          enrollment.startDate &&
-          enrollment.endDate &&
-          enrollment.startDate <= day &&
-          enrollment.endDate > day &&
-          (enrollment.placements.length
-            ? enrollment.placements.some(
-                (placement) =>
-                  placement.classId === row.classId &&
-                  placement.effectiveFrom <= row.startsAt &&
-                  (!placement.effectiveTo || placement.effectiveTo > row.startsAt),
-              )
-            : enrollment.classId === row.classId),
-      );
-      const participantEnrollment = participant
-        ? enrollments.find((enrollment) => enrollment.id === participant.enrollmentId)
-        : undefined;
-      const participantEntitled =
-        !!participant &&
-        !!participantEnrollment &&
-        (participantEnrollment.status !== 'ENDED' ||
-          !participantEnrollment.endedAt ||
-          row.startsAt < participantEnrollment.endedAt);
-      this.assert(
-        entitled || participantEntitled,
-        'FORBIDDEN',
-        'Session does not belong to this parent',
-        HttpStatus.FORBIDDEN,
-      );
-      return {
-        ...row,
-        participation: participant
-          ? {
-              participantId: participant.id,
-              enrollmentId: participant.enrollmentId,
-              studentId: participant.enrollment.studentProfileId,
-              kind: participant.kind,
-              attendance: participant.attendance,
-              cancelled: participant.cancelled,
-            }
-          : null,
-      };
-    }
     return row;
   }
 
@@ -1414,10 +1442,12 @@ export class CurriculumSchedulingService {
         );
         return prior.response;
       }
-      const { startsAt, endsAt } = await this.validateReschedule(tx, id, input);
+      const previousSession = await tx.classSession.findUnique({ where: { id } });
+      this.assert(previousSession, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
+      const { startsAt, endsAt, roomId } = await this.validateReschedule(tx, id, input);
       const result = await tx.classSession.update({
         where: { id },
-        data: { startsAt, endsAt, revision: { increment: 1 } },
+        data: { startsAt, endsAt, roomId, revision: { increment: 1 } },
       });
       await tx.auditLog.create({
         data: {
@@ -1441,6 +1471,20 @@ export class CurriculumSchedulingService {
           response: result,
         },
       });
+      if (
+        previousSession.startsAt.getTime() !== startsAt.getTime() ||
+        previousSession.endsAt.getTime() !== endsAt.getTime() ||
+        previousSession.roomId !== roomId
+      )
+        await this.notifications.session(
+          tx,
+          user.id,
+          id,
+          'SESSION_RESCHEDULED',
+          `Lịch/phòng học của buổi ${input.startsAt} đã được cập nhật.`,
+          `reschedule:${id}:${idempotencyKey}`,
+          previousSession,
+        );
       return result;
     });
   }
@@ -1533,6 +1577,14 @@ export class CurriculumSchedulingService {
           response: result,
         },
       });
+      await this.notifications.session(
+        tx,
+        user.id,
+        id,
+        'SESSION_CANCELLED',
+        `Buổi học đã bị huỷ: ${reason.trim()}`,
+        `cancel:${id}:${idempotencyKey}`,
+      );
       return result;
     });
   }
@@ -1541,7 +1593,7 @@ export class CurriculumSchedulingService {
     tx: Prisma.TransactionClient | DatabaseService,
     id: string,
     input: SessionRescheduleDto,
-  ): Promise<{ startsAt: Date; endsAt: Date; conflicts: never[] }> {
+  ): Promise<{ startsAt: Date; endsAt: Date; roomId: string | null; conflicts: never[] }> {
     const session = await tx.classSession.findUnique({
       where: { id },
       include: {
@@ -1614,6 +1666,17 @@ export class CurriculumSchedulingService {
       'SESSION_HAS_DEPENDENCIES',
       'Resolve attendance and leave records before moving',
     );
+    const roomId = input.roomId ?? session.roomId;
+    if (roomId) {
+      const room = await tx.room.findUnique({ where: { id: roomId } });
+      this.assert(room?.isActive, 'INVALID_ROOM', 'Choose an active room');
+      const classroom = await tx.class.findUniqueOrThrow({ where: { id: session.classId } });
+      this.assert(
+        room.capacity >= classroom.capacity,
+        'ROOM_CAPACITY_EXCEEDED',
+        'Room capacity must cover class capacity',
+      );
+    }
     const [bookings, conflicts] = await Promise.all([
       tx.makeupBooking.count({
         where: {
@@ -1630,7 +1693,7 @@ export class CurriculumSchedulingService {
           OR: [
             { classId: session.classId },
             { teacherId: session.teacherId },
-            ...(session.roomId ? [{ roomId: session.roomId }] : []),
+            ...(roomId ? [{ roomId }] : []),
           ],
         },
         select: { id: true },
@@ -1655,7 +1718,7 @@ export class CurriculumSchedulingService {
       'SESSION_ORDER_CONFLICT',
       'Moving this session would change lesson order',
     );
-    return { startsAt, endsAt, conflicts: [] };
+    return { startsAt, endsAt, roomId, conflicts: [] };
   }
 
   private plan(

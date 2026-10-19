@@ -3,7 +3,7 @@ import { Prisma, UserRole, UserStatus, type User } from '@prisma/client';
 
 import { DatabaseService } from '../../database/orm/database.service';
 
-export type SafeUser = Omit<User, 'passwordHash' | 'permissions'>;
+export type SafeUser = Omit<User, 'passwordHash' | 'permissions'> & { phone?: string | null };
 
 @Injectable()
 export class UsersRepository {

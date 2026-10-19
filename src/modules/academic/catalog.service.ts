@@ -1,3 +1,4 @@
+import { NotificationEventsService } from '../notifications/notification-events.service';
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
@@ -20,6 +21,7 @@ export class CatalogService {
   constructor(
     private readonly repo: AcademicRepository,
     private readonly access: AcademicAccessService,
+    private readonly notifications: NotificationEventsService,
   ) {}
 
   async createProgram(user: AuthenticatedUser, input: ProgramDto): Promise<unknown> {
@@ -286,8 +288,27 @@ export class CatalogService {
       },
     });
     assertRule(assigned, 'FORBIDDEN', 'Lesson is not assigned to this teacher');
-    return this.repo.db.curriculumFeedback.create({
-      data: { lessonId, teacherId: user.id, content: input.content },
+    return this.repo.transaction(async (tx) => {
+      const feedback = await tx.curriculumFeedback.create({
+        data: { lessonId, teacherId: user.id, content: input.content },
+      });
+      const lesson = await tx.lesson.findUniqueOrThrow({ where: { id: lessonId } });
+      await this.notifications.send(
+        tx,
+        user.id,
+        'FEEDBACK_CREATED',
+        'FEEDBACK',
+        feedback.id,
+        'Có phản hồi giáo trình',
+        `Bài ${lesson.title} có phản hồi cần xử lý.`,
+        [
+          ...(await this.notifications.recipients.roles(tx, ['MANAGER'])),
+          { userId: lesson.designerId },
+        ],
+        undefined,
+        `feedback:${feedback.id}`,
+      );
+      return feedback;
     });
   }
 
@@ -331,7 +352,28 @@ export class CatalogService {
         'Resolution must be an approved revision of the original lesson',
       );
     }
-    return this.repo.db.curriculumFeedback.update({ where: { id }, data: input });
+    return this.repo.transaction(async (tx) => {
+      const current = await tx.curriculumFeedback.findUniqueOrThrow({ where: { id } });
+      const updated = await tx.curriculumFeedback.update({ where: { id }, data: input });
+      if (
+        current.status !== updated.status ||
+        current.response !== updated.response ||
+        current.resolutionLessonId !== updated.resolutionLessonId
+      )
+        await this.notifications.send(
+          tx,
+          user.id,
+          'FEEDBACK_RESOLVED',
+          'FEEDBACK',
+          id,
+          'Phản hồi giáo trình đã được cập nhật',
+          'Phản hồi của bạn đã có kết quả xử lý.',
+          [{ userId: feedback.teacherId }, { userId: feedback.lesson.designerId }],
+          undefined,
+          `feedback-update:${id}:${updated.updatedAt.toISOString()}`,
+        );
+      return updated;
+    });
   }
 
   async reviseLesson(

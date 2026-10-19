@@ -13,10 +13,19 @@ import {
   Query,
   UseFilters,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExtraModels,
+  ApiOkResponse,
+  getSchemaPath,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
+import { PageDto } from '../academic/academic.dto';
 import { AcademicErrorsFilter } from '../academic/academic-errors.filter';
 import {
   CreateCurriculumUnitDto,
@@ -34,12 +43,35 @@ import {
 } from './curriculum-scheduling.dto';
 import { CurriculumSchedulingService } from './curriculum-scheduling.service';
 
+@ApiExtraModels(ParentCurriculumResponseDto)
 @ApiTags('curriculum-scheduling')
 @ApiBearerAuth()
 @UseFilters(AcademicErrorsFilter)
 @Controller({ path: 'academic', version: '1' })
 export class CurriculumSchedulingController {
   constructor(private readonly service: CurriculumSchedulingService) {}
+
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: { $ref: getSchemaPath(ParentCurriculumResponseDto) },
+      },
+    },
+  })
+  @Get('me/students/:id/curriculum')
+  @ApiOperation({
+    summary:
+      'Parent: approved curriculum outline for a currently enrolled child, without lesson content',
+  })
+  studentCurriculum(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.service.studentCurriculum(user, id, page);
+  }
 
   @Post('curriculum-units')
   @ApiOperation({ summary: 'Designer: create a shared subject/grade curriculum unit' })

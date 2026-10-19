@@ -10,6 +10,7 @@ import type { AppConfiguration } from './config/configuration';
 import { DatabaseModule } from './database/orm/database.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AcademicModule } from './modules/academic/academic.module';
 import { DirectoryModule } from './modules/directory/directory.module';
 import { RegistrationFlowModule } from './modules/registration-flow/registration-flow.module';
@@ -27,6 +28,7 @@ import { CurriculumSchedulingModule } from './modules/curriculum-scheduling/curr
     DatabaseModule,
     AuthModule,
     HealthModule,
+    NotificationsModule,
     AcademicModule,
     CurriculumSchedulingModule,
     RegistrationFlowModule,

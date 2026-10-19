@@ -35,3 +35,9 @@ pnpm prisma:validate
 
 Xem [kiến trúc](docs/architecture.md) và [quy ước API](docs/api-conventions.md) trước khi
 thêm module nghiệp vụ.
+
+Chi tiết các API dành cho phụ huynh và migration mới: [Parent learning API](docs/parent-learning-api.md).
+
+Thông báo realtime, contract và ví dụ tích hợp web/mobile: [Notifications API](docs/notifications-api.md).
+
+[Hướng dẫn luồng và demo notification](NOTIFICATION_FLOW_GUIDE.md) — kết quả kiểm tra gửi/nhận, cấu hình và kịch bản demo bằng tiếng Việt.

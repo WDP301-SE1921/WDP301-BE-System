@@ -85,6 +85,13 @@ export class LessonOrderDto {
 }
 
 export class SessionRescheduleDto {
+  @ApiPropertyOptional({
+    description: 'Optional replacement room; omitted retains the current room.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  roomId?: string;
   @ApiProperty({ example: '2026-11-04T11:00:00.000Z' })
   @IsDateString()
   @Matches(/T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/)
@@ -152,6 +159,15 @@ export class ScheduleRangeDto {
 }
 
 export class SessionQueryDto {
+  @ApiPropertyOptional({
+    description: 'Return pagination metadata; omitted keeps the legacy array.',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  paginated?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsString() classId?: string;
   @ApiPropertyOptional({ description: 'Parent-owned student profile id.' })
   @IsOptional()

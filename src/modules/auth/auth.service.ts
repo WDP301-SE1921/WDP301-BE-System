@@ -104,7 +104,7 @@ export class AuthService {
       throw this.invalidRefreshTokenError();
     }
 
-    const safeUser = this.usersService.toSafeUser(session.user);
+    const safeUser = await this.currentProfile(this.usersService.toSafeUser(session.user));
     const tokens = await this.signTokenPair(safeUser, session.id, session.expiresAt);
     const rotated = await this.authSessionsRepository.rotateRefreshToken({
       sessionId: session.id,
@@ -124,6 +124,17 @@ export class AuthService {
   async logout(sessionId: string): Promise<{ revoked: true }> {
     await this.authSessionsRepository.revoke(sessionId);
     return { revoked: true };
+  }
+
+  async currentProfile(user: SafeUser): Promise<SafeUser> {
+    const { id, email, displayName, role, status, emailVerifiedAt, createdAt, updatedAt } = user;
+    const safe = { id, email, displayName, role, status, emailVerifiedAt, createdAt, updatedAt };
+    if (user.role !== 'PARENT') return safe;
+    const parent = await this.db.parentProfile.findUnique({
+      where: { userId: user.id },
+      select: { phone: true },
+    });
+    return { ...safe, phone: parent?.phone ?? null };
   }
 
   async updateProfile(
@@ -158,7 +169,7 @@ export class AuthService {
       });
       return account;
     });
-    return this.usersService.toSafeUser(updated);
+    return this.currentProfile(this.usersService.toSafeUser(updated));
   }
 
   async changePassword(
@@ -279,6 +290,27 @@ export class AuthService {
     return { reset: true };
   }
 
+  async verifyRealtimeToken(
+    token: string,
+  ): Promise<{ userId: string; sessionId: string; expiresAt: number } | null> {
+    try {
+      const config = this.config.get('jwt', { infer: true });
+      const payload = await this.jwtService.verifyAsync<JwtPayload & { exp: number }>(token, {
+        secret: config.accessSecret,
+        issuer: config.issuer,
+        audience: config.audience,
+        algorithms: ['HS256'],
+      });
+      if (!Number.isFinite(payload.exp)) return null;
+      const user = await this.validateAccessPayload(payload);
+      return user
+        ? { userId: user.id, sessionId: payload.sid, expiresAt: payload.exp * 1000 }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   async validateAccessPayload(payload: JwtPayload): Promise<SafeUser | null> {
     if (payload.type !== 'access') return null;
     const session = await this.authSessionsRepository.findActiveSessionWithUser(payload.sid);
@@ -287,6 +319,7 @@ export class AuthService {
   }
 
   private async createAuthenticatedSession(user: SafeUser): Promise<AuthResponseDto> {
+    user = await this.currentProfile(user);
     const expiresAt = this.addSeconds(
       new Date(),
       this.config.get('jwt.refreshTtlSeconds', { infer: true }),

@@ -1,11 +1,16 @@
+import { randomUUID } from 'node:crypto';
+import { NotificationEventsService } from '../notifications/notification-events.service';
+import type { ParentGradesResponseDto } from './parent-learning-response.dto';
+import { pageResult } from '../../common/pagination';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { assignedTeacherWhere } from '../registration-flow/class-teacher';
+import { assignedTeacherAt, assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicAccessService, assertRule, inTerm, roles } from './academic-access.service';
 import { AcademicRepository } from './academic.repository';
 import {
   AssignmentDto,
+  StudentPageDto,
   GradeDto,
   PageDto,
   RecipientsDto,
@@ -18,12 +23,14 @@ export class AssessmentService {
   constructor(
     private readonly repo: AcademicRepository,
     private readonly access: AcademicAccessService,
+    private readonly notifications: NotificationEventsService,
   ) {}
 
   async create(user: AuthenticatedUser, input: AssignmentDto): Promise<unknown> {
     roles(user, 'TEACHER');
     await this.access.classroom(user, input.classId);
     this.validateDefinition(input);
+    await this.validateSession(input);
     const { questions, dueAt, ...data } = input;
     return this.repo.db.assignment.create({
       data: {
@@ -44,6 +51,7 @@ export class AssessmentService {
 
   async updateDraft(user: AuthenticatedUser, id: string, input: AssignmentDto): Promise<unknown> {
     this.validateDefinition(input);
+    await this.validateSession(input);
     return this.repo.transaction(async (tx) => {
       const assignment = await this.teacher(user, id, tx);
       assertRule(
@@ -57,6 +65,7 @@ export class AssessmentService {
         where: { id },
         data: {
           ...data,
+          ...(input.kind === 'HOMEWORK' ? { testType: null } : {}),
           dueAt: new Date(dueAt),
           questions: {
             create: questions.map((q, position) => ({
@@ -69,6 +78,31 @@ export class AssessmentService {
         include: { questions: true },
       });
     });
+  }
+
+  private async validateSession(input: AssignmentDto): Promise<void> {
+    assertRule(
+      (input.kind ?? 'HOMEWORK') === 'TEST' || !input.testType,
+      'INVALID_TEST_TYPE',
+      'Only tests can have a test type',
+    );
+    if (!input.sessionId) return;
+    const session = await this.repo.db.classSession.findFirst({
+      where: { id: input.sessionId, classId: input.classId },
+    });
+    assertRule(session, 'INVALID_SESSION', 'Session must belong to the assignment class');
+  }
+
+  private async assertOwnedStudent(user: AuthenticatedUser, studentId: string): Promise<void> {
+    const owned = await this.repo.db.studentProfile.count({
+      where: { id: studentId, parentProfile: { userId: user.id } },
+    });
+    assertRule(
+      owned === 1,
+      'FORBIDDEN',
+      'Student does not belong to this parent',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   private validateDefinition(input: AssignmentDto): void {
@@ -93,36 +127,192 @@ export class AssessmentService {
     }
   }
 
-  async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async list(user: AuthenticatedUser, page: StudentPageDto): Promise<unknown> {
     roles(user, 'TEACHER', 'PARENT');
+    if (user.role === 'PARENT' && page.studentId)
+      await this.assertOwnedStudent(user, page.studentId);
+    const recipientWhere: Prisma.AssignmentRecipientWhereInput = {
+      enrollment: {
+        status: { not: 'PENDING_LINK' },
+        ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+        ...(user.role === 'PARENT'
+          ? { studentProfile: { parentProfile: { userId: user.id } } }
+          : {}),
+      },
+    };
     const where: Prisma.AssignmentWhereInput =
       user.role === 'TEACHER'
-        ? { class: assignedTeacherWhere(user.id, new Date()) }
-        : {
-            status: { not: 'DRAFT' },
-            recipients: {
-              some: {
-                enrollment: {
-                  status: { not: 'PENDING_LINK' },
-                  studentProfile: { parentProfile: { userId: user.id } },
+        ? {
+            class: assignedTeacherWhere(user.id, new Date()),
+            ...(page.studentId ? { recipients: { some: recipientWhere } } : {}),
+          }
+        : { status: { not: 'DRAFT' }, recipients: { some: recipientWhere } };
+    const items = this.repo.db.assignment
+      .findMany({
+        where,
+        select: {
+          id: true,
+          classId: true,
+          title: true,
+          dueAt: true,
+          status: true,
+          maxAttempts: true,
+          kind: true,
+          testType: true,
+          session: { select: { id: true, startsAt: true, endsAt: true } },
+          class: {
+            select: { id: true, name: true, program: { select: { subject: true, grade: true } } },
+          },
+          questions: { select: { kind: true, maxScore: true } },
+          recipients: {
+            where: recipientWhere,
+            select: {
+              id: true,
+              enrollmentId: true,
+              enrollment: { select: { studentProfileId: true } },
+              submissions: {
+                orderBy: { attemptNo: 'desc' },
+                take: 1,
+                select: {
+                  id: true,
+                  attemptNo: true,
+                  submittedAt: true,
+                  grades: {
+                    where: { status: 'PUBLISHED' },
+                    orderBy: { revision: 'desc' },
+                    take: 1,
+                    select: { totalScore: true, feedback: true, publishedAt: true },
+                  },
                 },
               },
             },
-          };
-    return this.repo.db.assignment.findMany({
-      where,
+          },
+        },
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      })
+      .then((rows) =>
+        rows.map(({ questions, recipients, ...assignment }) => ({
+          ...assignment,
+          questionCounts: {
+            multipleChoice: questions.filter((q) => q.kind === 'MULTIPLE_CHOICE').length,
+            essay: questions.filter((q) => q.kind === 'ESSAY').length,
+            total: questions.length,
+          },
+          maxScore: questions.reduce((sum, q) => sum + q.maxScore, 0),
+          recipients: recipients.map(({ enrollment, submissions, ...recipient }) => ({
+            ...recipient,
+            studentId: enrollment.studentProfileId,
+            latestSubmission: submissions[0]
+              ? {
+                  id: submissions[0].id,
+                  attemptNo: submissions[0].attemptNo,
+                  submittedAt: submissions[0].submittedAt,
+                  publishedGrade: submissions[0].grades[0] ?? null,
+                }
+              : null,
+          })),
+        })),
+      );
+    return pageResult(page, items, () => this.repo.db.assignment.count({ where }));
+  }
+
+  async studentGrades(
+    user: AuthenticatedUser,
+    studentId: string,
+    page: PageDto,
+  ): Promise<ParentGradesResponseDto> {
+    roles(user, 'PARENT');
+    await this.assertOwnedStudent(user, studentId);
+    const recipients = await this.repo.db.assignmentRecipient.findMany({
+      where: {
+        enrollment: {
+          studentProfileId: studentId,
+          status: { not: 'PENDING_LINK' },
+          studentProfile: { parentProfile: { userId: user.id } },
+        },
+        assignment: { status: { not: 'DRAFT' } },
+      },
+      take: 20001,
       select: {
         id: true,
-        classId: true,
-        title: true,
-        dueAt: true,
-        status: true,
-        maxAttempts: true,
+        assignment: {
+          select: {
+            id: true,
+            title: true,
+            kind: true,
+            testType: true,
+            class: { select: { id: true, name: true, program: { select: { subject: true } } } },
+            questions: { select: { maxScore: true } },
+          },
+        },
+        submissions: {
+          where: { grades: { some: { status: 'PUBLISHED' } } },
+          orderBy: { attemptNo: 'desc' },
+          take: 1,
+          select: {
+            id: true,
+            attemptNo: true,
+            grades: {
+              where: { status: 'PUBLISHED' },
+              orderBy: { revision: 'desc' },
+              take: 1,
+              select: { totalScore: true, feedback: true, publishedAt: true },
+            },
+          },
+        },
       },
-      skip: (page.page - 1) * page.limit,
-      take: page.limit,
-      orderBy: { createdAt: 'desc' },
     });
+    assertRule(
+      recipients.length <= 20000,
+      'GRADE_HISTORY_TOO_LARGE',
+      'Grade history exceeds the supported range',
+    );
+    const history = recipients
+      .flatMap((recipient) => {
+        const submission = recipient.submissions[0];
+        const grade = submission?.grades[0];
+        if (!grade) return [];
+        const { questions, ...assignment } = recipient.assignment;
+        const maxScore = questions.reduce((sum, question) => sum + question.maxScore, 0);
+        return [
+          {
+            recipientId: recipient.id,
+            assignment,
+            submissionId: submission.id,
+            attemptNo: submission.attemptNo,
+            ...grade,
+            maxScore,
+            scoreOutOf10: maxScore ? (grade.totalScore / maxScore) * 10 : null,
+          },
+        ];
+      })
+      .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+    const subjects = [...new Set(history.map((row) => row.assignment.class.program.subject))].map(
+      (subject) => {
+        const scores = history.filter(
+          (row) => row.assignment.class.program.subject === subject && row.scoreOutOf10 !== null,
+        );
+        return {
+          subject,
+          count: scores.length,
+          averageOutOf10: scores.length
+            ? Math.round(
+                (scores.reduce((sum, row) => sum + row.scoreOutOf10!, 0) / scores.length) * 100,
+              ) / 100
+            : null,
+        };
+      },
+    );
+    return {
+      studentId,
+      subjects,
+      history: history.slice((page.page - 1) * page.limit, page.page * page.limit),
+      page: page.page,
+      limit: page.limit,
+      total: history.length,
+    };
   }
 
   async detail(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -130,6 +320,7 @@ export class AssessmentService {
     const assignment = await this.repo.db.assignment.findUniqueOrThrow({
       where: { id },
       include: {
+        session: { select: { id: true, startsAt: true, endsAt: true } },
         questions: { orderBy: { position: 'asc' } },
         recipients: {
           where:
@@ -156,6 +347,10 @@ export class AssessmentService {
     const showAnswers = user.role === 'TEACHER' || !!assignment.answersPublishedAt;
     return {
       id: assignment.id,
+      kind: assignment.kind,
+      testType: assignment.testType,
+      sessionId: assignment.sessionId,
+      session: assignment.session,
       classId: assignment.classId,
       title: assignment.title,
       instructions: assignment.instructions,
@@ -212,7 +407,16 @@ export class AssessmentService {
       await tx.assignmentRecipient.createMany({
         data: input.enrollmentIds.map((enrollmentId) => ({ assignmentId: id, enrollmentId })),
       });
-      return tx.assignment.update({ where: { id }, data: { status: 'PUBLISHED' } });
+      const updated = await tx.assignment.update({ where: { id }, data: { status: 'PUBLISHED' } });
+      await this.notifications.assignment(
+        tx,
+        user.id,
+        id,
+        'ASSIGNMENT_PUBLISHED',
+        'Có bài tập mới được giao.',
+        `assignment-published:${id}`,
+      );
+      return updated;
     });
   }
 
@@ -227,6 +431,7 @@ export class AssessmentService {
   }
 
   async reopen(user: AuthenticatedUser, id: string, input: SubmissionWindowDto): Promise<unknown> {
+    const notificationOperationId = randomUUID();
     return this.repo.transaction(async (tx) => {
       const assignment = await this.teacher(user, id, tx);
       assertRule(
@@ -239,10 +444,24 @@ export class AssessmentService {
         'INVALID_SUBMISSION_WINDOW',
         'Extend the future deadline without reducing allowed attempts',
       );
-      return tx.assignment.update({
+      const updated = await tx.assignment.update({
         where: { id },
         data: { dueAt: new Date(input.dueAt), maxAttempts: input.maxAttempts, status: 'PUBLISHED' },
       });
+      if (
+        assignment.status !== updated.status ||
+        assignment.dueAt.getTime() !== updated.dueAt.getTime() ||
+        assignment.maxAttempts !== updated.maxAttempts
+      )
+        await this.notifications.assignment(
+          tx,
+          user.id,
+          id,
+          'ASSIGNMENT_REOPENED',
+          `Hạn nộp mới: ${updated.dueAt.toISOString()}.`,
+          notificationOperationId,
+        );
+      return updated;
     });
   }
 
@@ -254,7 +473,20 @@ export class AssessmentService {
         'ASSIGNMENT_NOT_CLOSED',
         'Close submissions before publishing answers',
       );
-      return tx.assignment.update({ where: { id }, data: { answersPublishedAt: new Date() } });
+      if (assignment.answersPublishedAt) return assignment;
+      const updated = await tx.assignment.update({
+        where: { id },
+        data: { answersPublishedAt: new Date() },
+      });
+      await this.notifications.assignment(
+        tx,
+        user.id,
+        id,
+        'ANSWERS_PUBLISHED',
+        'Đáp án đã được công bố.',
+        `answers-published:${id}`,
+      );
+      return updated;
     });
   }
 
@@ -304,7 +536,7 @@ export class AssessmentService {
         'INVALID_FILES',
         'Files must be uploaded by the submitting parent',
       );
-      return tx.submission.create({
+      const submitted = await tx.submission.create({
         data: {
           recipientId: recipient.id,
           attemptNo: attempts + 1,
@@ -313,6 +545,30 @@ export class AssessmentService {
         },
         select: { id: true, recipientId: true, attemptNo: true, submittedAt: true },
       });
+      const classroom = await tx.class.findUniqueOrThrow({ where: { id: assignment.classId } });
+      const teacherId = assignedTeacherAt(classroom, new Date());
+      await this.notifications.send(
+        tx,
+        user.id,
+        'SUBMISSION_RECEIVED',
+        'SUBMISSION',
+        submitted.id,
+        'Có bài nộp mới',
+        `Bài tập ${assignment.title} có bài nộp mới.`,
+        teacherId
+          ? [
+              {
+                userId: teacherId,
+                studentIds: recipient.enrollment.studentProfileId
+                  ? [recipient.enrollment.studentProfileId]
+                  : [],
+              },
+            ]
+          : [],
+        assignment.classId,
+        `submission:${submitted.id}`,
+      );
+      return submitted;
     });
   }
 
@@ -323,45 +579,50 @@ export class AssessmentService {
   ): Promise<unknown> {
     roles(user, 'TEACHER', 'PARENT');
     if (user.role === 'TEACHER') await this.teacher(user, assignmentId);
-    return this.repo.db.submission.findMany({
-      where: {
-        recipient: {
-          assignmentId,
-          ...(user.role === 'PARENT'
-            ? {
-                enrollment: {
-                  status: { not: 'PENDING_LINK' as const },
-                  studentProfile: { parentProfile: { userId: user.id } },
-                },
-              }
-            : {}),
-        },
+    const where: Prisma.SubmissionWhereInput = {
+      recipient: {
+        assignmentId,
+        ...(user.role === 'PARENT'
+          ? {
+              enrollment: {
+                status: { not: 'PENDING_LINK' as const },
+                studentProfile: { parentProfile: { userId: user.id } },
+              },
+            }
+          : {}),
       },
-      select: {
-        id: true,
-        recipientId: true,
-        attemptNo: true,
-        answers: true,
-        submittedAt: true,
-        files: { select: { fileId: true } },
-        grades: {
-          where: user.role === 'PARENT' ? { status: 'PUBLISHED' } : {},
-          select: {
-            id: true,
-            revision: true,
-            status: true,
-            scores: true,
-            totalScore: true,
-            feedback: true,
-            publishedAt: true,
+    };
+    return pageResult(
+      page,
+      this.repo.db.submission.findMany({
+        where,
+        select: {
+          id: true,
+          recipientId: true,
+          attemptNo: true,
+          answers: true,
+          submittedAt: true,
+          files: { select: { fileId: true } },
+          grades: {
+            where: user.role === 'PARENT' ? { status: 'PUBLISHED' } : {},
+            select: {
+              id: true,
+              revision: true,
+              status: true,
+              scores: true,
+              totalScore: true,
+              feedback: true,
+              publishedAt: true,
+            },
+            orderBy: { revision: 'desc' },
           },
-          orderBy: { revision: 'desc' },
         },
-      },
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: { submittedAt: 'desc' },
-    });
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: [{ submittedAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.submission.count({ where }),
+    );
   }
 
   async grade(user: AuthenticatedUser, submissionId: string, input: GradeDto): Promise<unknown> {
@@ -440,10 +701,22 @@ export class AssessmentService {
         where: { submission: { recipientId: grade.submission.recipientId }, status: 'PUBLISHED' },
         data: { status: 'SUPERSEDED' },
       });
-      return tx.gradeReview.update({
+      const published = await tx.gradeReview.update({
         where: { id },
         data: { status: 'PUBLISHED', publishedAt: new Date() },
       });
+      await this.notifications.family(
+        tx,
+        user.id,
+        grade.submission.recipient.enrollmentId,
+        'GRADE_PUBLISHED',
+        'ASSIGNMENT',
+        grade.submission.recipient.assignmentId,
+        'Giáo viên đã công bố kết quả bài làm.',
+        `grade:${id}:${grade.revision}`,
+        true,
+      );
+      return published;
     });
   }
 

@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMaxSize,
@@ -20,6 +20,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  AssignmentKind,
+  TestType,
   AttendanceStatus,
   FeedbackStatus,
   LeaveKind,
@@ -28,8 +30,20 @@ import {
 } from '@prisma/client';
 
 export class PageDto {
+  @ApiPropertyOptional({
+    description: 'Return items, page, limit and total; omitted keeps the legacy array.',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  paginated?: boolean;
   @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) page = 1;
   @ApiPropertyOptional({ default: 20 }) @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
+}
+export class StudentPageDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(191) studentId?: string;
 }
 export class LeaveFilterDto extends PageDto {
   @ApiPropertyOptional({ enum: RequestStatus })
@@ -170,6 +184,12 @@ export class QuestionDto {
   @ApiProperty() @IsNumber() @Min(0.01) @Max(100) maxScore!: number;
 }
 export class AssignmentDto {
+  @ApiPropertyOptional({ enum: AssignmentKind, default: 'HOMEWORK' })
+  @IsOptional()
+  @IsEnum(AssignmentKind)
+  kind?: AssignmentKind;
+  @ApiPropertyOptional({ enum: TestType }) @IsOptional() @IsEnum(TestType) testType?: TestType;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) sessionId?: string;
   @ApiProperty() @IsString() @MinLength(1) classId!: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MaxLength(10000) instructions!: string;

@@ -156,17 +156,8 @@ export class AuthController {
     description: 'Missing, expired, or revoked access token.',
     type: ApiErrorResponseDto,
   })
-  me(@CurrentUser() user: AuthenticatedUser): SafeUserDto {
-    return {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName,
-      role: user.role,
-      status: user.status,
-      emailVerifiedAt: user.emailVerifiedAt,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
-    };
+  me(@CurrentUser() user: AuthenticatedUser): Promise<SafeUserDto> {
+    return this.authService.currentProfile(user);
   }
 
   @Patch('me')

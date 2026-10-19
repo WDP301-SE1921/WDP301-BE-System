@@ -1,3 +1,5 @@
+import { NotificationEventsService } from '../notifications/notification-events.service';
+import { pageResult } from '../../common/pagination';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { Enrollment, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -28,6 +30,7 @@ import {
   LeaveFilterDto,
   MakeupDto,
   MakeupSourceFilterDto,
+  StudentPageDto,
   PageDto,
   ReactivateStudentDto,
   RescheduleMakeupDto,
@@ -39,15 +42,27 @@ export class EnrollmentWorkflowsService {
   constructor(
     private readonly repo: AcademicRepository,
     private readonly access: AcademicAccessService,
+    private readonly notifications: NotificationEventsService,
   ) {}
 
   private async queueFamilyEmail(
     tx: Prisma.TransactionClient,
+    actorId: string,
     enrollmentId: string,
     eventType: string,
     aggregateId: string,
     content: string,
+    notificationOperationId?: string,
   ): Promise<void> {
+    await this.notifications.workflow(
+      tx,
+      actorId,
+      enrollmentId,
+      eventType,
+      aggregateId,
+      content,
+      notificationOperationId,
+    );
     const enrollment = await tx.enrollment.findUnique({
       where: { id: enrollmentId },
       select: {
@@ -96,25 +111,29 @@ export class EnrollmentWorkflowsService {
       ...(query.toDate ? { fromDate: { lte: new Date(query.toDate) } } : {}),
       ...(query.fromDate ? { toDate: { gte: new Date(query.fromDate) } } : {}),
     };
-    return this.repo.db.leaveRequest.findMany({
-      where,
-      include: {
-        enrollment: {
-          select: {
-            id: true,
-            status: true,
-            studentProfile: { select: { id: true, fullName: true, grade: true } },
-            class: { select: { id: true, name: true } },
+    return pageResult(
+      query,
+      this.repo.db.leaveRequest.findMany({
+        where,
+        include: {
+          enrollment: {
+            select: {
+              id: true,
+              status: true,
+              studentProfile: { select: { id: true, fullName: true, grade: true } },
+              class: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      take: query.limit,
-      skip: (query.page - 1) * query.limit,
-      orderBy: { createdAt: 'desc' },
-    });
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.leaveRequest.count({ where }),
+    );
   }
 
-  async makeups(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async makeups(user: AuthenticatedUser, page: StudentPageDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const where: Prisma.MakeupBookingWhereInput =
       user.role === 'MANAGER' || user.role === 'STAFF'
@@ -124,24 +143,31 @@ export class EnrollmentWorkflowsService {
           : {
               original: { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } },
             };
-    return this.repo.db.makeupBooking.findMany({
-      where,
-      select: {
-        id: true,
-        status: true,
-        originalParticipantId: true,
-        replacementParticipantId: true,
-        original: { select: { sessionId: true, enrollmentId: true } },
-        replacement: {
-          select: {
-            session: { select: { id: true, classId: true, startsAt: true, endsAt: true } },
+    if (page.studentId) {
+      where.AND = [{ original: { enrollment: { studentProfileId: page.studentId } } }];
+    }
+    return pageResult(
+      page,
+      this.repo.db.makeupBooking.findMany({
+        where,
+        select: {
+          id: true,
+          status: true,
+          originalParticipantId: true,
+          replacementParticipantId: true,
+          original: { select: { sessionId: true, enrollmentId: true } },
+          replacement: {
+            select: {
+              session: { select: { id: true, classId: true, startsAt: true, endsAt: true } },
+            },
           },
         },
-      },
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: { createdAt: 'desc' },
-    });
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.makeupBooking.count({ where }),
+    );
   }
 
   async requestLeave(user: AuthenticatedUser, input: LeaveDto): Promise<unknown> {
@@ -225,6 +251,7 @@ export class EnrollmentWorkflowsService {
       if (user.role !== 'STAFF') {
         await this.queueFamilyEmail(
           tx,
+          user.id,
           leave.enrollmentId,
           'LEAVE_REQUESTED',
           leave.id,
@@ -308,6 +335,7 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         leave.enrollmentId,
         'LEAVE_DECIDED',
         id,
@@ -351,6 +379,7 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         leave.enrollmentId,
         'LEAVE_CANCELLED',
         id,
@@ -436,6 +465,7 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         leave.enrollmentId,
         'LEAVE_ENDED_EARLY',
         id,
@@ -563,6 +593,7 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         source.enrollmentId,
         'MAKEUP_BOOKED',
         booking.id,
@@ -624,11 +655,45 @@ export class EnrollmentWorkflowsService {
         id: true,
         attendance: true,
         enrollmentId: true,
-        enrollment: { select: { studentProfile: { select: { id: true, fullName: true } } } },
-        session: { select: { id: true, classId: true, startsAt: true, endsAt: true } },
+        enrollment: {
+          select: {
+            studentProfile: { select: { id: true, fullName: true } },
+            leaveRequests: {
+              where: { status: 'APPROVED' },
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                kind: true,
+                reason: true,
+                sessionId: true,
+                fromDate: true,
+                toDate: true,
+              },
+            },
+          },
+        },
+        session: {
+          select: {
+            id: true,
+            classId: true,
+            startsAt: true,
+            endsAt: true,
+            class: { select: { name: true, program: { select: { subject: true } } } },
+          },
+        },
         sourceBookings: {
-          where: { status: 'COMPLETED' },
-          select: { id: true, replacement: { select: { sessionId: true } } },
+          where: { status: { not: 'CANCELLED' } },
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+          select: {
+            id: true,
+            status: true,
+            replacement: {
+              select: {
+                sessionId: true,
+                session: { select: { id: true, startsAt: true, endsAt: true } },
+              },
+            },
+          },
         },
       },
       orderBy: { session: { startsAt: 'asc' } },
@@ -659,7 +724,7 @@ export class EnrollmentWorkflowsService {
       const studentCounts = students.get(student.id)!.counts;
       const { effectiveStatus, required, attended } = attendanceContribution(
         row.attendance,
-        row.sourceBookings.length > 0,
+        row.sourceBookings.some((booking) => booking.status === 'COMPLETED'),
       );
       const key =
         effectiveStatus === 'PRESENT'
@@ -675,7 +740,26 @@ export class EnrollmentWorkflowsService {
       studentCounts.required += required;
       counts.attended += attended;
       studentCounts.attended += attended;
-      return { ...row, effectiveStatus };
+      const day = studyDate(row.session.startsAt);
+      const approvedLeave = row.enrollment.leaveRequests.find((leave) =>
+        leave.sessionId
+          ? leave.sessionId === row.session.id
+          : leave.fromDate <= day && leave.toDate >= day,
+      );
+      return {
+        id: row.id,
+        enrollment: { studentProfile: student },
+        enrollmentId: row.enrollmentId,
+        attendance: row.attendance,
+        effectiveStatus,
+        session: row.session,
+        class: row.session.class,
+        approvedLeave: approvedLeave
+          ? { id: approvedLeave.id, kind: approvedLeave.kind, reason: approvedLeave.reason }
+          : null,
+        latestMakeup: row.sourceBookings[0] ?? null,
+        sourceBookings: row.sourceBookings.filter((booking) => booking.status === 'COMPLETED'),
+      };
     });
     for (const student of students.values()) {
       student.attendancePercent = student.counts.required
@@ -798,6 +882,7 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         original.enrollmentId,
         'MAKEUP_CANCELLED',
         id,
@@ -813,6 +898,7 @@ export class EnrollmentWorkflowsService {
     input: RescheduleMakeupDto,
   ): Promise<unknown> {
     roles(user, 'STAFF');
+    const notificationOperationId = randomUUID();
     return this.repo.transaction(async (tx) => {
       const booking = await tx.makeupBooking.findUniqueOrThrow({
         where: { id },
@@ -884,11 +970,34 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         state.source.enrollmentId,
         'MAKEUP_RESCHEDULED',
         id,
         `Buổi học bù được chuyển sang ${localStudyTime(state.target.startsAt)}.`,
+        notificationOperationId,
       );
+      const oldTeacher = booking.replacement.session;
+      if (oldTeacher.teacherId !== state.target.teacherId)
+        await this.notifications.send(
+          tx,
+          user.id,
+          'MAKEUP_RESCHEDULED',
+          'MAKEUP',
+          id,
+          'Cập nhật học bù',
+          'Buổi học bù đã được chuyển khỏi lịch cũ.',
+          [
+            {
+              userId: oldTeacher.teacherId,
+              studentIds: state.source.enrollment.studentProfileId
+                ? [state.source.enrollment.studentProfileId]
+                : [],
+            },
+          ],
+          oldTeacher.classId,
+          `${notificationOperationId}:old`,
+        );
       return updated;
     });
   }
@@ -964,10 +1073,24 @@ export class EnrollmentWorkflowsService {
         const status = input.items.find((item) => item.participantId === participant.id)!.status;
         await this.queueFamilyEmail(
           tx,
+          user.id,
           participant.enrollmentId,
           'ATTENDANCE_FINALIZED',
           `${id}:${participant.id}`,
           `Điểm danh buổi ${localStudyTime(session.startsAt)}: ${status === 'PRESENT' ? 'có mặt' : status === 'EXCUSED' ? 'vắng có phép' : 'vắng mặt'}.`,
+        );
+      }
+      for (const participant of session.participants) {
+        const booking = participant.replacementBookings[0];
+        if (!booking) continue;
+        const status = input.items.find((item) => item.participantId === participant.id)!.status;
+        await this.notifications.workflow(
+          tx,
+          user.id,
+          participant.enrollmentId,
+          status === 'PRESENT' ? 'MAKEUP_COMPLETED' : 'MAKEUP_MISSED',
+          booking.id,
+          status === 'PRESENT' ? 'Buổi học bù đã hoàn thành.' : 'Học sinh đã bỏ lỡ buổi học bù.',
         );
       }
       return completed;
@@ -1146,6 +1269,7 @@ export class EnrollmentWorkflowsService {
       });
       await this.queueFamilyEmail(
         tx,
+        user.id,
         id,
         'ENROLLMENT_TRANSFERRED',
         transfer.id,
@@ -1168,7 +1292,7 @@ export class EnrollmentWorkflowsService {
           afterData: impact,
         },
       });
-      await this.queueFamilyEmail(tx, id, 'ENROLLMENT_ENDED', id, 'Ghi danh đã kết thúc.');
+      await this.queueFamilyEmail(tx, user.id, id, 'ENROLLMENT_ENDED', id, 'Ghi danh đã kết thúc.');
       return { ...enrollment, impact };
     });
   }
@@ -1189,6 +1313,7 @@ export class EnrollmentWorkflowsService {
         const result = await this.endOne(tx, enrollment.id);
         await this.queueFamilyEmail(
           tx,
+          user.id,
           enrollment.id,
           'STUDENT_STUDY_ENDED',
           `${studentId}:${enrollment.id}`,

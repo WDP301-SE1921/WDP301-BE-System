@@ -1,3 +1,4 @@
+import { NotificationEventsService } from '../notifications/notification-events.service';
 import { HttpStatus, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma, type Class, type ClassWeeklySchedule, type Subject } from '@prisma/client';
 import { createHash } from 'node:crypto';
@@ -37,7 +38,10 @@ const HCM_OFFSET_MS = 7 * 3_600_000;
 export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   private teacherTimer?: NodeJS.Timeout;
   private readonly logger = new Logger(RegistrationFlowService.name);
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly notifications: NotificationEventsService,
+  ) {}
 
   onModuleInit(): void {
     this.teacherTimer = setInterval(() => {
@@ -472,6 +476,12 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       const currentTeacherId = classroom.teacherId;
       this.assert(currentTeacherId, 'INVALID_TEACHER', 'Class must have a current teacher');
       const cancelling = input.teacherId === currentTeacherId;
+      if (cancelling && !classroom.pendingTeacherId) return classroom;
+      if (
+        classroom.pendingTeacherId === input.teacherId &&
+        classroom.pendingTeacherFrom?.getTime() === effectiveAt.getTime()
+      )
+        return classroom;
       this.assert(
         cancelling || effectiveAt >= new Date(),
         'INVALID_EFFECTIVE_DATE',
@@ -535,6 +545,24 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           },
         },
       });
+      const scopes = sessions.map((session) => ({ ...session, classId }));
+      const recipients = await this.notifications.recipients.sessions(tx, scopes);
+      recipients.push(...(await this.notifications.recipients.classroom(tx, classId)));
+      for (const teacherId of [currentTeacherId, classroom.pendingTeacherId, input.teacherId])
+        if (teacherId) recipients.push({ userId: teacherId });
+      await this.notifications.send(
+        tx,
+        user.id,
+        'TEACHER_CHANGED',
+        'CLASS',
+        classId,
+        'Thay đổi giáo viên',
+        cancelling
+          ? 'Lịch thay đổi giáo viên đang chờ đã được huỷ.'
+          : `Giáo viên của lớp sẽ thay đổi từ ${effectiveAt.toISOString()}.`,
+        recipients,
+        classId,
+      );
       return updated;
     });
   }
@@ -582,6 +610,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         'REVISION_CONFLICT',
         'Session was changed; reload it',
       );
+      if (session.teacherId === input.teacherId) return session;
       const conflict = await tx.classSession.count({
         where: {
           id: { not: sessionId },
@@ -606,6 +635,20 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           afterData: { teacherId: input.teacherId, reason: input.reason },
         },
       });
+      const recipients = await this.notifications.recipients.sessions(tx, [updated]);
+      recipients.push({ userId: session.teacherId });
+      await this.notifications.send(
+        tx,
+        user.id,
+        'SUBSTITUTE_ASSIGNED',
+        'SESSION',
+        sessionId,
+        'Phân công dạy thay',
+        'Buổi học đã được phân công giáo viên dạy thay.',
+        recipients,
+        session.classId,
+        `substitute:${sessionId}:${updated.revision}`,
+      );
       return updated;
     });
   }
@@ -982,7 +1025,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
         await this.assertRegistrationAllowed(tx, student, classroom, startDate, endDate);
         const quotedAmount = new Prisma.Decimal(classroom.monthlyFee).mul(input.packageMonths);
-        return tx.registrationOrder.create({
+        const created = await tx.registrationOrder.create({
           data: {
             type: 'EXISTING_STUDENT_NEW_SUBJECT',
             parentEmail: student.parentProfile.user.email,
@@ -1022,6 +1065,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           },
           include: registrationInclude,
         });
+        await this.notifications.registration(tx, user.id, created.id, 'BILL_CREATED');
+        return created;
       });
     } catch (error) {
       // A concurrent request with the same key committed first: return its draft.
@@ -1229,6 +1274,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           entityId: id,
         },
       });
+      await this.notifications.registration(tx, user.id, id, 'BILL_CANCELLED');
       return cancelled;
     });
   }
@@ -1369,6 +1415,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           },
         },
       });
+      await this.notifications.registration(tx, user.id, id, 'PAYMENT_CONFIRMED');
       const response = receiptResponse(completed);
       await tx.idempotencyRecord.create({
         data: {
@@ -1455,19 +1502,47 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     return scheduleOf(await this.enrollmentsOf(studentId));
   }
 
-  private enrollmentsOf(studentId: string): Promise<EnrollmentWithPlacements[]> {
-    return this.db.enrollment.findMany({
+  private async enrollmentsOf(studentId: string): Promise<
+    Array<
+      EnrollmentWithPlacements & {
+        term: ReturnType<typeof termStatus> & { startDate: string | null; endDate: string | null };
+      }
+    >
+  > {
+    const rows = await this.db.enrollment.findMany({
       where: { studentProfileId: studentId, status: { not: 'PENDING_LINK' } },
       include: {
-        class: { include: { program: true, weeklySchedules: true } },
+        class: {
+          include: {
+            program: true,
+            weeklySchedules: true,
+            teacher: { select: { id: true, displayName: true } },
+          },
+        },
         placements: {
-          include: { class: { include: { program: true, weeklySchedules: true } } },
+          include: {
+            class: {
+              include: {
+                program: true,
+                weeklySchedules: true,
+                teacher: { select: { id: true, displayName: true } },
+              },
+            },
+          },
           orderBy: { effectiveFrom: 'asc' },
         },
         registrationOrder: { include: { payment: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+    return rows.map((row) => ({
+      ...row,
+      term: {
+        startDate: dateOnly(row.startDate),
+        endDate: dateOnly(row.endDate),
+        ...termStatus({ startDate: row.startDate, endDate: row.endDate, enrollment: row }),
+      },
+    }));
   }
 
   async getClass(

@@ -1,3 +1,5 @@
+import { NotificationEventsService } from '../notifications/notification-events.service';
+import type { Prisma } from '@prisma/client';
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
@@ -8,10 +10,28 @@ import { AnnouncementDto, PageDto, ReminderDto } from './academic.dto';
 
 @Injectable()
 export class AnnouncementsService {
-  constructor(private readonly repo: AcademicRepository) {}
+  constructor(
+    private readonly repo: AcademicRepository,
+    private readonly notifications: NotificationEventsService,
+  ) {}
   async create(user: AuthenticatedUser, input: AnnouncementDto): Promise<unknown> {
     roles(user, 'MANAGER');
-    return this.repo.db.announcement.create({ data: { ...input, managerId: user.id } });
+    return this.repo.transaction(async (tx) => {
+      const created = await tx.announcement.create({ data: { ...input, managerId: user.id } });
+      await this.notifications.send(
+        tx,
+        user.id,
+        'ANNOUNCEMENT',
+        'CLASS',
+        created.classId,
+        created.title,
+        created.content,
+        await this.notifications.recipients.classroom(tx, created.classId),
+        created.classId,
+        `announcement:${created.id}`,
+      );
+      return created;
+    });
   }
   async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'PARENT');
@@ -132,26 +152,47 @@ export class AnnouncementsService {
             ]
           : [],
       ),
+      async (tx) => {
+        for (const row of rows) {
+          const scope = await this.notifications.recipients.family(tx, row.id, false);
+          await this.notifications.send(
+            tx,
+            user.id,
+            'TUITION_REMINDER',
+            'ENROLLMENT',
+            row.id,
+            'Nhắc gia hạn học phí',
+            `Kỳ học lớp ${row.class.name} sắp kết thúc; vui lòng liên hệ trung tâm để gia hạn.`,
+            scope.recipients,
+            row.classId,
+            `tuition:${row.id}:${input.through}`,
+          );
+        }
+      },
     );
   }
   private async enqueue(
     eventType: string,
     aggregateId: string,
     messages: { email: string; title: string; content: string }[],
+    notify?: (tx: Prisma.TransactionClient) => Promise<void>,
   ): Promise<unknown> {
-    await this.repo.db.outboxEvent.createMany({
-      data: messages.map((message) => ({
-        eventType,
-        aggregateType: eventType === 'ANNOUNCEMENT' ? 'Announcement' : 'TuitionReminder',
-        aggregateId,
-        recipient: message.email,
-        subject: message.title,
-        dedupeKey: `${eventType}:${aggregateId}:${createHash('sha256')
-          .update(message.email + message.content)
-          .digest('hex')}`,
-        payload: { text: message.content },
-      })),
-      skipDuplicates: true,
+    await this.repo.transaction(async (tx) => {
+      await tx.outboxEvent.createMany({
+        data: messages.map((message) => ({
+          eventType,
+          aggregateType: eventType === 'ANNOUNCEMENT' ? 'Announcement' : 'TuitionReminder',
+          aggregateId,
+          recipient: message.email,
+          subject: message.title,
+          dedupeKey: `${eventType}:${aggregateId}:${createHash('sha256')
+            .update(message.email + message.content)
+            .digest('hex')}`,
+          payload: { text: message.content },
+        })),
+        skipDuplicates: true,
+      });
+      if (notify) await notify(tx);
     });
     return {
       results: messages.map((message) => ({ email: message.email, queued: true })),

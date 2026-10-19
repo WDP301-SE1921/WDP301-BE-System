@@ -11,12 +11,22 @@ import {
   UseInterceptors,
   UseFilters,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExtraModels,
+  ApiOkResponse,
+  getSchemaPath,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AcademicStorageService } from '../../integrations/academic-storage.service';
+import { ParentGradesResponseDto } from './parent-learning-response.dto';
 import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
@@ -29,6 +39,7 @@ import {
   AnnouncementDto,
   AttendanceQueryDto,
   AssignmentDto,
+  StudentPageDto,
   AttendanceDto,
   ClassDto,
   DecisionDto,
@@ -55,6 +66,7 @@ import {
   TransferDto,
 } from './academic.dto';
 
+@ApiExtraModels(ParentGradesResponseDto)
 @ApiTags('academic')
 @UseFilters(AcademicErrorsFilter)
 @ApiBearerAuth()
@@ -124,7 +136,7 @@ export class AcademicController {
   }
   @Get('makeups') makeups(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: StudentPageDto,
   ): Promise<unknown> {
     return this.workflows.makeups(user, page);
   }
@@ -340,9 +352,34 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.assessment.create(user, input);
   }
-  @Get('assignments') assignments(
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: { $ref: getSchemaPath(ParentGradesResponseDto) },
+      },
+    },
+  })
+  @Get('me/students/:id/grades')
+  @ApiOperation({ summary: 'Parent: published grade history and averages by subject' })
+  studentGrades(
     @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
     @Query() page: PageDto,
+  ): Promise<unknown> {
+    return this.assessment.studentGrades(user, id, page);
+  }
+
+  @ApiOperation({
+    summary: 'Assignments visible to the current teacher or parent',
+    description:
+      'Optional studentId selects one owned child. paginated=true returns { items, page, limit, total }; otherwise returns an array. Includes class, session, question counts and each visible recipient latest submission with published grade only.',
+  })
+  @Get('assignments')
+  assignments(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() page: StudentPageDto,
   ): Promise<unknown> {
     return this.assessment.list(user, page);
   }

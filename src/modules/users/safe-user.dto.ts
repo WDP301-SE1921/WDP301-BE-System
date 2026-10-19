@@ -1,7 +1,14 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserRole, UserStatus } from '@prisma/client';
 
 export class SafeUserDto {
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Current parent phone; only returned for PARENT accounts.',
+  })
+  phone?: string | null;
+
   @ApiProperty({ example: 'clx2r0x8a0000qzrmf6a6dr7p' })
   id!: string;
 

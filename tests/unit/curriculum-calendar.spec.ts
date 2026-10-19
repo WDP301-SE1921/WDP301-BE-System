@@ -1,3 +1,4 @@
+import type { NotificationEventsService } from '../../src/modules/notifications/notification-events.service';
 import {
   lastMonthlySlots,
   slotsForRange,
@@ -82,7 +83,7 @@ describe('curriculum session preview', () => {
       },
     } as unknown as DatabaseService;
     const user = { id: 'manager-1', role: 'MANAGER' } as AuthenticatedUser;
-    const service = new CurriculumSchedulingService(db);
+    const service = new CurriculumSchedulingService(db, {} as NotificationEventsService);
     const first = (await service.preview(user, classroom.id, {
       curriculumUnitId: unit.id,
       fromDate: '2027-01-04',

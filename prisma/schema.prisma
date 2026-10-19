@@ -81,6 +81,8 @@ model User {
   permissions                Json?
   emailVerifiedAt            DateTime?
   parentProfile              ParentProfile?
+  notifications              Notification[]
+  notificationDispatches     NotificationDispatch[]
   sessions                   AuthSession[]
   emailVerificationTokens    EmailVerificationToken[]
   passwordResetTokens        PasswordResetToken[]
@@ -633,6 +635,7 @@ model ClassSession {
   generation   ScheduleGeneration?  @relation(fields: [generationId], references: [id], onDelete: Restrict)
   participants SessionParticipant[]
   leaves       LeaveRequest[]
+  assignments  Assignment[]
   mutations    SessionMutation[]
 
   @@unique([classId, startsAt])
@@ -743,7 +746,23 @@ model LeaveRequest {
   @@map("leave_requests")
 }
 
+enum AssignmentKind {
+  HOMEWORK
+  TEST
+}
+
+enum TestType {
+  FIFTEEN_MINUTES
+  ONE_PERIOD
+  MIDTERM
+  FINAL
+}
+
 model Assignment {
+  kind               AssignmentKind        @default(HOMEWORK)
+  testType           TestType?
+  sessionId          String?               @db.VarChar(191)
+  session            ClassSession?         @relation(fields: [sessionId], references: [id], onDelete: Restrict)
   id                 String                @id @default(cuid()) @db.VarChar(191)
   classId            String                @db.VarChar(191)
   teacherId          String                @db.VarChar(191)
@@ -759,6 +778,7 @@ model Assignment {
   createdAt          DateTime              @default(now())
 
   @@index([classId, status])
+  @@index([sessionId])
   @@map("assignments")
 }
 
@@ -960,4 +980,66 @@ model IdempotencyRecord {
   @@unique([scope, key])
   @@index([registrationOrderId])
   @@map("idempotency_records")
+}
+
+
+enum NotificationDispatchStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+enum NotificationTargetKind {
+  ASSIGNMENT
+  SUBMISSION
+  SESSION
+  CLASS
+  LEAVE
+  MAKEUP
+  ENROLLMENT
+  REGISTRATION
+  CURRICULUM_UNIT
+  FEEDBACK
+}
+
+model Notification {
+  id              String                 @id @default(cuid()) @db.VarChar(191)
+  recipientUserId String                 @db.VarChar(191)
+  type            String                 @db.VarChar(64)
+  title           String                 @db.VarChar(255)
+  body            String                 @db.Text
+  targetKind      NotificationTargetKind
+  targetId        String                 @db.VarChar(191)
+  classId         String?                @db.VarChar(191)
+  studentIds      Json
+  dedupeKey       String                 @unique @db.Char(64)
+  createdAt       DateTime               @default(now())
+  readAt          DateTime?
+  recipient       User                   @relation(fields: [recipientUserId], references: [id], onDelete: Restrict)
+
+  @@index([recipientUserId, createdAt, id])
+  @@index([recipientUserId, readAt])
+  @@map("notifications")
+}
+
+model NotificationDispatch {
+  id              String                     @id @default(cuid()) @db.VarChar(191)
+  recipientUserId String                     @db.VarChar(191)
+  event           String                     @db.VarChar(64)
+  payload         Json
+  status          NotificationDispatchStatus @default(PENDING)
+  attemptCount    Int                        @default(0)
+  maxAttempts     Int                        @default(5)
+  nextAttemptAt   DateTime                   @default(now())
+  leaseToken      String?                    @db.VarChar(64)
+  leaseExpiresAt  DateTime?
+  lastError       String?                    @db.Text
+  createdAt       DateTime                   @default(now())
+  sentAt          DateTime?
+  recipient       User                       @relation(fields: [recipientUserId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+  @@index([status, leaseExpiresAt])
+  @@map("notification_dispatches")
 }
