@@ -231,6 +231,22 @@ Các đường dẫn dưới đây tương đối với `/api/v1`; endpoint chuy
 | `GET /managers` | Chỉ kiểm role `MANAGER`, không trả `permissions`. Endpoint `PATCH /managers/:id/permissions` đã bỏ. |
 | `POST /academic/email-deliveries/:id/retry` | SMTP lỗi trả `502 EMAIL_DELIVERY_FAILED` sau khi lưu lần thử. Danh sách delivery không trả payload chứa link/token. |
 
+## Contract cho màn Web mới (19/10/2026)
+
+Các đường dẫn tương đối với `/api/v1`.
+
+| API | Quyền | Thay đổi contract |
+| --- | --- | --- |
+| `GET /academic/makeup-sources` | Như cũ | Thêm `completedOnly=true`: chỉ trả buổi vắng đã ghi nhận (buổi `COMPLETED`), bỏ các buổi tương lai mà danh sách học bù cho xếp trước. Dùng cho số "chờ học bù". |
+| `GET /academic/reports` | Như cũ | Mỗi dòng thêm `from`, `to`, `scope` (`CLASS`, `STUDENT`; `null` với báo cáo tạo trước khi lưu phạm vi), `studentId`, `studentName`. |
+| `GET /academic/students/:id/grades` | Manager, Staff | Bài đã giao (không gồm `DRAFT`) của học sinh, mới nhất trước, tối đa 500 dòng. Mỗi dòng có `class`, `maxScore`, lần nộp mới nhất (`submission`) và điểm đã công bố mới nhất (`grade`, `null` khi chưa công bố). Học sinh không tồn tại trả `404 STUDENT_NOT_FOUND`. |
+| `PATCH /students/:id` | Manager, Staff | Body như `PATCH /me/students/:id` (`fullName`, `grade`, `dateOfBirth`). Đổi khối khi còn enrollment hiện tại hoặc tương lai trả `409 STUDENT_GRADE_LOCKED`. Ghi audit `STUDENT_PROFILE_UPDATED`. |
+| `GET /students` | Manager, Staff | Mỗi dòng thêm `currentClasses` (lớp theo placement hôm nay), `attendancePercent` (cùng công thức chuyên cần, `null` khi chưa có buổi đã chốt), `pendingMakeups`, `onLongLeave`. Thêm `quick`: `no-class` (đang học nhưng không có lớp hiện tại), `long-leave` (nghỉ dài hạn đã duyệt bao trùm hôm nay), `pending-makeup` (có buổi vắng đã ghi nhận chưa xếp học bù). |
+| `GET/POST /curriculum-designers`, `GET/PATCH /curriculum-designers/:id` | Manager | Tài khoản Thiết kế giáo trình, cùng body, response và audit như `/staff`. |
+| `GET /parents` | Manager, Staff | `parentProfile.students` liệt kê con (`id`, `fullName`, `grade`, `status`); `paidAmount` là tổng thanh toán `CONFIRMED` của các con. |
+| `DELETE /parents/:id` | Manager | Xóa tài khoản phụ huynh chưa dùng (không có hồ sơ con, đơn đăng ký hay hoạt động trong audit); trường hợp khác trả `409 PARENT_IN_USE`, khi đó khóa tài khoản qua `PATCH /parents/:id`. Ghi audit `PARENT_ACCOUNT_DELETE`. |
+| `GET /classes/:id` | Như cũ | `enrollments.items[].studentProfile.parentProfile` có `phone` và `user.email`, `user.displayName` của phụ huynh. |
+
 Email điểm danh, nghỉ học, học bù, chuyển lớp, kết thúc học, lời mời, xác minh/reset, thanh toán, thông báo và nhắc học phí được xếp vào outbox. API tạo sự kiện xác nhận đã xếp hàng; trạng thái gửi thực tế xem qua `GET /academic/email-deliveries`. Worker dùng lease 60 giây và `maxAttempts` của từng event; nếu process chết đúng lúc SMTP nhận email thì email có thể được gửi lại.
 
 Migration `20261013000000_outbox_lease` thêm lease cho worker; `20261013001000_pending_class_teacher` thêm phân công giáo viên chờ hiệu lực. Cần chạy `prisma migrate deploy` trước khi chạy code mới. Cấu hình `WEB_ORIGIN` là gốc URL của Web dùng trong link nhận lời mời và đặt lại mật khẩu; nếu không đặt, BE dùng origin đầu tiên trong `CORS_ORIGINS`.
