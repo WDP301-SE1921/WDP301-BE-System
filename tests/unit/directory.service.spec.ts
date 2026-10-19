@@ -21,6 +21,14 @@ describe('Parent directory access', () => {
         .mockResolvedValue([parent]),
       count: jest.fn().mockResolvedValue(21),
     },
+    payment: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          amount: { toNumber: (): number => 150000 },
+          registrationOrder: { targetStudent: { parentProfile: { userId: 'parent-1' } } },
+        },
+      ]),
+    },
     $transaction: jest.fn(),
   };
   const service = new DirectoryService(
@@ -39,7 +47,12 @@ describe('Parent directory access', () => {
           search: ' parent ',
           status: 'ACTIVE',
         }),
-      ).resolves.toEqual({ items: [parent], page: 2, limit: 10, total: 21 });
+      ).resolves.toEqual({
+        items: [{ ...parent, paidAmount: 150000 }],
+        page: 2,
+        limit: 10,
+        total: 21,
+      });
       const query = database.user.findMany.mock.calls[0][0];
       expect(query).toMatchObject({
         where: { role: 'PARENT', status: 'ACTIVE' },

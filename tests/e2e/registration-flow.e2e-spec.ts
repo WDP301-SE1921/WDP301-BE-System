@@ -834,6 +834,9 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .send({ email: 'x@example.com', password: 'InitialPass123!', displayName: 'X' })
         .expect(403);
       await call('STAFF', 'get', 'staff').expect(403);
+      await call('STAFF', 'get', 'curriculum-designers').expect(403);
+      await call('CURRICULUM_DESIGNER', 'get', 'curriculum-designers').expect(403);
+      await call('STAFF', 'delete', 'parents/any').expect(403);
       for (const role of ['TEACHER', 'CURRICULUM_DESIGNER', 'PARENT'] as UserRole[]) {
         await call(role, 'get', 'teachers').expect(403);
         await call(role, 'post', 'staff')
@@ -853,8 +856,38 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       const list = await call('MANAGER', 'get', 'parents')
         .query({ search: 'parentmain' })
         .expect(200);
-      const parent = (list.body as Envelope<{ items: Account[] }>).data.items[0];
+      const parent = (
+        list.body as Envelope<{
+          items: (Account & {
+            paidAmount: number;
+            parentProfile: { students: { fullName: string }[] };
+          })[];
+        }>
+      ).data.items[0];
       expect(parent.email).toBe('parentmain@example.com');
+      expect(parent.parentProfile.students.map((child) => child.fullName)).toContain('Kid B');
+      const confirmed = await db.payment.aggregate({
+        _sum: { amount: true },
+        where: { registrationOrder: { targetStudent: { parentProfile: { userId: parent.id } } } },
+      });
+      expect(parent.paidAmount).toBe(Number(confirmed._sum.amount ?? 0));
+      const inUse = await call('MANAGER', 'delete', `parents/${parent.id}`).expect(409);
+      expect(inUse.body).toMatchObject({ error: { code: 'PARENT_IN_USE' } });
+      const unused = await db.user.create({
+        data: {
+          email: 'unused.parent@example.com',
+          role: 'PARENT',
+          parentProfile: { create: {} },
+        },
+      });
+      await call('MANAGER', 'delete', `parents/${unused.id}`).expect(200);
+      expect(await db.user.findUnique({ where: { id: unused.id } })).toBeNull();
+      expect(
+        await db.auditLog.count({
+          where: { action: 'PARENT_ACCOUNT_DELETE', entityId: unused.id },
+        }),
+      ).toBe(1);
+      await call('MANAGER', 'delete', 'parents/missing').expect(404);
       const detail = await call('MANAGER', 'get', `parents/${parent.id}`).expect(200);
       expect(
         (detail.body as Envelope<{ parentProfile: { students: unknown[] } }>).data.parentProfile

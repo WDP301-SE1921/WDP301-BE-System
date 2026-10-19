@@ -174,7 +174,15 @@ export class DirectoryService {
         select: {
           ...accountSelect,
           parentProfile: {
-            select: { id: true, phone: true, _count: { select: { students: true } } },
+            select: {
+              id: true,
+              phone: true,
+              _count: { select: { students: true } },
+              students: {
+                select: { id: true, fullName: true, grade: true, status: true },
+                orderBy: { createdAt: 'asc' },
+              },
+            },
           },
         },
         orderBy: [{ email: 'asc' }],
@@ -183,7 +191,92 @@ export class DirectoryService {
       }),
       this.db.user.count({ where }),
     ]);
-    return { items, page: query.page, limit: query.limit, total };
+    // Tuition paid for the page's children, summed per parent account.
+    const payments = items.length
+      ? await this.db.payment.findMany({
+          where: {
+            status: 'CONFIRMED',
+            registrationOrder: {
+              targetStudent: { parentProfile: { userId: { in: items.map((item) => item.id) } } },
+            },
+          },
+          select: {
+            amount: true,
+            registrationOrder: {
+              select: {
+                targetStudent: { select: { parentProfile: { select: { userId: true } } } },
+              },
+            },
+          },
+        })
+      : [];
+    const paid = new Map<string, number>();
+    for (const payment of payments) {
+      const parentId = payment.registrationOrder.targetStudent?.parentProfile.userId;
+      if (parentId) paid.set(parentId, (paid.get(parentId) ?? 0) + payment.amount.toNumber());
+    }
+    return {
+      items: items.map((item) => ({ ...item, paidAmount: paid.get(item.id) ?? 0 })),
+      page: query.page,
+      limit: query.limit,
+      total,
+    };
+  }
+
+  /**
+   * BE-9: remove a parent account that never got used (no child profile, registration or audited
+   * action). Anything else keeps history, so the account is disabled instead.
+   */
+  async deleteParent(user: AuthenticatedUser, id: string): Promise<unknown> {
+    this.requireRoles(user, 'MANAGER');
+    try {
+      return await this.db.$transaction(async (tx) => {
+        const parent = await tx.user.findFirst({
+          where: { id, role: 'PARENT' },
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            parentProfile: { select: { id: true, _count: { select: { students: true } } } },
+          },
+        });
+        this.assert(parent, 'PARENT_NOT_FOUND', 'Parent account not found', HttpStatus.NOT_FOUND);
+        const [orders, actions] = await Promise.all([
+          tx.registrationOrder.count({ where: { parentEmail: parent.email } }),
+          tx.auditLog.count({ where: { actorUserId: id } }),
+        ]);
+        this.assert(
+          !parent.parentProfile?._count.students && !orders && !actions,
+          'PARENT_IN_USE',
+          'Parent has child profiles, registrations or activity; disable the account instead',
+        );
+        await tx.authSession.deleteMany({ where: { userId: id } });
+        await tx.emailVerificationToken.deleteMany({ where: { userId: id } });
+        await tx.passwordResetToken.deleteMany({ where: { userId: id } });
+        if (parent.parentProfile)
+          await tx.parentProfile.delete({ where: { id: parent.parentProfile.id } });
+        await tx.user.delete({ where: { id } });
+        await tx.auditLog.create({
+          data: {
+            actorUserId: user.id,
+            action: 'PARENT_ACCOUNT_DELETE',
+            entityType: 'User',
+            entityId: id,
+            beforeData: { email: parent.email, displayName: parent.displayName },
+          },
+        });
+        return { id, deleted: true };
+      });
+    } catch (error) {
+      // Any other row still pointing at the account (invitation, link, ...) keeps it.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003')
+        throw new AppError(
+          'PARENT_IN_USE',
+          'Parent account is referenced by other records; disable it instead',
+          HttpStatus.CONFLICT,
+        );
+      throw error;
+    }
   }
 
   async getParent(user: AuthenticatedUser, id: string): Promise<unknown> {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -152,6 +152,15 @@ export class DirectoryController {
     @Body() input: UpdateParentAccountDto,
   ): Promise<unknown> {
     return this.directory.updateParent(user, id, input);
+  }
+
+  @Delete('parents/:id')
+  @ApiOperation({
+    summary:
+      'Manager: delete an unused parent account (no child, registration or activity); otherwise 409, disable instead',
+  })
+  deleteParent(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.directory.deleteParent(user, id);
   }
 
   @Get('dashboard')
