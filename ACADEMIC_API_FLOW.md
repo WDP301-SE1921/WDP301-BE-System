@@ -208,7 +208,7 @@ Chỉ Teacher được phân công mới được gọi `POST /sessions/:id/rost
 
 - `GET /academic/classes/:id/attendance-summary` và `GET /academic/me/students/:id/attendance` dùng chung công thức `(present + madeUp) / required`; buổi nghỉ có phép không vào mẫu số.
 - `POST /academic/leaves/:id/end-early` giữ lịch sử đã nghỉ và chỉ mở lại các buổi tương lai. `POST /academic/makeups/:id/reschedule` đổi chỗ học bù trong một transaction.
-- `GET /academic/email-deliveries` và `POST /academic/email-deliveries/:id/retry` dành cho Manager/Staff. Worker retry email pending với backoff và giới hạn số lần thử.
+- `GET /academic/email-deliveries` và `POST /academic/email-deliveries/:id/retry` dành cho Manager/Staff. Danh sách nhận thêm `status` (`PENDING`, `PROCESSING`, `SENT`, `FAILED`); `total` là số dòng sau lọc. Worker retry email pending với backoff và giới hạn số lần thử.
 - `PATCH /auth/me`, `POST /auth/change-password`, `/auth/forgot-password`, `/auth/reset-password` cung cấp self-service profile/password; reset thu hồi các phiên cũ.
 - `GET /audit-logs` dành cho Manager, có bộ lọc actor/entity/action/thời gian.
 
@@ -222,7 +222,7 @@ Các đường dẫn dưới đây tương đối với `/api/v1`; endpoint chuy
 | `GET /classes/:id` | Trả `pendingTeacher` và `pendingTeacherFrom` khi có phân công chờ, cùng `room` và roster theo placement. |
 | `GET /classes` | Trả `room`, `rosterCount` hiện tại và, khi có `startDate`/`packageMonths`, `availableSeats` tính theo placement trong kỳ. `_count.enrollments` vẫn là tổng theo lớp gốc. |
 | `POST /academic/leaves/:id/end-early` | `effectiveDate` phải là `YYYY-MM-DD`, không trước ngày hiện tại theo UTC+7; ngày sai trả `400 INVALID_EFFECTIVE_DATE`. Chỉ mở lại buổi trong kỳ nghỉ đang kết thúc. |
-| `GET /academic/classes/:id/attendance-summary` | Ngày `YYYY-MM-DD` bao trùm cả ngày UTC+7; Teacher có thể lọc `studentId`. Response thêm `students[]` gồm `studentId`, `fullName`, `counts`, `attendancePercent`. `UNMARKED` ở buổi đã hoàn tất tính vắng. |
+| `GET /academic/classes/:id/attendance-summary` | Ngày `YYYY-MM-DD` bao trùm cả ngày UTC+7; Teacher (lớp được phân công), Manager và Staff (mọi lớp, lớp không tồn tại trả 404) có thể lọc `studentId`. Response thêm `students[]` gồm `studentId`, `fullName`, `counts`, `attendancePercent`. `UNMARKED` ở buổi đã hoàn tất tính vắng. |
 | `POST /auth/change-password` | Sai mật khẩu hiện tại trả `400 AUTH_CURRENT_PASSWORD_INVALID`, không thu hồi phiên. |
 | `POST /auth/reset-password` | Token chỉ dùng một lần; đặt lại thành công thu hồi phiên và các reset token khác, ghi audit `PASSWORD_RESET`. |
 | `POST /account-invitations/:id/resend` | Manager xoay token của lời mời chưa dùng, gia hạn 48 giờ và xếp email mới vào outbox. Response không chứa token. |
