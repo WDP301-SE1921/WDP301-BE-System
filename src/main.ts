@@ -47,7 +47,7 @@ async function bootstrap(): Promise<void> {
     SwaggerModule.setup('docs', app, document, { useGlobalPrefix: true });
   }
 
-  await app.listen(config.get('port', { infer: true }));
+  await app.listen(config.get('port', { infer: true }), '0.0.0.0');
 }
 
 void bootstrap();

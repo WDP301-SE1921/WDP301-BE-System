@@ -83,6 +83,9 @@ importers:
       pdfkit:
         specifier: ^0.20.2
         version: 0.20.2
+      prisma:
+        specifier: ^6.16.2
+        version: 6.19.3(typescript@5.9.3)
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -150,9 +153,6 @@ importers:
       prettier:
         specifier: ^3.6.2
         version: 3.9.8
-      prisma:
-        specifier: ^6.16.2
-        version: 6.19.3(typescript@5.9.3)
       socket.io-client:
         specifier: ^4.8.1
         version: 4.8.4

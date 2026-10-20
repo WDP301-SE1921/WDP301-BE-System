@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: wdp301-be-system
+    runtime: docker
+    repo: https://github.com/WDP301-SE1921/WDP301-BE-System.git
+    branch: dev
+    region: singapore
+    plan: free
+    healthCheckPath: /api/v1/health/ready
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: WEB_ORIGIN
+        sync: false
+      - key: SWAGGER_ENABLED
+        value: "true"
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_ISSUER
+        value: edugrade-api
+      - key: JWT_AUDIENCE
+        value: edugrade-clients
+      - key: JWT_ACCESS_TTL_SECONDS
+        value: "900"
+      - key: JWT_REFRESH_TTL_SECONDS
+        value: "604800"
+      - key: THROTTLE_LIMIT_PER_MINUTE
+        value: "120"
