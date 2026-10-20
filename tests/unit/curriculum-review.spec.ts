@@ -17,7 +17,13 @@ interface ReviewFixture {
     $queryRaw: jest.Mock;
     $transaction: jest.Mock;
     curriculumUnit: Record<
-      'findUnique' | 'findUniqueOrThrow' | 'findMany' | 'update' | 'aggregate' | 'create',
+      | 'findUnique'
+      | 'findUniqueOrThrow'
+      | 'findMany'
+      | 'update'
+      | 'updateMany'
+      | 'aggregate'
+      | 'create',
       jest.Mock
     >;
     class: Record<'count' | 'findMany', jest.Mock>;
@@ -41,6 +47,7 @@ function setup(overrides: Record<string, unknown> = {}): ReviewFixture {
     designerId: designer.id,
     reviewerTeacherId: teacher.id,
     technicalReviewedAt: null as Date | null,
+    approvedAt: null as Date | null,
     technicalReviewNote: null,
     basedOnId: null,
     title: 'Toán 8',
@@ -59,6 +66,7 @@ function setup(overrides: Record<string, unknown> = {}): ReviewFixture {
       findUniqueOrThrow: jest.fn().mockResolvedValue(unit),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockResolvedValue(unit),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       aggregate: jest.fn().mockResolvedValue({ _max: { version: null } }),
       create: jest.fn().mockResolvedValue({ id: 'future-unit' }),
     },
@@ -174,6 +182,27 @@ describe('curriculum teacher review and manager confirmation', () => {
     });
   });
 
+  it('checks all published periods under the program lock before approving lessons', async () => {
+    const { service, db } = setup({ technicalReviewedAt: new Date() });
+    db.curriculumUnit.findMany.mockResolvedValueOnce([
+      {
+        id: 'other',
+        title: 'Kỳ đã duyệt',
+        fromDate: new Date('2026-10-31'),
+        toDate: new Date('2026-11-30'),
+      },
+    ]);
+    await expect(service.approveUnit(manager, 'unit')).rejects.toMatchObject({
+      code: 'CURRICULUM_EFFECTIVE_PERIOD_CONFLICT',
+      details: { programId: 'program', conflicts: [{ id: 'other' }] },
+    });
+    expect(String((db.$queryRaw.mock.calls[0] as unknown[])[0])).toContain('FROM programs');
+    expect(String((db.$queryRaw.mock.calls[1] as unknown[])[0])).toContain('FROM curriculum_units');
+    expect(db.lesson.updateMany).not.toHaveBeenCalled();
+    expect(db.curriculumUnit.update).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('manager return invalidates the earlier teacher approval', async () => {
     const { service, db } = setup({ technicalReviewedAt: new Date() });
     await service.requestChanges(manager, 'unit', 'Thay đổi thời gian áp dụng');
@@ -284,6 +313,33 @@ describe('future curriculum revisions and separate tests', () => {
       data: [expect.objectContaining({ kind: 'LESSON', unitId: 'future-unit', title: 'Bài 1' })],
     });
     expect(db.curriculumUnit.update).not.toHaveBeenCalled();
+  });
+
+  it('copies a previously approved archived source without changing its publication history', async () => {
+    const { service, db } = setup({ status: 'ARCHIVED', approvedAt: new Date('2026-09-20') });
+    await service.reviseUnit(designer, 'unit', {
+      title: 'Kỳ tiếp theo',
+      fromDate: '2026-11-01',
+      toDate: '2026-11-30',
+    });
+    expect(db.curriculumUnit.create).toHaveBeenCalledWith(
+      containing({
+        data: containing({ basedOnId: 'unit', fromDate: new Date('2026-11-01') }),
+      }),
+    );
+    expect(db.curriculumUnit.update).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an archived unit without approval history as a revision source', async () => {
+    const { service, db } = setup({ status: 'ARCHIVED', approvedAt: null });
+    await expect(
+      service.reviseUnit(designer, 'unit', {
+        title: 'Kỳ tiếp theo',
+        fromDate: '2026-11-01',
+        toDate: '2026-11-30',
+      }),
+    ).rejects.toMatchObject({ code: 'UNIT_NOT_APPROVED' });
+    expect(db.curriculumUnit.create).not.toHaveBeenCalled();
   });
 
   it('keeps structural validation while ignoring historic monthly tests', async () => {
