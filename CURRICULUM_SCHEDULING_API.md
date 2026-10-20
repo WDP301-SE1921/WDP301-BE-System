@@ -74,6 +74,29 @@ Idempotency-Key: <uuid-once-per-operation>
 
 Schema và migration mới chỉ bổ sung bảng/cột. Dữ liệu `Lesson`, `ClassSession` và các API học vụ cũ không bị đổi hoặc xóa.
 
+## Số buổi/tuần của khóa và giáo trình hiệu lực
+
+**Số buổi/tuần (`Program.sessionsPerWeek`).** Số nguyên 1–14, trả trong `GET /programs`, `GET /programs/:id`, `program` của lớp và của giáo trình. `POST /programs`, `PATCH /programs/:id` (và `POST /academic/programs` cũ) nhận trường này:
+
+- Giai đoạn chuyển tiếp: bỏ trường thì tạo khóa với `null` (chưa cấu hình), PATCH bỏ trường thì giữ giá trị cũ. Gửi `null`, 0, số âm, số thập phân, chuỗi hoặc > 14 bị 400 `VALIDATION_ERROR`. Chỉ bắt buộc khi tạo khóa sau khi mọi client đã gửi trường này.
+- Mỗi khung giờ trong lịch tuần là một buổi; hai khung cùng thứ khác giờ tính là hai buổi. Lưu lịch tuần có dữ liệu (`PUT`/`POST /classes/:id/schedules`, `PATCH`, `DELETE` từng khung) phải đúng số buổi của khóa, lỗi thì lịch cũ giữ nguyên. Lớp đóng đăng ký được để lịch trống.
+- Mở đăng ký, kích hoạt lại lớp, giáo viên xác nhận lịch, xem trước/sinh lịch và tạo buổi cũ (`POST /academic/sessions`) đều kiểm tra lại. `POST /academic/classes` cũ tạo lớp ở trạng thái đóng đăng ký.
+- Đổi số buổi khi lớp đang hoạt động có lịch khác số mới thì bị chặn, không tự thêm/xóa khung giờ hay buổi đã sinh. Bản xem trước lập trước khi đổi số buổi sẽ báo `PREVIEW_STALE`.
+
+**Một giáo trình hiệu lực mỗi ngày.** Theo `programId`, khoảng `[fromDate, toDate]` tính cả hai đầu. Nhiều bản nháp/chờ duyệt giao ngày vẫn được lưu; khi Manager duyệt, server khóa khóa học rồi chặn bản giao ngày với bản đã duyệt hoặc bản đã tự lưu trữ vì sang kỳ (kể cả bản tạo độc lập, kể cả duyệt đồng thời). Không tự cắt ngày bản cũ.
+
+- Duyệt trước bản tương lai không lưu trữ bản đang dùng. Từ 00:00 giờ Việt Nam ngày bản mới bắt đầu, worker (chạy khi khởi động và mỗi phút) chuyển bản cũ đã kết thúc sang `ARCHIVED` với `archiveReason: "SUPERSEDED"`, `supersededById`, `archivedAt` và audit `CURRICULUM_UNIT_AUTO_ARCHIVED`; chạy lại không tạo audit trùng. Lưu trữ thủ công qua `DELETE` có `archiveReason: "MANUAL"` và không kích hoạt chuyển kỳ.
+- Bản tự lưu trữ vẫn hiện cho giáo viên của khóa và trong outline phụ huynh của kỳ đã học; buổi đã sinh giữ `lessonId` cũ. `POST /academic/curriculum-units/:id/revisions` nhận nguồn `APPROVED` hoặc `ARCHIVED` từng được duyệt, kỳ mới vẫn phải sau hôm nay và sau kỳ nguồn.
+- Trước khi triển khai, chạy `pnpm db:report-course-curriculum` (chỉ đọc) để liệt kê khóa chưa cấu hình/lớp lệch số buổi và các bản đã duyệt giao ngày; xử lý theo quyết định nghiệp vụ, không tự sửa ngày hay xóa lịch sử. Migration chỉ tự điền số buổi khi mọi lớp đang hoạt động của khóa có cùng số khung giờ hợp lệ.
+
+| Mã lỗi | Khi nào | `details` |
+| --- | --- | --- |
+| 409 `PROGRAM_FREQUENCY_NOT_CONFIGURED` | Dùng lịch có dữ liệu khi khóa chưa cấu hình | `programId` |
+| 409 `CLASS_WEEKLY_SESSION_COUNT_MISMATCH` | Số khung giờ khác số buổi của khóa | `programId`, `classId`, `expected`, `actual` |
+| 409 `PROGRAM_FREQUENCY_CHANGE_CONFLICT` | Đổi số buổi làm lệch lớp đang hoạt động | `programId`, `expected`, `conflictingClasses[]` (`id`, `name`, `actual`) |
+| 409 `CURRICULUM_EFFECTIVE_PERIOD_CONFLICT` | Duyệt bản giao ngày với bản đã duyệt cùng khóa | `programId`, `conflicts[]` (`id`, `title`, `fromDate`, `toDate`) |
+| 409 `RANGE_OUTSIDE_UNIT` | Tạo buổi cũ ngoài kỳ của giáo trình | — |
+
 ## Phòng, giáo viên và xác nhận lịch
 
 - Manager quản lý phòng qua `GET/POST /rooms`, `PATCH /rooms/:id`. Phòng phải hoạt động, đủ sức chứa; session sinh mới giữ `roomId` và kiểm tra trùng phòng.
