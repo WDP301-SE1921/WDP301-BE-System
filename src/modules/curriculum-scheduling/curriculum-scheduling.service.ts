@@ -2169,7 +2169,7 @@ export class CurriculumSchedulingService {
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.db.$transaction(work, {
-          isolationLevel: 'Serializable',
+          isolationLevel: 'RepeatableRead',
           timeout: 20_000,
         });
       } catch (error) {

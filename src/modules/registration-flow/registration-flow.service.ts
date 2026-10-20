@@ -995,7 +995,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
 
   /** Program first, then class: frequency changes and timetable writes serialize together. */
   private async lockClassProgram(tx: Prisma.TransactionClient, classId: string): Promise<Program> {
-    // programId is immutable. Read its identity outside the Serializable transaction
+    // programId is immutable. Read its identity outside the transaction
     // so the lookup cannot take a class read lock before the program lock.
     const reference = await this.db.class.findUnique({
       where: { id: classId },
@@ -2161,7 +2161,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.db.$transaction(work, {
-          isolationLevel: 'Serializable',
+          isolationLevel: 'RepeatableRead',
           timeout: 20_000,
         });
       } catch (error) {

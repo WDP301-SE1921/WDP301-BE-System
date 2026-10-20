@@ -55,7 +55,7 @@ export class CurriculumLifecycleWorker implements OnModuleInit, OnModuleDestroy 
               await lockCurriculumProgram(tx, programId);
               await archiveSupersededCurricula(tx, programId, now);
             },
-            { isolationLevel: 'Serializable', timeout: 20_000 },
+            { isolationLevel: 'RepeatableRead', timeout: 20_000 },
           );
           break;
         } catch (error) {
