@@ -33,3 +33,5 @@ services:
         value: "604800"
       - key: THROTTLE_LIMIT_PER_MINUTE
         value: "120"
+      - key: SEED_DEFAULT_PASSWORD
+        sync: false
