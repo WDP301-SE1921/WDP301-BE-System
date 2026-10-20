@@ -74,7 +74,7 @@ describe('curriculum session preview', () => {
       programId: 'program-1',
       teacherId: 'teacher-1',
       teacher: { role: 'TEACHER', status: 'ACTIVE' },
-      program: { grade: 8, subject: 'Toán', isActive: true },
+      program: { id: 'program-1', grade: 8, subject: 'Toán', isActive: true, sessionsPerWeek: 3 },
       weeklySchedules: [1, 3, 5].map((weekday) => ({
         weekday,
         startTime: '18:00',

@@ -86,6 +86,7 @@ export async function seedCatalog(
           subject: record.name,
           subjectId: record.id,
           grade,
+          sessionsPerWeek: 2,
           createdAt,
         },
       });

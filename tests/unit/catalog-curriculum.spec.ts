@@ -25,6 +25,11 @@ const legacyLesson = {
   unitId: null,
   unit: null,
 };
+const approvedUnit = {
+  status: 'APPROVED',
+  fromDate: new Date('2099-11-01T00:00:00Z'),
+  toDate: new Date('2099-11-30T00:00:00Z'),
+};
 
 describe('legacy lesson endpoints respect the complete curriculum workflow', () => {
   const findLesson = jest.fn();
@@ -39,6 +44,7 @@ describe('legacy lesson endpoints respect the complete curriculum workflow', () 
     updateLesson.mockResolvedValue(legacyLesson);
     createSession.mockResolvedValue({ id: 'session' });
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       lesson: { findUniqueOrThrow: findLesson, update: updateLesson, create: createLesson },
       class: {
         findUniqueOrThrow: jest.fn().mockResolvedValue({
@@ -46,6 +52,8 @@ describe('legacy lesson endpoints respect the complete curriculum workflow', () 
           programId: 'program',
           isOpen: true,
           roomId: null,
+          program: { id: 'program', sessionsPerWeek: 1 },
+          weeklySchedules: [{ weekday: 1, startTime: '18:00', endTime: '20:00' }],
         }),
       },
       user: { findFirst: jest.fn().mockResolvedValue({ id: 'teacher' }) },
@@ -113,7 +121,7 @@ describe('legacy lesson endpoints respect the complete curriculum workflow', () 
     findLesson.mockResolvedValue({
       ...legacyLesson,
       unitId: 'unit',
-      unit: { status: 'APPROVED' },
+      unit: approvedUnit,
     });
     await service.createSession(manager, session);
     expect(createSession).toHaveBeenCalledTimes(1);
@@ -128,6 +136,29 @@ describe('legacy lesson endpoints respect the complete curriculum workflow', () 
       }),
     ).rejects.toMatchObject({ code: 'UNIT_REVISION_REQUIRED' });
     expect(createLesson).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['2099-10-31T16:59:00Z', '2099-10-31T18:00:00Z'],
+    ['2099-11-30T16:00:00Z', '2099-11-30T17:00:01Z'],
+  ])(
+    'blocks legacy sessions outside inclusive Vietnam curriculum dates (%s)',
+    async (startsAt, endsAt) => {
+      findLesson.mockResolvedValue({ ...legacyLesson, unitId: 'unit', unit: approvedUnit });
+      await expect(
+        service.createSession(manager, { ...session, startsAt, endsAt }),
+      ).rejects.toMatchObject({ code: 'RANGE_OUTSIDE_UNIT' });
+      expect(createSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['2099-10-31T17:00:00Z', '2099-10-31T18:00:00Z'],
+    ['2099-11-30T16:00:00Z', '2099-11-30T17:00:00Z'],
+  ])('accepts legacy sessions on the Vietnam period boundary (%s)', async (startsAt, endsAt) => {
+    findLesson.mockResolvedValue({ ...legacyLesson, unitId: 'unit', unit: approvedUnit });
+    await service.createSession(manager, { ...session, startsAt, endsAt });
+    expect(createSession).toHaveBeenCalledTimes(1);
   });
 
   it('cannot create new curriculum test sessions from old monthly test records', async () => {

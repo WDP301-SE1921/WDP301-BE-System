@@ -4,6 +4,7 @@ import {
   Prisma,
   type Class,
   type ClassWeeklySchedule,
+  type Program,
   type StudentProfile,
   type Subject,
 } from '@prisma/client';
@@ -13,6 +14,7 @@ import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
+import { assertProgramFrequency } from './program-frequency';
 import { attendanceContribution } from '../academic/attendance-calculation';
 import {
   ClassDto,
@@ -232,6 +234,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           grade: input.grade,
           subject: subject.name,
           subjectId: subject.id,
+          sessionsPerWeek: input.sessionsPerWeek,
         },
       });
     });
@@ -387,7 +390,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     this.requireRoles(user, 'MANAGER');
     await this.assertTeacher(input.teacherId ?? undefined);
     return this.transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${id} FOR UPDATE`;
+      const program = await this.lockClassProgram(tx, id);
       const classroom = await tx.class.findUnique({
         where: { id },
         include: { weeklySchedules: true },
@@ -423,6 +426,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           classroom.weeklySchedules.length > 0,
           'CLASS_NEEDS_SCHEDULE',
           'Class must have at least one weekly schedule before opening registration',
+        );
+      }
+      if (input.isOpen === true || (input.isActive === true && !classroom.isActive)) {
+        assertProgramFrequency(
+          program,
+          classroom.weeklySchedules.length,
+          id,
+          !(input.isOpen ?? classroom.isOpen),
         );
       }
       if (input.isActive === false && classroom.isActive) {
@@ -719,6 +730,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   ): Promise<unknown> {
     this.requireRoles(user, 'TEACHER', 'MANAGER');
     return this.transaction(async (tx) => {
+      const program = await this.lockClassProgram(tx, classId);
       const classroom = await tx.class.findUnique({
         where: { id: classId },
         include: { weeklySchedules: true },
@@ -736,6 +748,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           'CLASS_NEEDS_SCHEDULE',
           'Class has no weekly schedule',
         );
+        assertProgramFrequency(program, classroom.weeklySchedules.length, classId);
       } else {
         this.assert(
           user.role === 'MANAGER',
@@ -895,13 +908,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     }
     this.assertNoScheduleOverlaps(schedules);
     return this.transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+      const program = await this.lockClassProgram(tx, classId);
       const classroom = await this.assertScheduleEditable(tx, classId);
       this.assert(
         schedules.length > 0 || !classroom.isOpen,
         'CLASS_NEEDS_SCHEDULE',
         'Close registration before removing all weekly slots',
       );
+      assertProgramFrequency(program, schedules.length, classId, !classroom.isOpen);
       await tx.classWeeklySchedule.deleteMany({ where: { classId } });
       await tx.classWeeklySchedule.createMany({
         data: schedules.map((schedule) => ({ ...schedule, classId })),
@@ -932,7 +946,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     return this.transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+      const program = await this.lockClassProgram(tx, classId);
       const rows = await tx.classWeeklySchedule.findMany({ where: { classId } });
       this.assert(
         rows.some((row) => row.id === scheduleId),
@@ -940,13 +954,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         'Weekly slot not found',
         HttpStatus.NOT_FOUND,
       );
-      await this.assertScheduleEditable(tx, classId);
+      const classroom = await this.assertScheduleEditable(tx, classId);
       this.assert(
         timeToMinutes(input.startTime) < timeToMinutes(input.endTime),
         'INVALID_SCHEDULE_TIME',
         'Start must be before end',
       );
       this.assertNoScheduleOverlaps(rows.map((row) => (row.id === scheduleId ? input : row)));
+      assertProgramFrequency(program, rows.length, classId, !classroom.isOpen);
       return tx.classWeeklySchedule.update({ where: { id: scheduleId }, data: input });
     });
   }
@@ -958,7 +973,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     return this.transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+      const program = await this.lockClassProgram(tx, classId);
       const rows = await tx.classWeeklySchedule.findMany({ where: { classId } });
       this.assert(
         rows.some((row) => row.id === scheduleId),
@@ -972,9 +987,26 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         'CLASS_NEEDS_SCHEDULE',
         'Close registration before deleting the last weekly slot',
       );
+      assertProgramFrequency(program, rows.length - 1, classId, !classroom.isOpen);
       await tx.classWeeklySchedule.delete({ where: { id: scheduleId } });
       return { id: scheduleId, deleted: true };
     });
+  }
+
+  /** Program first, then class: frequency changes and timetable writes serialize together. */
+  private async lockClassProgram(tx: Prisma.TransactionClient, classId: string): Promise<Program> {
+    // programId is immutable. Read its identity outside the Serializable transaction
+    // so the lookup cannot take a class read lock before the program lock.
+    const reference = await this.db.class.findUnique({
+      where: { id: classId },
+      select: { programId: true },
+    });
+    this.assert(reference, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+    await tx.$queryRaw`SELECT id FROM programs WHERE id = ${reference.programId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM classes WHERE id = ${classId} FOR UPDATE`;
+    const program = await tx.program.findUnique({ where: { id: reference.programId } });
+    this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    return program;
   }
 
   private async assertScheduleEditable(
@@ -1820,8 +1852,34 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     return this.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM programs WHERE id = ${id} FOR UPDATE`;
       const program = await tx.program.findUnique({ where: { id } });
       this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+      if (
+        input.sessionsPerWeek !== undefined &&
+        input.sessionsPerWeek !== program.sessionsPerWeek
+      ) {
+        await tx.$queryRaw`SELECT id FROM classes WHERE programId = ${id} AND isActive = true ORDER BY id FOR UPDATE`;
+        const classes = await tx.class.findMany({
+          where: { programId: id, isActive: true },
+          select: { id: true, name: true, _count: { select: { weeklySchedules: true } } },
+        });
+        const conflictingClasses = classes
+          .filter(
+            (row) =>
+              row._count.weeklySchedules > 0 &&
+              row._count.weeklySchedules !== input.sessionsPerWeek,
+          )
+          .map((row) => ({ id: row.id, name: row.name, actual: row._count.weeklySchedules }));
+        if (conflictingClasses.length) {
+          throw new AppError(
+            'PROGRAM_FREQUENCY_CHANGE_CONFLICT',
+            'Active class timetables do not match the requested program frequency',
+            HttpStatus.CONFLICT,
+            { programId: id, expected: input.sessionsPerWeek, conflictingClasses },
+          );
+        }
+      }
       const subject =
         input.subject !== undefined || input.subjectId !== undefined
           ? await this.subjectForProgram(tx, input.subject, input.subjectId)
@@ -1848,6 +1906,9 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           ...(subject === null ? {} : { subject: subject.name, subjectId: subject.id }),
           ...(input.grade === undefined ? {} : { grade: input.grade }),
           ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+          ...(input.sessionsPerWeek === undefined
+            ? {}
+            : { sessionsPerWeek: input.sessionsPerWeek }),
         },
       });
     });
