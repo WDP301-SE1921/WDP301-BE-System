@@ -5,3 +5,5 @@ coverage/
 .env
 .env.*
 !.env.example
+# Local account export contains demo passwords.
+/docs/SEED_ACCOUNTS.local.md

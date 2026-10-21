@@ -1,11 +1,11 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 
 import type { AppConfiguration } from '../../config/configuration';
 
 @Injectable()
-export class DatabaseService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class DatabaseService extends PrismaClient implements OnModuleInit, OnApplicationShutdown {
   constructor(config: ConfigService<AppConfiguration, true>) {
     super({ datasourceUrl: config.get('databaseUrl', { infer: true }) });
   }
@@ -14,7 +14,8 @@ export class DatabaseService extends PrismaClient implements OnModuleInit, OnMod
     await this.$connect();
   }
 
-  async onModuleDestroy(): Promise<void> {
+  // Background workers drain in onModuleDestroy before the shared pool is closed.
+  async onApplicationShutdown(): Promise<void> {
     await this.$disconnect();
   }
 

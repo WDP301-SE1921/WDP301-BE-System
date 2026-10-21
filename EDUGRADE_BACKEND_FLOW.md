@@ -1,94 +1,295 @@
-# EduGrade Backend Flow — Đăng ký, thanh toán và liên kết học sinh
+# EduGrade Backend Workflow — Phụ huynh tạo hồ sơ con và đăng ký tại trung tâm
 
 ## 1. Mục tiêu
 
-Tài liệu này mô tả một luồng Backend hoàn chỉnh cho EduGrade bằng **NestJS**:
+Tài liệu này mô tả workflow backend mặc định cho luồng đăng ký học tại trung tâm:
 
 ```text
-Quản lý tạo đăng ký
-→ xác nhận đã nhận đủ tiền
-→ tạo Payment + Enrollment
-→ tạo mã/link liên kết dùng một lần
-→ gửi email và sinh biên lai
-→ phụ huynh tạo hoặc dùng lại tài khoản
-→ liên kết Enrollment vào đúng hồ sơ học sinh
+Phụ huynh tạo tài khoản
+→ xác minh email
+→ tạo hồ sơ con
+→ đến trung tâm
+→ nhân viên/quản lý tìm phụ huynh bằng email
+→ chọn con, môn, lớp và ngày bắt đầu
+→ xác nhận đã thu đủ học phí offline
+→ tạo Payment + Enrollment ACTIVE
+→ phụ huynh xem lớp, lịch học và biên lai
 ```
 
-Đây là luồng nền tảng vì nó đồng thời xử lý ba trường hợp:
+Luồng cũ dùng mã/link liên kết sau thanh toán không còn là luồng đăng ký mặc định. Các bảng cũ như `LinkInvitation` và trạng thái cũ vẫn được giữ để không phá dữ liệu đã tồn tại, nhưng workflow mới không gửi hoặc claim link sau thanh toán.
 
-1. Con đầu tiên, phụ huynh chưa có tài khoản.
-2. Thêm con mới vào tài khoản phụ huynh đã tồn tại.
-3. Học sinh đã có hồ sơ đăng ký thêm môn/lớp.
+## 2. Phạm vi
 
-## 2. Phạm vi và nguyên tắc
+- Một trung tâm, khối 6-9, tiền VND.
+- Web và mobile dùng chung REST API `/api/v1`.
+- Phụ huynh tự đăng ký tài khoản bằng email và mật khẩu.
+- Phụ huynh phải xác minh email trước khi tạo hồ sơ con hoặc được đăng ký học.
+- Một tài khoản phụ huynh có nhiều hồ sơ con.
+- Nhân viên `STAFF` và quản lý `MANAGER` được tạo đăng ký và xác nhận thu tiền.
+- Phụ huynh chỉ xem và quản lý dữ liệu của con mình.
+- Giáo viên không được xác nhận thu tiền.
+- Thanh toán offline chỉ ghi nhận khi đã thu đủ tiền.
+- Trả góp, hoàn tiền, gia hạn và đổi lớp không thuộc phiên bản này.
+- Soạn giáo trình và sinh buổi học theo lịch tuần được mô tả trong `CURRICULUM_SCHEDULING_API.md`.
 
-- Hệ thống chỉ có một trung tâm.
-- Chỉ `MANAGER` được tạo đăng ký và xác nhận thanh toán.
-- Phụ huynh không thanh toán hoặc tự đăng ký online.
-- `ParentAccount` là tài khoản đăng nhập; học sinh không có tài khoản riêng.
-- Một phụ huynh có thể quản lý nhiều `StudentProfile`.
-- Một học sinh có thể có nhiều `Enrollment`.
-- Chỉ sau khi quản lý xác nhận đã nhận đủ tiền mới được tạo `Payment`, `Enrollment` và mã liên kết.
-- Mỗi giao dịch chỉ được xác nhận một lần.
-- Mã liên kết dùng một lần, hết hạn sau 7 ngày.
-- Email lỗi không được rollback dữ liệu thanh toán hoặc đăng ký.
-- Email trong mã liên kết phải khớp tài khoản phụ huynh nhận liên kết.
-- Enrollment ở trạng thái `PENDING_LINK` vẫn giữ một chỗ trong lớp để tránh bán vượt sĩ số.
+## 3. Role
 
-## 3. Stack đề xuất
+```text
+STAFF
+  - Tra cứu phụ huynh bằng email.
+  - Tạo bản nháp đăng ký cho con đã có hồ sơ.
+  - Xác nhận thu đủ học phí offline.
+  - Xem biên lai đăng ký.
 
-- NestJS + TypeScript.
-- REST Controller mỏng, nghiệp vụ nằm trong Service và persistence nằm trong Repository/Prisma.
-- PostgreSQL.
-- Prisma ORM.
-- Auth bằng session/JWT lưu trong cookie `HttpOnly`, `Secure`, `SameSite=Lax`.
-- Mật khẩu hash bằng Argon2id hoặc bcrypt với cost phù hợp.
-- `class-validator` và `class-transformer` để kiểm tra request DTO.
-- Transactional Outbox cho email.
-- Worker riêng xử lý hàng đợi email; không gửi email trực tiếp trong database transaction.
+MANAGER
+  - Có toàn quyền của STAFF.
+  - Quản lý chương trình theo khối/môn.
+  - Quản lý lớp, sĩ số, học phí tháng, trạng thái mở đăng ký.
+  - Quản lý lịch học cố định hằng tuần của lớp.
+  - Duyệt học phần đã đủ bài và sinh buổi học theo lịch tuần.
 
-Prisma được cung cấp qua một `DatabaseService` dùng chung do NestJS quản lý vòng đời.
+PARENT
+  - Đăng ký tài khoản, xác minh email.
+  - Tạo, xem và cập nhật hồ sơ con của chính mình.
+  - Xem lớp, thời hạn học, lịch học và biên lai của con.
 
-## 4. Mô hình dữ liệu cốt lõi
+TEACHER
+  - Phục vụ các nghiệp vụ học vụ hiện có.
+  - Không được tạo đăng ký hoặc xác nhận thu tiền.
 
-```mermaid
-erDiagram
-    User ||--o| ParentProfile : owns
-    ParentProfile ||--o{ StudentProfile : manages
-    StudentProfile ||--o{ Enrollment : has
-    Class ||--o{ Enrollment : receives
-    Program ||--o{ Class : defines
-    RegistrationOrder ||--o| Payment : produces
-    RegistrationOrder ||--o| Enrollment : produces
-    RegistrationOrder ||--o{ LinkInvitation : issues
-    Enrollment }o--o| StudentProfile : linked_to
-    OutboxEvent }o--|| RegistrationOrder : notifies_about
-    AuditLog }o--|| User : performed_by
+CURRICULUM_DESIGNER
+  - Tạo học phần dùng chung theo môn/khối, bài học và nội dung kiểm tra tháng.
 ```
 
-### 4.1 User
+## 4. Luồng nghiệp vụ chính
+
+### 4.1 Phụ huynh tạo tài khoản và hồ sơ con
+
+```text
+1. Phụ huynh gọi POST /api/v1/auth/register.
+2. Backend normalize email bằng trim + lowercase.
+3. Backend tạo User(role=PARENT), ParentProfile và email verification token.
+4. Backend gửi token xác minh qua SMTP nếu đã cấu hình.
+5. Phụ huynh gọi POST /api/v1/auth/verify-email.
+6. Sau khi email đã xác minh, phụ huynh tạo hồ sơ con bằng POST /api/v1/me/students.
+```
+
+Ràng buộc:
+
+- Email là duy nhất.
+- Token xác minh chỉ lưu dạng SHA-256 hash.
+- Token xác minh có hạn dùng và chỉ dùng một lần.
+- Nếu SMTP chưa cấu hình, backend không giả vờ gửi email; API trả trạng thái `sent: false`.
+- Hồ sơ con gồm `fullName`, `grade`, `dateOfBirth` tùy chọn.
+- Chặn đổi khối khi con còn kỳ học hiện tại hoặc sắp tới.
+
+### 4.2 Nhân viên tra cứu phụ huynh tại quầy
+
+```text
+1. Phụ huynh đến trung tâm.
+2. STAFF/MANAGER nhập chính xác email.
+3. Backend trả thông tin phụ huynh, trạng thái tài khoản, trạng thái xác minh email và danh sách con active.
+```
+
+Endpoint:
+
+```http
+GET /api/v1/parents/lookup?email=parent@example.com
+Authorization: Bearer <STAFF_OR_MANAGER_ACCESS_TOKEN>
+```
+
+Nếu không tìm thấy tài khoản, email chưa xác minh hoặc chưa có hồ sơ con, nhân viên hướng dẫn phụ huynh hoàn thành các bước đó trước rồi tiếp tục.
+
+### 4.3 Quản lý chương trình, lớp và lịch cố định
+
+`MANAGER` tạo chương trình theo khối/môn:
+
+```http
+POST /api/v1/programs
+```
+
+Ví dụ:
+
+```json
+{
+  "name": "Toán 8",
+  "subject": "Toán",
+  "grade": 8
+}
+```
+
+`MANAGER` tạo lớp:
+
+```http
+POST /api/v1/classes
+```
+
+Ví dụ:
+
+```json
+{
+  "programId": "program_id",
+  "name": "Toán 8A",
+  "teacherId": "teacher_id",
+  "capacity": 20,
+  "monthlyFee": 500000
+}
+```
+
+`MANAGER` cấu hình lịch tuần cố định:
+
+```http
+POST /api/v1/classes/:id/schedules
+```
+
+Ví dụ:
+
+```json
+{
+  "schedules": [
+    {
+      "weekday": 2,
+      "startTime": "18:00",
+      "endTime": "20:00"
+    },
+    {
+      "weekday": 5,
+      "startTime": "18:00",
+      "endTime": "20:00"
+    }
+  ]
+}
+```
+
+Quy tắc:
+
+- `weekday` dùng ISO weekday: thứ hai là `1`, chủ nhật là `7`.
+- Một lớp có thể có nhiều khung giờ hằng tuần.
+- Các khung giờ trong cùng lớp không được chồng lấn.
+- Lớp phải có ít nhất một khung giờ trước khi mở đăng ký.
+- Chặn sửa lịch khi lớp có enrollment chưa kết thúc.
+- Lịch học của phụ huynh được tính từ lịch tuần của lớp trong khoảng enrollment; không tạo bài học/buổi học chi tiết trong phiên bản này.
+
+### 4.4 Nhân viên chọn lớp và lập đăng ký
+
+STAFF/MANAGER tạo bản nháp đăng ký:
+
+```http
+POST /api/v1/registrations
+Authorization: Bearer <STAFF_OR_MANAGER_ACCESS_TOKEN>
+```
+
+Ví dụ:
+
+```json
+{
+  "targetStudentId": "student_id",
+  "classId": "class_id",
+  "startDate": "2026-10-05",
+  "packageMonths": 3
+}
+```
+
+Backend thực hiện:
+
+1. Kiểm tra người thao tác là `STAFF` hoặc `MANAGER`.
+2. Kiểm tra học sinh tồn tại, đang active và thuộc phụ huynh active đã xác minh email.
+3. Kiểm tra lớp tồn tại, đang mở, có lịch cố định.
+4. Kiểm tra lớp đúng khối với hồ sơ con.
+5. Kiểm tra ngày bắt đầu từ hôm nay trở đi.
+6. Kiểm tra ngày bắt đầu trùng một ngày học của lớp.
+7. Tính `endDate = startDate + packageMonths` theo tháng dương lịch.
+8. Kiểm tra còn chỗ trong lớp trong kỳ học.
+9. Chặn đăng ký trùng lớp trong cùng thời gian.
+10. Chặn trùng giờ với các lớp khác của học sinh trong kỳ học.
+11. Tính học phí bằng `monthlyFee * packageMonths`.
+12. Lưu snapshot email phụ huynh, tên con, khối, học phí, startDate và endDate vào `RegistrationOrder(DRAFT)`.
+
+Quy tắc ngày:
+
+- `packageMonths` từ 1 đến 12.
+- Khoảng học là `[startDate, endDate)`, không bao gồm ngày hết hạn.
+- Nếu tháng đích thiếu ngày tương ứng thì dùng ngày cuối tháng.
+- Ví dụ: bắt đầu `2026-01-31`, gói 1 tháng thì hết hạn `2026-02-28`.
+
+### 4.5 Xác nhận thu tiền offline
+
+STAFF/MANAGER xác nhận đã thu đủ tiền:
+
+```http
+POST /api/v1/registrations/:id/confirm-payment
+Authorization: Bearer <STAFF_OR_MANAGER_ACCESS_TOKEN>
+Idempotency-Key: <uuid>
+```
+
+Ví dụ body:
+
+```json
+{
+  "receiptNumber": "RCPT-001"
+}
+```
+
+Đây là transaction quan trọng nhất:
+
+```text
+BEGIN TRANSACTION
+  1. Lock RegistrationOrder.
+  2. Nếu cùng Idempotency-Key đã xử lý, trả kết quả cũ.
+  3. Kiểm tra order còn DRAFT.
+  4. Lock học sinh và lớp.
+  5. Kiểm tra lại toàn bộ invariant: phụ huynh verified, học sinh active, lớp mở, đúng khối, có lịch, còn chỗ, không trùng lớp, không trùng giờ.
+  6. Tạo Payment(CONFIRMED).
+  7. Tạo Enrollment(ACTIVE).
+  8. Tạo EnrollmentPlacement cho lớp.
+  9. Cập nhật RegistrationOrder -> COMPLETED.
+ 10. Ghi AuditLog(REGISTRATION_CONFIRM_PAYMENT).
+ 11. Lưu IdempotencyRecord.
+COMMIT
+```
+
+Sau commit, phụ huynh thấy lớp ngay trong hồ sơ con. Nếu `startDate` ở tương lai, frontend hiển thị nhãn `Sắp học`; nếu đã tới kỳ học, hiển thị `Đang học`.
+
+Không có bước gửi link hoặc claim link trong luồng mới.
+
+## 5. Mô hình dữ liệu chính
+
+### User
 
 ```text
 id
-email                  unique, luôn normalize lowercase + trim
-passwordHash           nullable trước khi tài khoản được tạo hoàn chỉnh
-role                   MANAGER | TEACHER | PARENT
+email                  unique, trim + lowercase
+passwordHash
+displayName
+role                   STAFF | MANAGER | TEACHER | CURRICULUM_DESIGNER | PARENT
 status                 ACTIVE | DISABLED
+emailVerifiedAt        nullable
 createdAt
 updatedAt
 ```
 
-### 4.2 ParentProfile
+### EmailVerificationToken
+
+```text
+id
+userId
+tokenHash              unique, SHA-256(token thô)
+expiresAt
+usedAt                 nullable
+createdAt
+```
+
+### ParentProfile
 
 ```text
 id
 userId                 unique
-phone                  chỉ dùng để liên hệ
+phone
 createdAt
 updatedAt
 ```
 
-### 4.3 StudentProfile
+### StudentProfile
 
 ```text
 id
@@ -101,31 +302,70 @@ createdAt
 updatedAt
 ```
 
-### 4.4 RegistrationOrder
-
-Lưu dữ liệu đăng ký trước khi có Payment/Enrollment. Bản ghi này cũng giữ thông tin con mới trước khi `StudentProfile` tồn tại.
+### Program
 
 ```text
 id
-type                   FIRST_CHILD | NEW_CHILD | EXISTING_STUDENT_NEW_SUBJECT
-parentEmail
-parentPhone
-studentFullName        snapshot phục vụ con mới, biên lai và email
-studentGrade
-targetStudentId        nullable; bắt buộc với EXISTING_STUDENT_NEW_SUBJECT
-classId
-packageMonths          integer 1..12
-quotedAmount
-currency               mặc định VND
-status                 DRAFT | PAYMENT_CONFIRMED | LINKED | CANCELLED
-createdByManagerId
-confirmedAt            nullable
-linkedAt               nullable
+name
+subject
+grade                  6 | 7 | 8 | 9
 createdAt
 updatedAt
 ```
 
-### 4.5 Payment
+### Class
+
+```text
+id
+programId
+name
+teacherId              nullable
+capacity
+isOpen
+monthlyFee
+createdAt
+updatedAt
+```
+
+### ClassWeeklySchedule
+
+```text
+id
+classId
+weekday                1..7, ISO weekday
+startTime              HH:mm
+endTime                HH:mm
+createdAt
+updatedAt
+```
+
+### RegistrationOrder
+
+```text
+id
+type                   EXISTING_STUDENT_NEW_SUBJECT cho luồng mới
+parentEmail            snapshot
+parentPhone            snapshot nullable
+studentFullName        snapshot
+studentGrade           snapshot
+targetStudentId        bắt buộc trong luồng mới
+classId
+packageMonths          1..12
+quotedAmount           monthlyFee snapshot * packageMonths
+currency               VND
+startDate
+endDate
+status                 DRAFT | COMPLETED | PAYMENT_CONFIRMED | LINKED | CANCELLED
+createdByManagerId     STAFF hoặc MANAGER thực hiện
+confirmedAt
+linkedAt
+createdAt
+updatedAt
+```
+
+`PAYMENT_CONFIRMED` và `LINKED` được giữ cho dữ liệu/luồng cũ. Luồng mới dùng `DRAFT -> COMPLETED`.
+
+### Payment
 
 ```text
 id
@@ -139,559 +379,239 @@ receiptNumber          unique
 createdAt
 ```
 
-Không cần trạng thái `PENDING` nếu hệ thống chỉ ghi Payment sau khi quản lý bấm xác nhận.
-
-### 4.6 Enrollment
+### Enrollment
 
 ```text
 id
 registrationOrderId    unique
-studentProfileId       nullable trong thời gian chờ liên kết
+studentProfileId
 classId
 packageMonths
-status                 PENDING_LINK | ACTIVE | ENDED
-startDate              nullable cho tới khi chính sách ngày bắt đầu được chốt
-endDate                nullable
-activatedAt            nullable
-endedAt                nullable
+status                 ACTIVE | ENDED | PENDING_LINK
+startDate
+endDate
+activatedAt
+endedAt
 createdAt
 updatedAt
 ```
 
-Với học sinh cũ, `studentProfileId` có thể được gắn sẵn nhưng Enrollment vẫn giữ `PENDING_LINK` cho đến khi phụ huynh xác nhận mã.
+`PENDING_LINK` được giữ cho dữ liệu/luồng cũ. Luồng mới tạo enrollment `ACTIVE` ngay khi xác nhận đã thu đủ tiền.
 
-### 4.7 LinkInvitation
+### IdempotencyRecord
 
 ```text
 id
+scope
+key
 registrationOrderId
-tokenHash              unique; không lưu token thô
-expectedParentEmail
-status                 ACTIVE | USED | EXPIRED | REVOKED
-expiresAt              createdAt + 7 ngày
-usedAt                 nullable
-usedByUserId           nullable
+response
 createdAt
 ```
 
-Token thô chỉ xuất hiện lúc tạo link, sau đó chỉ lưu SHA-256 hash trong database.
+Dùng cho `confirm-payment` để double-click hoặc retry không tạo thêm payment/enrollment.
 
-### 4.8 OutboxEvent
-
-```text
-id
-eventType              REGISTRATION_CONFIRMED | LINK_REISSUED | ...
-aggregateId            RegistrationOrder ID
-payload                JSON
-status                 PENDING | PROCESSING | SENT | FAILED
-attemptCount
-nextAttemptAt
-lastError              nullable
-createdAt
-sentAt                 nullable
-```
-
-### 4.9 AuditLog
+### AuditLog
 
 ```text
 id
 actorUserId
-action                 PAYMENT_CONFIRMED | LINK_USED | LINK_REISSUED | ...
+action                 REGISTRATION_CONFIRM_PAYMENT | ...
 entityType
 entityId
-beforeData             JSON nullable
-afterData              JSON nullable
+beforeData
+afterData
 ipAddress
 userAgent
 createdAt
 ```
 
-## 5. State machine
+## 6. State machine
 
 ### RegistrationOrder
 
 ```text
 DRAFT
-  └── confirm payment → PAYMENT_CONFIRMED
-                              └── claim link → LINKED
-
-DRAFT → CANCELLED
+  ├── confirm payment -> COMPLETED
+  └── cancel          -> CANCELLED
 ```
 
-Không cho phép `PAYMENT_CONFIRMED → DRAFT` hoặc xác nhận lần hai.
+Không cho phép xác nhận lại bằng key khác sau khi đã completed.
 
 ### Enrollment
 
 ```text
-PENDING_LINK
-    └── claim link thành công → ACTIVE
-                                   └── nghỉ môn/nghỉ hẳn → ENDED
-```
-
-### LinkInvitation
-
-```text
 ACTIVE
-  ├── dùng thành công → USED
-  ├── quá 7 ngày      → EXPIRED
-  └── cấp mã mới      → REVOKED
+  └── end study/end enrollment -> ENDED
 ```
 
-Chỉ một invitation `ACTIVE` được tồn tại cho một RegistrationOrder tại một thời điểm.
+Nếu `startDate` ở tương lai, enrollment vẫn là `ACTIVE` nhưng frontend hiển thị `Sắp học`.
 
-## 6. API endpoints
+## 7. API hợp đồng chính
 
-### 6.1 Quản lý tạo bản nháp đăng ký
+### Auth
 
 ```http
-POST /api/manager/registration-orders
-Authorization: MANAGER session
-Content-Type: application/json
+POST /api/v1/auth/register
+POST /api/v1/auth/verify-email
+POST /api/v1/auth/resend-verification
+POST /api/v1/auth/login
+POST /api/v1/auth/refresh
+POST /api/v1/auth/logout
+GET  /api/v1/auth/me
 ```
 
-Ví dụ request:
-
-```json
-{
-  "type": "FIRST_CHILD",
-  "parentEmail": "parent@example.com",
-  "parentPhone": "0901234567",
-  "student": {
-    "fullName": "Nguyễn Văn An",
-    "grade": 8
-  },
-  "classId": "class_123",
-  "packageMonths": 3
-}
-```
-
-Backend thực hiện:
-
-1. Kiểm tra role `MANAGER`.
-2. Normalize email.
-3. Kiểm tra `packageMonths` trong khoảng 1–12.
-4. Kiểm tra lớp tồn tại, đang mở và phù hợp khối/môn.
-5. Phân biệt đúng ba loại đăng ký:
-   - `FIRST_CHILD`: email chưa có ParentAccount.
-   - `NEW_CHILD`: email đã có ParentAccount, chưa cần `targetStudentId`.
-   - `EXISTING_STUDENT_NEW_SUBJECT`: `targetStudentId` phải thuộc đúng parent email.
-6. Kiểm tra học sinh chưa có Enrollment còn hiệu lực trùng lớp/môn theo chính sách.
-7. Tính học phí ở server; không tin `amount` do client gửi lên.
-8. Tạo `RegistrationOrder(DRAFT)`.
-
-Response:
-
-```json
-{
-  "id": "order_123",
-  "status": "DRAFT",
-  "quotedAmount": 3000000,
-  "currency": "VND"
-}
-```
-
-### 6.2 Quản lý xác nhận thanh toán
+### Hồ sơ con
 
 ```http
-POST /api/manager/registration-orders/:orderId/confirm-payment
-Authorization: MANAGER session
-Idempotency-Key: <uuid>
+GET   /api/v1/me/students
+POST  /api/v1/me/students
+PATCH /api/v1/me/students/:id
+GET   /api/v1/me/students/:id/enrollments
+GET   /api/v1/me/students/:id/schedule
 ```
 
-Đây là transaction quan trọng nhất.
-
-```text
-BEGIN TRANSACTION
-  1. Lock/đọc RegistrationOrder.
-  2. Nếu đã PAYMENT_CONFIRMED:
-       - cùng Idempotency-Key → trả kết quả cũ;
-       - key khác → trả 409 PAYMENT_ALREADY_CONFIRMED.
-  3. Tính lại học phí bằng dữ liệu hiện tại.
-  4. Kiểm tra lớp còn chỗ.
-  5. Tạo Payment(CONFIRMED).
-  6. Tạo Enrollment(PENDING_LINK).
-  7. Sinh token ngẫu nhiên tối thiểu 256 bit.
-  8. Lưu SHA-256(token) vào LinkInvitation.
-  9. Đổi RegistrationOrder → PAYMENT_CONFIRMED.
- 10. Tạo AuditLog(PAYMENT_CONFIRMED).
- 11. Tạo OutboxEvent(REGISTRATION_CONFIRMED).
-COMMIT
-```
-
-Sau commit, API trả thông tin biên lai. Worker gửi email độc lập.
-
-```json
-{
-  "orderId": "order_123",
-  "paymentId": "payment_123",
-  "enrollmentId": "enrollment_123",
-  "receiptNumber": "EG-20260915-000001",
-  "status": "PAYMENT_CONFIRMED",
-  "emailQueued": true
-}
-```
-
-Ràng buộc database bắt buộc:
-
-```text
-UNIQUE Payment.registrationOrderId
-UNIQUE Enrollment.registrationOrderId
-UNIQUE Payment.receiptNumber
-UNIQUE LinkInvitation.tokenHash
-```
-
-Các unique constraint là lớp bảo vệ cuối cùng nếu người dùng double-click hoặc hai request chạy đồng thời.
-
-### 6.3 Xem thông tin mã liên kết
+### Tra cứu tại quầy
 
 ```http
-POST /api/link-invitations/inspect
-Content-Type: application/json
+GET /api/v1/parents/lookup?email=parent@example.com
 ```
 
-```json
-{
-  "token": "raw-token-from-email"
-}
-```
+Chỉ `STAFF` và `MANAGER`.
 
-Chỉ trả dữ liệu tối thiểu:
-
-```json
-{
-  "valid": true,
-  "mode": "CREATE_ACCOUNT",
-  "maskedEmail": "p***@example.com",
-  "studentName": "Nguyễn Văn An",
-  "subjectName": "Toán",
-  "className": "Toán 8A",
-  "expiresAt": "2026-09-22T10:00:00.000Z"
-}
-```
-
-Không trả token hash, Payment nội bộ hoặc dữ liệu đầy đủ của phụ huynh.
-
-### 6.4 Dùng mã cho phụ huynh chưa có tài khoản
+### Chương trình, lớp và lịch
 
 ```http
-POST /api/link-invitations/claim-and-sign-up
-Content-Type: application/json
+GET   /api/v1/programs
+POST  /api/v1/programs
+GET   /api/v1/classes
+POST  /api/v1/classes
+PATCH /api/v1/classes/:id
+POST  /api/v1/classes/:id/schedules
 ```
 
-```json
-{
-  "token": "raw-token-from-email",
-  "password": "strong-password",
-  "displayName": "Nguyễn Thị B"
-}
-```
-
-Email không cho client nhập lại; backend lấy email cố định từ invitation.
-
-Trong một transaction:
-
-```text
-1. Hash token và lock invitation.
-2. Kiểm tra ACTIVE, chưa dùng, chưa hết hạn.
-3. Kiểm tra parent email chưa có tài khoản.
-4. Tạo User(role=PARENT) và ParentProfile.
-5. Tạo StudentProfile từ snapshot trong RegistrationOrder.
-6. Gắn Enrollment.studentProfileId.
-7. Đổi Enrollment → ACTIVE.
-8. Đổi RegistrationOrder → LINKED.
-9. Đổi invitation → USED, lưu usedAt và usedByUserId.
-10. Ghi AuditLog(LINK_USED).
-11. Tạo session đăng nhập cho phụ huynh.
-```
-
-Nếu email đã có tài khoản do race condition, trả `409 ACCOUNT_ALREADY_EXISTS` và yêu cầu đăng nhập để claim, không tạo tài khoản thứ hai.
-
-### 6.5 Dùng mã với tài khoản phụ huynh đã tồn tại
+### Đăng ký và thu tiền
 
 ```http
-POST /api/link-invitations/claim
-Authorization: PARENT session
-Content-Type: application/json
+POST /api/v1/registrations
+GET  /api/v1/registrations/:id
+POST /api/v1/registrations/:id/cancel
+POST /api/v1/registrations/:id/confirm-payment
+GET  /api/v1/registrations/:id/receipt
 ```
 
-```json
-{
-  "token": "raw-token-from-email"
-}
-```
-
-Kiểm tra bắt buộc:
-
-```text
-session.user.email === invitation.expectedParentEmail
-```
-
-Sau đó xử lý theo loại đăng ký:
-
-- `NEW_CHILD`: tạo `StudentProfile` mới dưới ParentProfile đang đăng nhập rồi gắn Enrollment.
-- `EXISTING_STUDENT_NEW_SUBJECT`: không tạo hồ sơ mới; xác nhận `targetStudentId` thuộc phụ huynh đang đăng nhập rồi kích hoạt Enrollment.
-- `FIRST_CHILD` nhưng tài khoản đã tồn tại: xử lý như thêm con mới nếu email khớp, nhằm an toàn trước race condition.
-
-Cuối transaction, invitation thành `USED`, order thành `LINKED`, enrollment thành `ACTIVE`.
-
-### 6.6 Cấp lại mã đã hết hạn
-
-```http
-POST /api/manager/registration-orders/:orderId/reissue-link
-Authorization: MANAGER session
-```
-
-Trong transaction:
-
-1. Chỉ cho phép order `PAYMENT_CONFIRMED` và chưa `LINKED`.
-2. Revoke mọi invitation `ACTIVE` cũ.
-3. Tạo invitation mới, hạn 7 ngày.
-4. Ghi audit log.
-5. Tạo outbox event gửi email mới.
-
-Việc cấp lại mã không tạo thêm Payment hoặc Enrollment.
-
-### 6.7 Xem/in biên lai
-
-```http
-GET /api/manager/payments/:paymentId/receipt
-Authorization: MANAGER session
-```
-
-API trả dữ liệu hoặc PDF biên lai. Nút **In** nằm ở frontend và gọi chức năng in của trình duyệt; không tích hợp máy in vào backend.
-
-## 7. Sequence diagram
+## 8. Sequence diagram
 
 ```mermaid
 sequenceDiagram
-    actor M as Quản lý
-    participant API as NestJS API
-    participant DB as PostgreSQL
-    participant W as Email Worker
     actor P as Phụ huynh
+    actor S as Nhân viên/Quản lý
+    participant API as NestJS API
+    participant DB as MySQL
 
-    M->>API: Tạo RegistrationOrder
-    API->>DB: Lưu DRAFT + giá server tính
-    DB-->>API: orderId
-    API-->>M: Báo giá
+    P->>API: POST /auth/register
+    API->>DB: Create User + ParentProfile + verification token
+    API-->>P: Account + token pair
 
-    M->>API: Confirm payment + Idempotency-Key
-    API->>DB: Transaction Payment + Enrollment + Invitation + Outbox
-    DB-->>API: Commit
-    API-->>M: Biên lai + trạng thái thành công
+    P->>API: POST /auth/verify-email
+    API->>DB: Mark token used + emailVerifiedAt
+    API-->>P: verified
 
-    W->>DB: Đọc OutboxEvent
-    W-->>P: Email link/mã
-    W->>DB: SENT hoặc FAILED + retry metadata
+    P->>API: POST /me/students
+    API->>DB: Create StudentProfile
+    API-->>P: StudentProfile
 
-    P->>API: Inspect token
-    API-->>P: Thông tin đăng ký tối thiểu
-    P->>API: Sign up/đăng nhập và claim token
-    API->>DB: Transaction tạo/chọn StudentProfile + activate Enrollment
-    DB-->>API: Commit
-    API-->>P: Liên kết thành công
+    S->>API: GET /parents/lookup?email=...
+    API->>DB: Find parent + active children
+    API-->>S: Parent + children
+
+    S->>API: POST /registrations
+    API->>DB: Validate student/class/schedule/capacity/conflicts, create DRAFT
+    API-->>S: Quote + draft order
+
+    S->>API: POST /registrations/:id/confirm-payment
+    API->>DB: Transaction Payment + Enrollment ACTIVE + Audit + Idempotency
+    API-->>S: Receipt
+
+    P->>API: GET /me/students/:id/enrollments
+    API->>DB: Read child enrollments
+    API-->>P: Class, term, schedule, receipt
 ```
 
-## 8. Cấu trúc source NestJS đề xuất
-
-```text
-src/
-├── main.ts
-├── app.module.ts
-├── common/
-│   ├── decorators/
-│   ├── guards/
-│   ├── filters/
-│   ├── interceptors/
-│   ├── middleware/
-│   └── errors/
-├── config/
-├── database/orm/
-└── modules/
-    ├── auth/
-    ├── registration/
-    │   ├── dto/
-    │   ├── registration.controller.ts
-    │   ├── registration.service.ts
-    │   └── registration.repository.ts
-    ├── link-invitations/
-    ├── payments/
-    ├── enrollments/
-    ├── notifications/
-    ├── audit/
-    └── health/
-
-prisma/
-├── schema.prisma
-└── migrations/
-```
-
-Controller chỉ nên làm bốn việc:
-
-1. Đọc request.
-2. Xác thực và phân quyền.
-3. Validate dữ liệu.
-4. Gọi service rồi chuyển kết quả thành HTTP response.
-
-Không đặt transaction hoặc nghiệp vụ lớn trực tiếp trong Controller.
-
-## 9. Luồng gửi email
-
-Email xác nhận gồm:
-
-- Tên học sinh.
-- Môn, lớp và lịch học.
-- Số tiền đã xác nhận.
-- Số biên lai.
-- Link/mã liên kết.
-- Thời điểm mã hết hạn.
-
-Worker xử lý:
-
-```text
-PENDING
-→ PROCESSING
-→ gửi thành công → SENT
-→ gửi lỗi → FAILED + attemptCount + nextAttemptAt
-→ đến thời gian retry → PROCESSING
-```
-
-Retry đề xuất: exponential backoff, ví dụ 1 phút, 5 phút, 30 phút, 2 giờ, 12 giờ. Sau số lần tối đa, giữ `FAILED` để quản lý có thể bấm gửi lại.
-
-Không log token thô, mật khẩu hoặc toàn bộ nội dung email chứa dữ liệu nhạy cảm.
-
-## 10. Bảo mật
-
-- Tất cả endpoint `/api/manager/**` phải kiểm tra role ở server, không chỉ ẩn nút ở frontend.
-- Parent claim phải kiểm tra email tài khoản đúng với `expectedParentEmail`.
-- Với học sinh cũ, phải kiểm tra `StudentProfile.parentProfileId` thuộc đúng parent đang đăng nhập.
-- Token phải được sinh bằng CSPRNG, có entropy tối thiểu 256 bit.
-- Database chỉ lưu hash của token.
-- Claim và confirm-payment phải chạy transaction để chống race condition.
-- Rate limit endpoint inspect/claim theo IP và token fingerprint.
-- Trả lỗi chung cho token không tồn tại/hết hạn để hạn chế dò token.
-- Cookie đăng nhập phải `HttpOnly`, `Secure` ở production và có thời hạn hợp lý.
-- Các thao tác thanh toán, cấp mã, dùng mã phải có audit log.
-- Không đưa PII, token hoặc password vào application log.
-
-## 11. Mã lỗi chuẩn
+## 9. Error code đề xuất
 
 ```text
 400 VALIDATION_ERROR
-401 UNAUTHENTICATED
+401 AUTH_UNAUTHORIZED
 403 FORBIDDEN
-404 RESOURCE_NOT_FOUND
-409 PAYMENT_ALREADY_CONFIRMED
-409 CLASS_CAPACITY_FULL
-409 DUPLICATE_ACTIVE_ENROLLMENT
-409 ACCOUNT_ALREADY_EXISTS
-409 INVITATION_ALREADY_USED
-410 INVITATION_EXPIRED
-422 REGISTRATION_TYPE_MISMATCH
+404 PARENT_NOT_FOUND
+404 STUDENT_NOT_FOUND
+404 CLASS_NOT_FOUND
+404 REGISTRATION_NOT_FOUND
+409 PARENT_EMAIL_UNVERIFIED
+409 STUDENT_INACTIVE
+409 PARENT_DISABLED
+409 CLASS_CLOSED
+409 CLASS_NEEDS_SCHEDULE
+409 CLASS_GRADE_MISMATCH
+409 INVALID_START_DATE
+409 CLASS_FULL
+409 DUPLICATE_CLASS_REGISTRATION
+409 STUDENT_SCHEDULE_CONFLICT
+409 REGISTRATION_NOT_DRAFT
+409 IDEMPOTENCY_KEY_REQUIRED
 500 INTERNAL_ERROR
 ```
 
-Response lỗi thống nhất:
+Response lỗi theo chuẩn chung:
 
 ```json
 {
+  "success": false,
   "error": {
-    "code": "INVITATION_EXPIRED",
-    "message": "Mã liên kết đã hết hạn.",
+    "code": "STUDENT_SCHEDULE_CONFLICT",
+    "message": "Student already has another class at this time",
     "requestId": "req_123"
   }
 }
 ```
 
-## 12. Idempotency và xử lý đồng thời
+## 10. Bảo mật và nhất quán dữ liệu
 
-### Confirm payment
+- Backend luôn kiểm tra role; frontend ẩn nút không đủ.
+- Parent chỉ được đọc/sửa hồ sơ con thuộc `ParentProfile.userId` của mình.
+- STAFF/MANAGER chỉ được đăng ký cho hồ sơ con đã tồn tại.
+- Email phải verified trước khi tạo hồ sơ con hoặc đăng ký học.
+- Token xác minh email không lưu dạng thô.
+- Confirm payment phải chạy trong transaction.
+- Confirm payment phải có `Idempotency-Key`.
+- Lock order, học sinh và lớp khi xác nhận thu tiền.
+- Không tin số tiền client gửi lên; backend tính từ `Class.monthlyFee`.
+- Lưu `quotedAmount` để biên lai không đổi khi trung tâm sửa học phí lớp.
+- Không log mật khẩu, token thô hoặc dữ liệu trẻ em nhạy cảm.
 
-- Frontend tạo UUID cho `Idempotency-Key`.
-- Backend lưu key cùng kết quả response.
-- Gửi lại cùng key trả đúng kết quả cũ.
-- Unique constraint trên `Payment.registrationOrderId` và `Enrollment.registrationOrderId` chống tạo trùng ở tầng database.
+## 11. Acceptance tests bắt buộc
 
-### Claim token
+- Phụ huynh đăng ký, xác minh email, tạo nhiều con.
+- Nhân viên tra cứu email chính xác, chọn đúng con và hoàn thành đăng ký.
+- Email trùng, chưa xác minh, tài khoản bị khóa hoặc chưa có con đều được xử lý rõ ràng.
+- Phụ huynh không đọc/sửa được hồ sơ của người khác.
+- Giáo viên không được xác nhận thu tiền.
+- Chặn lớp sai khối, đóng đăng ký, thiếu lịch, hết chỗ, trùng lớp hoặc trùng giờ.
+- Hai yêu cầu tranh chỗ cuối chỉ một yêu cầu thành công.
+- Hai đăng ký đồng thời của cùng con không vượt qua kiểm tra trùng lịch.
+- Xác nhận lặp cùng `Idempotency-Key` không tạo bản ghi trùng.
+- Lỗi giữa transaction không để lại payment hoặc enrollment dở dang.
+- Tính đúng kỳ học qua cuối tháng/năm.
+- Phụ huynh thấy đúng lịch và biên lai sau khi xác nhận.
 
-- Hai request claim đồng thời chỉ một request được chuyển invitation từ `ACTIVE` sang `USED`.
-- Request còn lại nhận `409 INVITATION_ALREADY_USED`.
-- Không được tạo hai StudentProfile do double-click.
+## 12. Definition of Done
 
-### Capacity
-
-- Kiểm tra và giữ chỗ phải nằm trong transaction xác nhận thanh toán.
-- Sĩ số được tính từ Enrollment `PENDING_LINK` và `ACTIVE`.
-- Nếu mã hết hạn, chỗ vẫn được giữ vì tiền đã xác nhận; chỉ quản lý mới được hủy đăng ký theo chính sách riêng.
-
-## 13. Acceptance tests bắt buộc
-
-### Trường hợp 1: Con đầu tiên
-
-- Email chưa tồn tại.
-- Confirm payment tạo đúng một Payment, Enrollment và invitation.
-- Phụ huynh đặt mật khẩu bằng invitation.
-- Hệ thống tạo ParentAccount + StudentProfile.
-- Enrollment được gắn đúng profile và chuyển `ACTIVE`.
-- Dùng lại token bị từ chối.
-
-### Trường hợp 2: Thêm con mới
-
-- Email đã có tài khoản phụ huynh.
-- Người chưa đăng nhập không được claim theo luồng tài khoản cũ.
-- Tài khoản email khác không được claim.
-- Tài khoản đúng email tạo thêm đúng một StudentProfile.
-- Các hồ sơ con cũ không bị thay đổi.
-
-### Trường hợp 3: Con cũ học thêm môn
-
-- `targetStudentId` phải thuộc đúng phụ huynh.
-- Không tạo StudentProfile mới.
-- Tạo Enrollment mới gắn đúng hồ sơ con.
-- Chặn Enrollment trùng còn hiệu lực.
-
-### Thanh toán
-
-- `packageMonths = 0` hoặc `13` bị từ chối.
-- Client sửa số tiền không làm thay đổi giá server tính.
-- Double-click xác nhận không tạo hai Payment.
-- Hai request đồng thời không bán vượt sĩ số lớp.
-
-### Mã liên kết
-
-- Mã hết hạn sau 7 ngày.
-- Mã chỉ dùng một lần.
-- Cấp mã mới làm mã cũ mất hiệu lực.
-- Token thô không xuất hiện trong database hoặc log.
-
-### Email
-
-- Gửi email thất bại vẫn giữ Payment và Enrollment.
-- Outbox lưu trạng thái lỗi và số lần thử.
-- Retry thành công chuyển event sang `SENT` mà không gửi trùng Payment/Enrollment.
-
-## 14. Những quyết định cần chốt trước khi code production
-
-1. Công thức học phí theo môn/lớp/tháng và quy tắc làm tròn.
-2. Ngày bắt đầu/kết thúc Enrollment: từ ngày thanh toán, ngày liên kết hay buổi học đầu tiên.
-3. Có cho phép hoàn/hủy sau khi đã xác nhận thanh toán hay không.
-4. Khi quản lý nhập sai email, quy trình sửa email và cấp lại mã thế nào.
-5. Thông tin tối thiểu bắt buộc của StudentProfile ngoài tên và khối.
-6. Một phụ huynh có được đổi email đăng nhập sau khi đã liên kết hay không.
-
-Các điểm trên nên trở thành cấu hình/quy tắc rõ ràng; không nên để Controller tự suy đoán.
-
-## 15. Definition of Done
-
-Luồng được coi là hoàn thành khi:
-
-- Ba trường hợp đăng ký đều chạy đúng.
-- Payment không thể bị ghi nhận trùng.
-- Enrollment không thể liên kết nhầm phụ huynh hoặc hồ sơ con.
-- Token một lần và hạn 7 ngày hoạt động đúng.
-- Email có retry và lỗi email không ảnh hưởng dữ liệu chính.
-- Biên lai xem/in được.
-- Mọi thao tác nhạy cảm có audit log.
-- Có integration test cho transaction, authorization, idempotency và race condition.
-- API có error format thống nhất.
-- Không có mật khẩu, token thô hoặc dữ liệu trẻ em nhạy cảm trong log.
+- Prisma schema và migration phản ánh workflow mới.
+- API `/api/v1` có route cho auth verify email, hồ sơ con, parent lookup, class schedule, registration và receipt.
+- Swagger cập nhật theo controller/DTO.
+- `STAFF` và `MANAGER` có quyền đăng ký và xác nhận thu tiền.
+- Parent ownership được kiểm tra ở backend.
+- Confirm payment idempotent và transactional.
+- Unit/e2e/typecheck/lint/build pass.
+- Tài liệu này là nguồn workflow backend mặc định cho luồng phụ huynh đăng ký tại trung tâm.

@@ -37,15 +37,17 @@ async function bootstrap(): Promise<void> {
   if (config.get('swaggerEnabled', { infer: true })) {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('EduGrade API')
-      .setDescription('Versioned backend contract shared by web and mobile clients')
+      .setDescription(
+        'Versioned backend contract shared by web and mobile clients. Use Bearer access tokens for protected endpoints.',
+      )
       .setVersion('1.0')
       .addBearerAuth()
       .build();
     const document = SwaggerModule.createDocument(app, swaggerConfig);
-    SwaggerModule.setup('docs', app, document);
+    SwaggerModule.setup('docs', app, document, { useGlobalPrefix: true });
   }
 
-  await app.listen(config.get('port', { infer: true }));
+  await app.listen(config.get('port', { infer: true }), '0.0.0.0');
 }
 
 void bootstrap();

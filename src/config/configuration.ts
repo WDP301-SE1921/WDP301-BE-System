@@ -5,7 +5,29 @@ export interface AppConfiguration {
   port: number;
   databaseUrl: string;
   corsOrigins: string[];
+  webOrigin: string;
   swaggerEnabled: boolean;
+  throttleLimitPerMinute: number;
+  academic: {
+    aiUrl: string;
+    aiKey: string;
+    aiModel: string;
+    storageEndpoint: string;
+    storageRegion: string;
+    storageBucket: string;
+    storageKey: string;
+    storageSecret: string;
+    smtpUrl: string;
+    mailFrom: string;
+  };
+  jwt: {
+    accessSecret: string;
+    refreshSecret: string;
+    issuer: string;
+    audience: string;
+    accessTtlSeconds: number;
+    refreshTtlSeconds: number;
+  };
 }
 
 type Environment = Record<string, string | undefined>;
@@ -41,6 +63,22 @@ function parseBoolean(rawValue: string | undefined, defaultValue: boolean): bool
   throw new Error('SWAGGER_ENABLED must be true or false');
 }
 
+function parsePositiveInteger(environment: Environment, key: string, defaultValue: number): number {
+  const value = Number(environment[key] ?? defaultValue);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+  return value;
+}
+
+function requiredSecret(environment: Environment, key: string): string {
+  const value = required(environment, key);
+  if (value.length < 32) {
+    throw new Error(`${key} must be at least 32 characters`);
+  }
+  return value;
+}
+
 export function validateEnvironment(environment: Environment): AppConfiguration {
   const nodeEnv = parseNodeEnvironment(environment.NODE_ENV);
   const corsOrigins = required(environment, 'CORS_ORIGINS')
@@ -51,12 +89,38 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
   if (nodeEnv === 'production' && corsOrigins.some((origin) => origin === '*')) {
     throw new Error('CORS_ORIGINS cannot contain a wildcard in production');
   }
+  const webOrigin = environment.WEB_ORIGIN?.trim() || corsOrigins[0];
+  if (!webOrigin || !/^https?:$/.test(new URL(webOrigin).protocol)) {
+    throw new Error('WEB_ORIGIN must be an HTTP(S) origin');
+  }
 
   return {
     nodeEnv,
     port: parsePort(environment.PORT),
     databaseUrl: required(environment, 'DATABASE_URL'),
     corsOrigins,
+    webOrigin: new URL(webOrigin).origin,
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
+    throttleLimitPerMinute: parsePositiveInteger(environment, 'THROTTLE_LIMIT_PER_MINUTE', 120),
+    academic: {
+      aiUrl: environment.AI_CHAT_URL?.trim() || '',
+      aiKey: environment.AI_API_KEY?.trim() || '',
+      aiModel: environment.AI_MODEL?.trim() || '',
+      storageEndpoint: environment.STORAGE_ENDPOINT?.trim() || '',
+      storageRegion: environment.STORAGE_REGION?.trim() || 'us-east-1',
+      storageBucket: environment.STORAGE_BUCKET?.trim() || '',
+      storageKey: environment.STORAGE_ACCESS_KEY?.trim() || '',
+      storageSecret: environment.STORAGE_SECRET_KEY?.trim() || '',
+      smtpUrl: environment.SMTP_URL?.trim() || '',
+      mailFrom: environment.MAIL_FROM?.trim() || '',
+    },
+    jwt: {
+      accessSecret: requiredSecret(environment, 'JWT_ACCESS_SECRET'),
+      refreshSecret: requiredSecret(environment, 'JWT_REFRESH_SECRET'),
+      issuer: environment.JWT_ISSUER?.trim() || 'edugrade-api',
+      audience: environment.JWT_AUDIENCE?.trim() || 'edugrade-clients',
+      accessTtlSeconds: parsePositiveInteger(environment, 'JWT_ACCESS_TTL_SECONDS', 900),
+      refreshTtlSeconds: parsePositiveInteger(environment, 'JWT_REFRESH_TTL_SECONDS', 604800),
+    },
   };
 }

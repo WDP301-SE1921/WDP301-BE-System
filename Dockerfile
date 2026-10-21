@@ -17,7 +17,8 @@ RUN corepack enable
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
+COPY assets ./assets
 COPY package.json ./
 USER node
 EXPOSE 3000
-CMD ["node", "dist/main.js"]
+CMD ["sh", "-c", "pnpm prisma:migrate:deploy && NODE_ENV=development SEED_MODE=demo node dist/database/seed.js && NODE_ENV=production node dist/main.js"]
