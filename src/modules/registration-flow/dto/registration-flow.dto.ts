@@ -1,6 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import type { UserStatus } from '@prisma/client';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -23,10 +23,16 @@ import {
 } from 'class-validator';
 
 export class PageDto {
+  @ApiPropertyOptional({ description: 'Return pagination metadata on legacy array endpoints.' })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => value === 'true' ? true : value === 'false' ? false : value)
+  @IsBoolean()
+  paginated?: boolean;
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(1000000)
   page = 1;
 
   @ApiPropertyOptional({ default: 20 })
@@ -37,7 +43,39 @@ export class PageDto {
   limit = 20;
 }
 
+export class LookupQueryDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+}
+export class RoomFilterDto extends LookupQueryDto {
+  @ApiPropertyOptional() @IsOptional()
+  @Transform(({ value }: { value: unknown }) => value === 'true' ? true : value === 'false' ? false : value)
+  @IsBoolean() isActive?: boolean;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) minCapacity?: number;
+}
+export class SubjectFilterDto extends LookupQueryDto {
+  @ApiPropertyOptional() @IsOptional()
+  @Transform(({ value }: { value: unknown }) => value === 'true' ? true : value === 'false' ? false : value)
+  @IsBoolean() isActive?: boolean;
+}
+export class MyStudentFilterDto extends LookupQueryDto {
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(6) @Max(9) grade?: number;
+  @ApiPropertyOptional({ enum: ['ACTIVE', 'INACTIVE'] }) @IsOptional() @IsIn(['ACTIVE', 'INACTIVE']) status?: 'ACTIVE' | 'INACTIVE';
+}
+export class StudentHistoryQueryDto extends LookupQueryDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() classId?: string;
+  @ApiPropertyOptional({ enum: ['ACTIVE', 'ENDED'] }) @IsOptional() @IsIn(['ACTIVE', 'ENDED']) status?: 'ACTIVE' | 'ENDED';
+  @ApiPropertyOptional() @IsOptional() @IsString() subject?: string;
+}
+export class WeeklyScheduleQueryDto extends LookupQueryDto {
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(7) weekday?: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() classId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() subject?: string;
+}
+
 export class ClassRosterQueryDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) studentId?: string;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(6) @Max(9) grade?: number;
   @ApiPropertyOptional({
     description: 'Roster effective instant. Defaults to the current time.',
     example: '2026-10-12T10:00:00.000Z',
@@ -94,7 +132,7 @@ export class ParentLookupDto {
   email!: string;
 }
 
-export class ParentSearchDto {
+export class ParentSearchDto extends PageDto {
   @ApiProperty({
     example: 'ng',
     minLength: 2,
@@ -343,6 +381,8 @@ export class ReplaceClassSchedulesDto {
 }
 
 export class ClassFilterDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() teacherId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string;
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -455,7 +495,13 @@ export class ListRegistrationsDto extends PageDto {
   toDate?: string;
 }
 
+export class MyBillsQueryDto extends OmitType(ListRegistrationsDto, ['createdBy'] as const) {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) studentId?: string;
+}
+
 export class ListPaymentsDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() classId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() studentId?: string;
   @ApiPropertyOptional({ description: 'Receipt number, parent email or student name.' })
   @IsOptional()
   @IsString()

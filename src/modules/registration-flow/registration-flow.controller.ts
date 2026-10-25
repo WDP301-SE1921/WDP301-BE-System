@@ -29,12 +29,16 @@ import {
   CreateRegistrationDto,
   CreateStudentDto,
   ListPaymentsDto,
+  MyBillsQueryDto,
   ListRegistrationsDto,
   ListStudentsDto,
-  PageDto,
+  LookupQueryDto,
+  RoomFilterDto,
+  MyStudentFilterDto,
+  StudentHistoryQueryDto,
+  WeeklyScheduleQueryDto,
   ParentLookupDto,
   ParentSearchDto,
-  ParentSuggestionDto,
   ProgramDto,
   ProgramFilterDto,
   ReplaceClassSchedulesDto,
@@ -74,14 +78,14 @@ export class RegistrationFlowController {
       },
     },
   })
-  myBills(@CurrentUser() user: AuthenticatedUser, @Query() page: PageDto): Promise<unknown> {
+  myBills(@CurrentUser() user: AuthenticatedUser, @Query() page: MyBillsQueryDto): Promise<unknown> {
     return this.flow.myBills(user, page);
   }
 
   @Get('me/students')
   @ApiOperation({ summary: 'Parent: list own student profiles' })
-  myStudents(@CurrentUser() user: AuthenticatedUser): Promise<unknown> {
-    return this.flow.listMyStudents(user);
+  myStudents(@CurrentUser() user: AuthenticatedUser, @Query() query: MyStudentFilterDto): Promise<unknown> {
+    return this.flow.listMyStudents(user, query);
   }
 
   @Post('me/students')
@@ -108,8 +112,9 @@ export class RegistrationFlowController {
   myStudentEnrollments(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: StudentHistoryQueryDto,
   ): Promise<unknown> {
-    return this.flow.myStudentEnrollments(user, id);
+    return this.flow.myStudentEnrollments(user, id, query);
   }
 
   @Get('me/students/:id/schedule')
@@ -117,8 +122,9 @@ export class RegistrationFlowController {
   myStudentSchedule(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: WeeklyScheduleQueryDto,
   ): Promise<unknown> {
-    return this.flow.myStudentSchedule(user, id);
+    return this.flow.myStudentSchedule(user, id, query);
   }
 
   @Get('students')
@@ -150,8 +156,9 @@ export class RegistrationFlowController {
   studentEnrollments(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: StudentHistoryQueryDto,
   ): Promise<unknown> {
-    return this.flow.studentEnrollments(user, id);
+    return this.flow.studentEnrollments(user, id, query);
   }
 
   @Get('students/:id/schedule')
@@ -159,8 +166,9 @@ export class RegistrationFlowController {
   studentSchedule(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: WeeklyScheduleQueryDto,
   ): Promise<unknown> {
-    return this.flow.studentSchedule(user, id);
+    return this.flow.studentSchedule(user, id, query);
   }
 
   @Get('parents/lookup')
@@ -198,7 +206,7 @@ export class RegistrationFlowController {
   searchParents(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ParentSearchDto,
-  ): Promise<ParentSuggestionDto[]> {
+  ): Promise<unknown> {
     return this.flow.searchParents(user, query);
   }
 
@@ -249,8 +257,8 @@ export class RegistrationFlowController {
 
   @Get('rooms')
   @ApiOperation({ summary: 'List rooms used by classes and sessions' })
-  rooms(@CurrentUser() user: AuthenticatedUser): Promise<unknown> {
-    return this.flow.listRooms(user);
+  rooms(@CurrentUser() user: AuthenticatedUser, @Query() query: RoomFilterDto): Promise<unknown> {
+    return this.flow.listRooms(user, query);
   }
 
   @Post('rooms')
@@ -284,8 +292,9 @@ export class RegistrationFlowController {
   substituteCandidates(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: LookupQueryDto,
   ): Promise<unknown> {
-    return this.flow.substituteCandidates(user, id);
+    return this.flow.substituteCandidates(user, id, query);
   }
 
   @Post('academic/sessions/:id/substitutions')
@@ -349,8 +358,9 @@ export class RegistrationFlowController {
   classSchedules(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: WeeklyScheduleQueryDto,
   ): Promise<unknown> {
-    return this.flow.classSchedules(user, id);
+    return this.flow.classSchedules(user, id, query);
   }
 
   @Put('classes/:id/schedules')

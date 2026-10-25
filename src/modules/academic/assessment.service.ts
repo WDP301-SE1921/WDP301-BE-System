@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import type { ParentGradesResponseDto } from './parent-learning-response.dto';
 import { pageResult } from '../../common/pagination';
+import { dateTimeRange } from '../../common/list-query';
+import { AssignmentQueryDto, SubmissionQueryDto, StudentGradeQueryDto } from './academic-list.dto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
@@ -10,9 +12,7 @@ import { AcademicAccessService, assertRule, inTerm, roles } from './academic-acc
 import { AcademicRepository } from './academic.repository';
 import {
   AssignmentDto,
-  StudentPageDto,
   GradeDto,
-  PageDto,
   RecipientsDto,
   SubmissionDto,
   SubmissionWindowDto,
@@ -31,6 +31,7 @@ export class AssessmentService {
     await this.access.classroom(user, input.classId);
     this.validateDefinition(input);
     await this.validateSession(user, input);
+    await this.validateOutcomeMapping(input);
     const { questions, dueAt, ...data } = input;
     return this.repo.db.assignment.create({
       data: {
@@ -62,6 +63,7 @@ export class AssessmentService {
         'Only a draft in the same class can be edited',
       );
       await this.validateSession(user, input, tx);
+      await this.validateOutcomeMapping(input, tx);
       await tx.assignmentQuestion.deleteMany({ where: { assignmentId: id } });
       const { questions, dueAt, ...data } = input;
       return tx.assignment.update({
@@ -165,7 +167,37 @@ export class AssessmentService {
     }
   }
 
-  async list(user: AuthenticatedUser, page: StudentPageDto): Promise<unknown> {
+  private async validateOutcomeMapping(
+    input: AssignmentDto,
+    tx: Prisma.TransactionClient = this.repo.db,
+  ): Promise<void> {
+    if (!input.outcomeSetId) {
+      assertRule(
+        input.questions.every((question) => !question.outcomeId),
+        'OUTCOME_SET_REQUIRED',
+        'Choose an outcome set before mapping questions',
+      );
+      return;
+    }
+    const classroom = await tx.class.findUniqueOrThrow({ where: { id: input.classId } });
+    const set = await tx.outcomeSet.findUnique({
+      where: { id: input.outcomeSetId },
+      include: { outcomes: { select: { id: true } } },
+    });
+    assertRule(
+      set && set.status === 'APPROVED' && set.programId === classroom.programId,
+      'INVALID_OUTCOME_SET',
+      'Use an approved outcome set for this program',
+    );
+    const allowed = new Set(set.outcomes.map((outcome) => outcome.id));
+    assertRule(
+      input.questions.every((question) => question.outcomeId && allowed.has(question.outcomeId)),
+      'OUTCOME_MAPPING_INCOMPLETE',
+      'Map every question to a CLO in the selected set',
+    );
+  }
+
+  async list(user: AuthenticatedUser, page: AssignmentQueryDto): Promise<unknown> {
     roles(user, 'TEACHER', 'PARENT');
     if (user.role === 'PARENT' && page.studentId)
       await this.assertOwnedStudent(user, page.studentId);
@@ -185,6 +217,15 @@ export class AssessmentService {
             ...(page.studentId ? { recipients: { some: recipientWhere } } : {}),
           }
         : { status: { not: 'DRAFT' }, recipients: { some: recipientWhere } };
+    where.AND = [{
+      ...(page.classId ? { classId: page.classId } : {}),
+      ...(page.sessionId ? { sessionId: page.sessionId } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.kind ? { kind: page.kind } : {}),
+      ...(page.testType ? { testType: page.testType } : {}),
+      ...(page.search ? { title: { contains: page.search } } : {}),
+      dueAt: dateTimeRange(page.fromDate, page.toDate),
+    }];
     const items = this.repo.db.assignment
       .findMany({
         where,
@@ -259,7 +300,7 @@ export class AssessmentService {
   async studentGrades(
     user: AuthenticatedUser,
     studentId: string,
-    page: PageDto,
+    page: StudentGradeQueryDto,
   ): Promise<ParentGradesResponseDto> {
     roles(user, 'PARENT');
     await this.assertOwnedStudent(user, studentId);
@@ -270,7 +311,13 @@ export class AssessmentService {
           status: { not: 'PENDING_LINK' },
           studentProfile: { parentProfile: { userId: user.id } },
         },
-        assignment: { status: { not: 'DRAFT' } },
+        assignment: {
+          status: { not: 'DRAFT' },
+          ...(page.classId ? { classId: page.classId } : {}),
+          ...(page.kind ? { kind: page.kind } : {}),
+          ...(page.subject ? { class: { program: { subject: page.subject } } } : {}),
+          ...(page.search ? { title: { contains: page.search } } : {}),
+        },
       },
       take: 20001,
       select: {
@@ -307,11 +354,12 @@ export class AssessmentService {
       'GRADE_HISTORY_TOO_LARGE',
       'Grade history exceeds the supported range',
     );
+    const publishedRange = dateTimeRange(page.fromDate, page.toDate);
     const history = recipients
       .flatMap((recipient) => {
         const submission = recipient.submissions[0];
         const grade = submission?.grades[0];
-        if (!grade) return [];
+        if (!grade || !grade.publishedAt || (publishedRange.gte && grade.publishedAt < publishedRange.gte) || (publishedRange.lte && grade.publishedAt > publishedRange.lte)) return [];
         const { questions, ...assignment } = recipient.assignment;
         const maxScore = questions.reduce((sum, question) => sum + question.maxScore, 0);
         return [
@@ -326,7 +374,7 @@ export class AssessmentService {
           },
         ];
       })
-      .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+      .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0) || a.recipientId.localeCompare(b.recipientId));
     const subjects = [...new Set(history.map((row) => row.assignment.class.program.subject))].map(
       (subject) => {
         const scores = history.filter(
@@ -353,18 +401,26 @@ export class AssessmentService {
     };
   }
 
-  async backOfficeStudentGrades(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+  async backOfficeStudentGrades(user: AuthenticatedUser, studentId: string, query = new StudentGradeQueryDto()): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
     const student = await this.repo.db.studentProfile.findUnique({
       where: { id: studentId },
       select: { id: true },
     });
     assertRule(student, 'STUDENT_NOT_FOUND', 'Student not found', HttpStatus.NOT_FOUND);
-    const recipients = await this.repo.db.assignmentRecipient.findMany({
-      where: {
+    const where: Prisma.AssignmentRecipientWhereInput = {
         enrollment: { studentProfileId: studentId },
-        assignment: { status: { not: 'DRAFT' } },
-      },
+        assignment: {
+          status: { not: 'DRAFT' },
+          ...(query.classId ? { classId: query.classId } : {}),
+          ...(query.kind ? { kind: query.kind } : {}),
+          ...(query.subject ? { class: { program: { subject: query.subject } } } : {}),
+          ...(query.search ? { title: { contains: query.search } } : {}),
+          dueAt: dateTimeRange(query.fromDate, query.toDate),
+        },
+    };
+    const recipients = await this.repo.db.assignmentRecipient.findMany({
+      where,
       select: {
         id: true,
         assignment: {
@@ -395,10 +451,11 @@ export class AssessmentService {
           take: 1,
         },
       },
-      orderBy: { assignment: { dueAt: 'desc' } },
-      take: 500,
+      orderBy: [{ assignment: { dueAt: 'desc' } }, { id: 'asc' }],
+      take: query.limit,
+      skip: (query.page - 1) * query.limit,
     });
-    return recipients.map(({ assignment, submissions }) => {
+    const items = recipients.map(({ assignment, submissions }) => {
       const { questions, ...rest } = assignment;
       const latest = submissions[0];
       return {
@@ -410,6 +467,7 @@ export class AssessmentService {
         grade: latest?.grades[0] ?? null,
       };
     });
+    return pageResult(query, Promise.resolve(items), () => this.repo.db.assignmentRecipient.count({ where }));
   }
 
   async detail(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -418,6 +476,9 @@ export class AssessmentService {
       where: { id },
       include: {
         session: { select: { id: true, startsAt: true, endsAt: true } },
+        outcomeSet: {
+          include: { outcomes: { select: { id: true, code: true, title: true, statement: true } } },
+        },
         questions: { orderBy: { position: 'asc' } },
         recipients: {
           where:
@@ -449,6 +510,8 @@ export class AssessmentService {
       sessionId: assignment.sessionId,
       session: assignment.session,
       classId: assignment.classId,
+      outcomeSetId: assignment.outcomeSetId,
+      learningTargets: assignment.outcomeSet?.outcomes ?? [],
       title: assignment.title,
       instructions: assignment.instructions,
       dueAt: assignment.dueAt,
@@ -461,6 +524,7 @@ export class AssessmentService {
         prompt: q.prompt,
         choices: q.choices,
         maxScore: q.maxScore,
+        outcomeId: q.outcomeId,
         ...(showAnswers ? { correctAnswer: q.correctAnswer } : {}),
         ...(user.role === 'TEACHER' ? { rubric: q.rubric } : {}),
       })),
@@ -476,6 +540,23 @@ export class AssessmentService {
         'Only an unexpired draft can be published',
       );
       await this.validateSession(user, assignment, tx);
+      const classProgram = await tx.class.findUniqueOrThrow({ where: { id: assignment.classId } });
+      const approvedSets = await tx.outcomeSet.count({
+        where: { programId: classProgram.programId, status: 'APPROVED' },
+      });
+      if (approvedSets) {
+        assertRule(assignment.outcomeSetId, 'OUTCOME_SET_REQUIRED', 'Choose an approved CLO set before publishing');
+        const set = await tx.outcomeSet.findUnique({ where: { id: assignment.outcomeSetId } });
+        assertRule(
+          set && set.status === 'APPROVED' && set.programId === classProgram.programId,
+          'INVALID_OUTCOME_SET',
+          'Assignment CLO set is no longer approved for this program',
+        );
+        const unmapped = await tx.assignmentQuestion.count({
+          where: { assignmentId: id, outcomeId: null },
+        });
+        assertRule(unmapped === 0, 'OUTCOME_MAPPING_INCOMPLETE', 'Map every question to a CLO');
+      }
       const enrollments = await tx.enrollment.findMany({
         where: { id: { in: input.enrollmentIds } },
         include: { placements: true },
@@ -673,11 +754,17 @@ export class AssessmentService {
   async submissions(
     user: AuthenticatedUser,
     assignmentId: string,
-    page: PageDto,
+    page: SubmissionQueryDto,
   ): Promise<unknown> {
     roles(user, 'TEACHER', 'PARENT');
     if (user.role === 'TEACHER') await this.teacher(user, assignmentId);
     const where: Prisma.SubmissionWhereInput = {
+      submittedAt: dateTimeRange(page.fromDate, page.toDate),
+      ...(page.recipientId ? { recipientId: page.recipientId } : {}),
+      ...(page.gradeStatus ? { grades: { some: { AND: [
+        { status: page.gradeStatus },
+        ...(user.role === 'PARENT' ? [{ status: 'PUBLISHED' as const }] : []),
+      ] } } } : {}),
       recipient: {
         assignmentId,
         ...(user.role === 'PARENT'
@@ -689,6 +776,10 @@ export class AssessmentService {
             }
           : {}),
       },
+      AND: [{ recipient: { enrollment: {
+        ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+        ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
+      } } }],
     };
     return pageResult(
       page,

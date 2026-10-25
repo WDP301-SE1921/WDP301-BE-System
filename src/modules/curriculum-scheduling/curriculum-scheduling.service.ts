@@ -22,8 +22,9 @@ import {
   ReviseCurriculumUnitDto,
 } from './curriculum-scheduling.dto';
 import type { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
-import type { PageDto } from '../academic/academic.dto';
 import { pageResult } from '../../common/pagination';
+import { dateTimeRange } from '../../common/list-query';
+import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '../academic/academic-list.dto';
 import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
 import { parseCurriculumCsv } from './curriculum-csv';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
@@ -102,10 +103,11 @@ export class CurriculumSchedulingService {
   async studentCurriculum(
     user: AuthenticatedUser,
     studentId: string,
-    page: PageDto,
+    page: ParentCurriculumQueryDto,
   ): Promise<ParentCurriculumResponseDto> {
     this.requireRole(user, 'PARENT');
     await this.assertParentStudent(user, studentId);
+    dateTimeRange(page.fromDate, page.toDate);
     const now = new Date();
     const today = localDate(dateOnly(new Date(now.getTime() + HCM_OFFSET_MS)));
     const enrollments = await this.db.enrollment.findMany({
@@ -150,6 +152,11 @@ export class CurriculumSchedulingService {
           })),
         },
       ],
+      ...(page.programId ? { programId: page.programId } : {}),
+      ...(page.search ? { title: { contains: page.search } } : {}),
+      ...(page.toDate ? { fromDate: { lte: new Date(page.toDate) } } : {}),
+      ...(page.fromDate ? { toDate: { gte: new Date(page.fromDate) } } : {}),
+      program: { ...(page.subject ? { subject: page.subject } : {}), ...(page.grade ? { grade: page.grade } : {}) },
     };
     const [units, total] = await Promise.all([
       this.db.curriculumUnit.findMany({
@@ -195,6 +202,7 @@ export class CurriculumSchedulingService {
 
   async listUnits(user: AuthenticatedUser, filter: CurriculumUnitFilterDto): Promise<unknown> {
     this.requireRole(user, 'CURRICULUM_DESIGNER', 'MANAGER', 'TEACHER');
+    dateTimeRange(filter.fromDate, filter.toDate);
     const teacherPrograms =
       user.role === 'TEACHER'
         ? (
@@ -226,6 +234,8 @@ export class CurriculumSchedulingService {
         ...(filter.subject ? { subjectKey: subjectKey(filter.subject) } : {}),
       },
       ...(filter.search ? { title: { contains: filter.search.trim() } } : {}),
+      ...(filter.toDate ? { fromDate: { lte: new Date(filter.toDate) } } : {}),
+      ...(filter.fromDate ? { toDate: { gte: new Date(filter.fromDate) } } : {}),
     };
     const include = {
       track: true,
@@ -254,6 +264,8 @@ export class CurriculumSchedulingService {
       where,
       include,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      skip: (page - 1) * limit,
+      take: limit,
     });
   }
 
@@ -711,7 +723,7 @@ export class CurriculumSchedulingService {
     });
   }
 
-  async reviewers(user: AuthenticatedUser, id: string): Promise<unknown> {
+  async reviewers(user: AuthenticatedUser, id: string, query = new SearchPageDto()): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'CURRICULUM_DESIGNER');
     const unit = await this.loadUnit(id);
     await this.canReadUnit(user, unit);
@@ -723,11 +735,16 @@ export class CurriculumSchedulingService {
     const teacherIds = [...new Set(classes.map((row) => assignedTeacherAt(row, now)))].filter(
       (teacherId): teacherId is string => !!teacherId,
     );
-    return this.db.user.findMany({
-      where: { id: { in: teacherIds }, role: 'TEACHER', status: 'ACTIVE' },
+    const where: Prisma.UserWhereInput = {
+      id: { in: teacherIds }, role: 'TEACHER', status: 'ACTIVE',
+      ...(query.search ? { OR: [{ displayName: { contains: query.search } }, { email: { contains: query.search } }] } : {}),
+    };
+    return pageResult(query, this.db.user.findMany({
+      where,
       select: { id: true, email: true, displayName: true },
-      orderBy: [{ displayName: 'asc' }, { email: 'asc' }],
-    });
+      orderBy: [{ displayName: 'asc' }, { email: 'asc' }, { id: 'asc' }],
+      take: query.limit, skip: (query.page - 1) * query.limit,
+    }), () => this.db.user.count({ where }));
   }
 
   async technicalReview(
@@ -1287,6 +1304,13 @@ export class CurriculumSchedulingService {
       : [];
     const where: Prisma.ClassSessionWhereInput = {
       AND: [
+        {
+          ...(query.status ? { status: query.status } : {}),
+          ...(query.teacherId ? { teacherId: query.teacherId } : {}),
+          ...(query.roomId ? { roomId: query.roomId } : {}),
+          ...(query.lessonId ? { lessonId: query.lessonId } : {}),
+          ...(query.search ? { OR: [{ lesson: { title: { contains: query.search.trim() } } }, { class: { name: { contains: query.search.trim() } } }] } : {}),
+        },
         ...(parent ? [parentSessionWhere(enrollments)] : []),
         ...(query.classId ? [{ classId: query.classId }] : []),
         ...(user.role === 'TEACHER' ? [{ teacherId: user.id }] : []),
@@ -1487,7 +1511,7 @@ export class CurriculumSchedulingService {
     return row;
   }
 
-  async generationList(user: AuthenticatedUser, classId: string): Promise<unknown> {
+  async generationList(user: AuthenticatedUser, classId: string, query = new ClassContentQueryDto()): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER');
     if (user.role === 'TEACHER') {
       const classroom = await this.db.class.findUnique({ where: { id: classId } });
@@ -1498,14 +1522,20 @@ export class CurriculumSchedulingService {
         HttpStatus.FORBIDDEN,
       );
     }
-    return this.db.scheduleGeneration.findMany({
-      where: { classId },
+    const where: Prisma.ScheduleGenerationWhereInput = { AND: [{ classId }, {
+      ...(query.classId ? { classId: query.classId } : {}),
+      ...(query.search ? { unit: { title: { contains: query.search } } } : {}),
+      createdAt: dateTimeRange(query.fromDate, query.toDate),
+    }] };
+    return pageResult(query, this.db.scheduleGeneration.findMany({
+      where,
       include: {
         unit: { select: { id: true, title: true, version: true, status: true } },
         _count: { select: { sessions: true } },
       },
-      orderBy: { createdAt: 'desc' },
-    });
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      take: query.limit, skip: (query.page - 1) * query.limit,
+    }), () => this.db.scheduleGeneration.count({ where }));
   }
 
   async generationDetail(user: AuthenticatedUser, id: string): Promise<unknown> {

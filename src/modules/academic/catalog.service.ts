@@ -1,5 +1,8 @@
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import { Injectable } from '@nestjs/common';
+import { pageResult } from '../../common/pagination';
+import { dateTimeRange } from '../../common/list-query';
+import { AcademicProgramQueryDto, AcademicClassQueryDto, LessonQueryDto, AcademicSessionQueryDto, FeedbackQueryDto, EnrollmentQueryDto, RosterQueryDto } from './academic-list.dto';
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
@@ -15,7 +18,6 @@ import {
   FeedbackDto,
   LessonDto,
   LessonRevisionDto,
-  PageDto,
   ProgramDto,
   ResolveFeedbackDto,
   SessionDto,
@@ -34,13 +36,21 @@ export class CatalogService {
     return this.repo.db.program.create({ data: input });
   }
 
-  async programs(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async programs(user: AuthenticatedUser, page: AcademicProgramQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER');
-    return this.repo.db.program.findMany({
+    const where: Prisma.ProgramWhereInput = {
+      ...(page.search ? { name: { contains: page.search } } : {}),
+      ...(page.subjectId ? { subjectId: page.subjectId } : {}),
+      ...(page.subject ? { subject: page.subject } : {}),
+      ...(page.grade ? { grade: page.grade } : {}),
+      ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
+    };
+    return pageResult(page, this.repo.db.program.findMany({
+      where,
       skip: (page.page - 1) * page.limit,
       take: page.limit,
       orderBy: { id: 'asc' },
-    });
+    }), () => this.repo.db.program.count({ where }));
   }
 
   async createClass(user: AuthenticatedUser, input: ClassDto): Promise<unknown> {
@@ -52,14 +62,26 @@ export class CatalogService {
     return this.repo.db.class.create({ data: { ...input, isOpen: false } });
   }
 
-  async classes(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async classes(user: AuthenticatedUser, page: AcademicClassQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER');
-    return this.repo.db.class.findMany({
-      where: user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {},
+    const where: Prisma.ClassWhereInput = { AND: [
+      user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {},
+      {
+        ...(page.search ? { name: { contains: page.search } } : {}),
+        ...(page.programId ? { programId: page.programId } : {}),
+        ...(page.teacherId ? assignedTeacherWhere(page.teacherId, new Date()) : {}),
+        ...(page.roomId ? { roomId: page.roomId } : {}),
+        ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
+        ...(page.isOpen === undefined ? {} : { isOpen: page.isOpen }),
+        program: { ...(page.grade ? { grade: page.grade } : {}), ...(page.subject ? { subject: page.subject } : {}), ...(page.subjectId ? { subjectId: page.subjectId } : {}) },
+      },
+    ] };
+    return pageResult(page, this.repo.db.class.findMany({
+      where,
       skip: (page.page - 1) * page.limit,
       take: page.limit,
       orderBy: { id: 'asc' },
-    });
+    }), () => this.repo.db.class.count({ where }));
   }
 
   async createLesson(user: AuthenticatedUser, input: LessonDto): Promise<unknown> {
@@ -92,7 +114,7 @@ export class CatalogService {
     });
   }
 
-  async lessons(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async lessons(user: AuthenticatedUser, page: LessonQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
     const where: Prisma.LessonWhereInput =
       user.role === 'MANAGER'
@@ -110,12 +132,18 @@ export class CatalogService {
                 },
               },
             };
-    return this.repo.db.lesson.findMany({
-      where,
+    const filtered: Prisma.LessonWhereInput = { AND: [where, {
+      ...(page.programId ? { programId: page.programId } : {}),
+      ...(page.unitId ? { unitId: page.unitId } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.search ? { title: { contains: page.search } } : {}),
+    }] };
+    return pageResult(page, this.repo.db.lesson.findMany({
+      where: filtered,
       take: page.limit,
       skip: (page.page - 1) * page.limit,
-      orderBy: { createdAt: 'desc' },
-    });
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    }), () => this.repo.db.lesson.count({ where: filtered }));
   }
 
   async createSession(user: AuthenticatedUser, input: SessionDto): Promise<unknown> {
@@ -194,7 +222,7 @@ export class CatalogService {
     });
   }
 
-  async sessions(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async sessions(user: AuthenticatedUser, page: AcademicSessionQueryDto): Promise<unknown> {
     const where: Prisma.ClassSessionWhereInput =
       user.role === 'MANAGER' || user.role === 'STAFF'
         ? {}
@@ -212,8 +240,16 @@ export class CatalogService {
               },
             };
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
-    return this.repo.db.classSession.findMany({
-      where,
+    const filtered: Prisma.ClassSessionWhereInput = { AND: [where, {
+      ...(page.classId ? { classId: page.classId } : {}),
+      ...(page.teacherId ? { teacherId: page.teacherId } : {}),
+      ...(page.lessonId ? { lessonId: page.lessonId } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.search ? { lesson: { title: { contains: page.search } } } : {}),
+      startsAt: dateTimeRange(page.fromDate, page.toDate),
+    }] };
+    return pageResult(page, this.repo.db.classSession.findMany({
+      where: filtered,
       select: {
         id: true,
         classId: true,
@@ -224,10 +260,10 @@ export class CatalogService {
         summary: true,
         lesson: { select: { id: true, title: true } },
       },
-      orderBy: { startsAt: 'asc' },
+      orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       take: page.limit,
       skip: (page.page - 1) * page.limit,
-    });
+    }), () => this.repo.db.classSession.count({ where: filtered }));
   }
 
   async prepareRoster(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -349,19 +385,27 @@ export class CatalogService {
     });
   }
 
-  async listFeedback(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async listFeedback(user: AuthenticatedUser, page: FeedbackQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
-    return this.repo.db.curriculumFeedback.findMany({
-      where:
+    const scope: Prisma.CurriculumFeedbackWhereInput =
         user.role === 'MANAGER'
           ? {}
           : user.role === 'TEACHER'
             ? { teacherId: user.id }
-            : { lesson: { designerId: user.id } },
+            : { lesson: { designerId: user.id } };
+    const where: Prisma.CurriculumFeedbackWhereInput = { AND: [scope, {
+      ...(page.lessonId ? { lessonId: page.lessonId } : {}),
+      ...(page.teacherId ? { teacherId: page.teacherId } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.search ? { content: { contains: page.search } } : {}),
+      createdAt: dateTimeRange(page.fromDate, page.toDate),
+    }] };
+    return pageResult(page, this.repo.db.curriculumFeedback.findMany({
+      where,
       take: page.limit,
       skip: (page.page - 1) * page.limit,
-      orderBy: { createdAt: 'desc' },
-    });
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    }), () => this.repo.db.curriculumFeedback.count({ where }));
   }
 
   async resolveFeedback(
@@ -437,7 +481,7 @@ export class CatalogService {
     });
   }
 
-  async enrollments(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async enrollments(user: AuthenticatedUser, page: EnrollmentQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const now = new Date();
     const where: Prisma.EnrollmentWhereInput =
@@ -462,8 +506,14 @@ export class CatalogService {
                 { placements: { none: {} }, class: assignedTeacherWhere(user.id, now) },
               ],
             };
-    return this.repo.db.enrollment.findMany({
-      where,
+    const filtered: Prisma.EnrollmentWhereInput = { AND: [where, {
+      ...(page.classId ? { classId: page.classId } : {}),
+      ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
+    }] };
+    return pageResult(page, this.repo.db.enrollment.findMany({
+      where: filtered,
       select: {
         id: true,
         classId: true,
@@ -477,15 +527,21 @@ export class CatalogService {
       },
       take: page.limit,
       skip: (page.page - 1) * page.limit,
-      orderBy: { createdAt: 'desc' },
-    });
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    }), () => this.repo.db.enrollment.count({ where: filtered }));
   }
 
-  async roster(user: AuthenticatedUser, id: string, page: PageDto): Promise<unknown> {
+  async roster(user: AuthenticatedUser, id: string, page: RosterQueryDto): Promise<unknown> {
     // Staff only read rosters for scheduling; marking attendance stays with teachers and managers.
     if (user.role !== 'STAFF') await this.access.session(user, id);
-    return this.repo.db.sessionParticipant.findMany({
-      where: { sessionId: id, cancelled: false },
+    const where: Prisma.SessionParticipantWhereInput = {
+      sessionId: id, cancelled: false,
+      ...(page.attendance ? { attendance: page.attendance } : {}),
+      ...(page.kind ? { kind: page.kind } : {}),
+      enrollment: { ...(page.studentId ? { studentProfileId: page.studentId } : {}), ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}) },
+    };
+    return pageResult(page, this.repo.db.sessionParticipant.findMany({
+      where,
       select: {
         id: true,
         enrollmentId: true,
@@ -496,6 +552,6 @@ export class CatalogService {
       take: page.limit,
       skip: (page.page - 1) * page.limit,
       orderBy: { id: 'asc' },
-    });
+    }), () => this.repo.db.sessionParticipant.count({ where }));
   }
 }

@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { seedAccounts, type SeedUsers } from './seed-accounts';
 import { seedCatalog } from './seed-catalog';
+import { seedLearningOutcomes } from './seed-learning-outcomes';
 import { seedEnrollments } from './seed-enrollments';
 import { seedSessions, seedLeavesAndMakeups } from './seed-sessions';
 import { seedAssessments } from './seed-assessments';
@@ -37,6 +38,7 @@ export async function seedDemo(
       const today = referenceDate(savedDate ?? date);
       const users = await seedAccounts(tx, passwordHash, true, localInstant(today, 9), env);
       const catalog = await seedCatalog(tx, users, today);
+      await seedLearningOutcomes(tx, users, catalog);
       const enrollments = await seedEnrollments(tx, users, catalog, today);
       const sessions = await seedSessions(tx, users, catalog, enrollments, today);
       await seedLeavesAndMakeups(tx, users, enrollments, sessions, today);

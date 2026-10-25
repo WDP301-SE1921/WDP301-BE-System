@@ -5,6 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'node:crypto';
 
 import { AppError } from '../../common/errors/app.error';
+import { dateTimeRange } from '../../common/list-query';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import type { AppConfiguration } from '../../config/configuration';
@@ -13,7 +14,7 @@ import {
   AuditLogQueryDto,
   AcceptAccountInvitationDto,
   CreateAccountInvitationDto,
-  DirectoryPageDto,
+  InvitationQueryDto,
   DashboardQueryDto,
   ListAccountsDto,
   UpdateParentAccountDto,
@@ -417,10 +418,7 @@ export class DirectoryService {
 
   async auditLogs(user: AuthenticatedUser, query: AuditLogQueryDto): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
-    const createdAt = {
-      ...(query.from ? { gte: new Date(query.from) } : {}),
-      ...(query.to ? { lte: new Date(query.to) } : {}),
-    };
+    const createdAt = dateTimeRange(query.from, query.to);
     const where: Prisma.AuditLogWhereInput = {
       ...(query.actorUserId ? { actorUserId: query.actorUserId } : {}),
       ...(query.entityType ? { entityType: query.entityType } : {}),
@@ -448,7 +446,7 @@ export class DirectoryService {
       this.db.user.findMany({
         where,
         select: accountSelect,
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         skip: (query.page - 1) * query.limit,
         take: query.limit,
       }),
@@ -521,16 +519,21 @@ export class DirectoryService {
   async invitations(
     user: AuthenticatedUser,
     role: InvitedRole,
-    page: DirectoryPageDto,
+    page: InvitationQueryDto,
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
-    const where = { role } as const;
+    const where: Prisma.AccountInvitationWhereInput = {
+      role,
+      ...(page.search ? { email: { contains: page.search.trim() } } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.fromDate || page.toDate ? { createdAt: dateTimeRange(page.fromDate, page.toDate) } : {}),
+    };
     const [items, total] = await Promise.all([
       this.db.accountInvitation.findMany({
         where,
         omit: { tokenHash: true },
         include: { acceptedUser: { select: accountSelect } },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: (page.page - 1) * page.limit,
         take: page.limit,
       }),
@@ -724,6 +727,7 @@ export class DirectoryService {
     const search = query.search?.trim();
     return {
       role,
+      ...(query.fromDate || query.toDate ? { createdAt: dateTimeRange(query.fromDate, query.toDate) } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(search
         ? { OR: [{ email: { contains: search } }, { displayName: { contains: search } }] }

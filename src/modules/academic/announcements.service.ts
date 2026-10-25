@@ -1,12 +1,15 @@
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import type { Prisma } from '@prisma/client';
 import { Injectable } from '@nestjs/common';
+import { pageResult } from '../../common/pagination';
+import { dateTimeRange } from '../../common/list-query';
+import { ClassContentQueryDto } from './academic-list.dto';
 import { createHash } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicRepository } from './academic.repository';
 import { assertRule, roles, studyDate } from './academic-access.service';
-import { AnnouncementDto, PageDto, ReminderDto } from './academic.dto';
+import { AnnouncementDto, ReminderDto } from './academic.dto';
 
 @Injectable()
 export class AnnouncementsService {
@@ -33,7 +36,7 @@ export class AnnouncementsService {
       return created;
     });
   }
-  async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async list(user: AuthenticatedUser, page: ClassContentQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'PARENT');
     const where =
       user.role === 'MANAGER'
@@ -71,12 +74,17 @@ export class AnnouncementsService {
                 ],
               },
             };
-    return this.repo.db.announcement.findMany({
-      where,
+    const filtered = { AND: [where, {
+      ...(page.classId ? { classId: page.classId } : {}),
+      ...(page.search ? { OR: [{ title: { contains: page.search } }, { body: { contains: page.search } }] } : {}),
+      createdAt: dateTimeRange(page.fromDate, page.toDate),
+    }] };
+    return pageResult(page, this.repo.db.announcement.findMany({
+      where: filtered,
       take: page.limit,
       skip: (page.page - 1) * page.limit,
-      orderBy: { createdAt: 'desc' },
-    });
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    }), () => this.repo.db.announcement.count({ where: filtered }));
   }
   async sendAnnouncement(user: AuthenticatedUser, id: string): Promise<unknown> {
     roles(user, 'MANAGER');

@@ -29,6 +29,13 @@ có thể dùng suffix như `/confirm-payment`, `/claim` hoặc `/reissue-link`.
 
 Error code ổn định là một phần của hợp đồng client. Không trả stack trace, Prisma/SQL error hoặc secret.
 
+## Danh sách, phân trang và bộ lọc
+
+Các GET danh sách dùng `page=1`, `limit=20` (tối đa 100). Với endpoint vốn trả array,
+thêm `paginated=true` để nhận `{ items, page, limit, total }` trong `data`. Các endpoint
+vốn có metadata giữ contract hiện tại. Bộ lọc được áp dụng cùng phạm vi quyền trước
+khi phân trang và tính tổng. Xem [bảng toàn bộ route và filter](data-list-api.md).
+
 ## Web và mobile
 
 Web có thể dùng cookie `HttpOnly` khi chính sách CSRF được triển khai. Mobile dùng bearer access token
