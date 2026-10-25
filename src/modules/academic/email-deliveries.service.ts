@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createTransport } from 'nodemailer';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../common/errors/app.error';
+import { dateTimeRange } from '../../common/list-query';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import type { AppConfiguration } from '../../config/configuration';
 import { DatabaseService } from '../../database/orm/database.service';
@@ -36,11 +37,16 @@ export class EmailDeliveriesService implements OnModuleInit, OnModuleDestroy {
 
   async list(user: AuthenticatedUser, page: EmailDeliveryFilterDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
-    const where = page.status ? { status: page.status } : {};
+    const where = {
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.eventType ? { eventType: page.eventType } : {}),
+      ...(page.search ? { recipient: { contains: page.search.trim() } } : {}),
+      ...(page.fromDate || page.toDate ? { createdAt: dateTimeRange(page.fromDate, page.toDate) } : {}),
+    };
     const [items, total] = await Promise.all([
       this.db.outboxEvent.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         omit: { payload: true },
         skip: (page.page - 1) * page.limit,
         take: page.limit,

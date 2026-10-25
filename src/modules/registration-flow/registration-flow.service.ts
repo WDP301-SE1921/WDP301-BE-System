@@ -10,6 +10,8 @@ import {
 import { createHash } from 'node:crypto';
 
 import { AppError } from '../../common/errors/app.error';
+import { pageResult } from '../../common/pagination';
+import { pageArray, dateTimeRange } from '../../common/list-query';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
@@ -18,10 +20,16 @@ import {
   ClassDto,
   ClassScheduleSlotDto,
   ClassFilterDto,
+  ClassRosterQueryDto,
   CreateRegistrationDto,
   CreateStudentDto,
-  PageDto,
+  LookupQueryDto,
+  RoomFilterDto,
+  MyStudentFilterDto,
+  StudentHistoryQueryDto,
+  WeeklyScheduleQueryDto,
   ListPaymentsDto,
+  MyBillsQueryDto,
   ListRegistrationsDto,
   ListStudentsDto,
   ParentSearchDto,
@@ -88,13 +96,21 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async listMyStudents(user: AuthenticatedUser): Promise<unknown> {
+  async listMyStudents(user: AuthenticatedUser, query = new MyStudentFilterDto()): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     const profile = await this.parentProfileForUser(user.id);
-    return this.db.studentProfile.findMany({
-      where: { parentProfileId: profile.id },
-      orderBy: { createdAt: 'asc' },
-    });
+    const where: Prisma.StudentProfileWhereInput = {
+      parentProfileId: profile.id,
+      ...(query.search ? { fullName: { contains: query.search.trim() } } : {}),
+      ...(query.grade ? { grade: query.grade } : {}),
+      ...(query.status ? { status: query.status } : {}),
+    };
+    return pageResult(query, this.db.studentProfile.findMany({
+      where,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: query.limit,
+      skip: (query.page - 1) * query.limit,
+    }), () => this.db.studentProfile.count({ where }));
   }
 
   async createMyStudent(user: AuthenticatedUser, input: CreateStudentDto): Promise<unknown> {
@@ -286,33 +302,41 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   async searchParents(
     user: AuthenticatedUser,
     query: ParentSearchDto,
-  ): Promise<ParentSuggestionDto[]> {
+  ): Promise<unknown> {
     this.requireRoles(user, 'STAFF');
     const email = query.email.trim().toLowerCase();
     // LOCATE matches literal email characters, including % and _, rather than LIKE wildcards.
     // Tagged parameters are bound by Prisma; the schema uses utf8mb4_unicode_ci for email.
-    return this.db.$queryRaw<ParentSuggestionDto[]>`
+    return pageResult(query, this.db.$queryRaw<ParentSuggestionDto[]>`
       SELECT id, email, displayName, status
       FROM users
       WHERE role = 'PARENT' AND LOCATE(${email}, LOWER(email)) > 0
       ORDER BY email ASC
       LIMIT ${query.limit}
-    `;
+      OFFSET ${(query.page - 1) * query.limit}
+    `, async () => {
+      const rows = await this.db.$queryRaw<Array<{ total: bigint }>>`
+        SELECT COUNT(*) AS total FROM users
+        WHERE role = 'PARENT' AND LOCATE(${email}, LOWER(email)) > 0
+      `;
+      return Number(rows[0].total);
+    });
   }
 
   async listPrograms(user: AuthenticatedUser, page: ProgramFilterDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
-    return this.db.program.findMany({
-      where: {
+    const where: Prisma.ProgramWhereInput = {
         ...(page.search ? { name: { contains: page.search.trim() } } : {}),
         ...(page.subjectId ? { subjectId: page.subjectId } : {}),
         ...(page.grade ? { grade: page.grade } : {}),
         ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
-      },
-      orderBy: [{ grade: 'asc' }, { subject: 'asc' }],
+    };
+    return pageResult(page, this.db.program.findMany({
+      where,
+      orderBy: [{ grade: 'asc' }, { subject: 'asc' }, { id: 'asc' }],
       skip: (page.page - 1) * page.limit,
       take: page.limit,
-    });
+    }), () => this.db.program.count({ where }));
   }
 
   async getProgram(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -467,9 +491,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async listRooms(user: AuthenticatedUser): Promise<unknown> {
+  async listRooms(user: AuthenticatedUser, query = new RoomFilterDto()): Promise<unknown> {
     this.requireRoles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
-    return this.db.room.findMany({ orderBy: { name: 'asc' } });
+    const where: Prisma.RoomWhereInput = {
+      ...(query.search ? { name: { contains: query.search.trim() } } : {}),
+      ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
+      ...(query.minCapacity ? { capacity: { gte: query.minCapacity } } : {}),
+    };
+    return pageResult(query, this.db.room.findMany({ where, orderBy: [{ name: 'asc' }, { id: 'asc' }], take: query.limit, skip: (query.page - 1) * query.limit }), () => this.db.room.count({ where }));
   }
 
   async createRoom(user: AuthenticatedUser, input: RoomDto): Promise<unknown> {
@@ -626,15 +655,15 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async substituteCandidates(user: AuthenticatedUser, sessionId: string): Promise<unknown> {
+  async substituteCandidates(user: AuthenticatedUser, sessionId: string, query = new LookupQueryDto()): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     const session = await this.db.classSession.findUnique({ where: { id: sessionId } });
     this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
-    return this.db.user.findMany({
-      where: {
+    const where: Prisma.UserWhereInput = {
         role: 'TEACHER',
         status: 'ACTIVE',
         id: { not: session.teacherId },
+        ...(query.search ? { OR: [{ displayName: { contains: query.search.trim() } }, { email: { contains: query.search.trim() } }] } : {}),
         teachingSessions: {
           none: {
             status: 'SCHEDULED',
@@ -642,10 +671,13 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             endsAt: { gt: session.startsAt },
           },
         },
-      },
+    };
+    return pageResult(query, this.db.user.findMany({
+      where,
       select: { id: true, email: true, displayName: true },
-      orderBy: { displayName: 'asc' },
-    });
+      orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
+      take: query.limit, skip: (query.page - 1) * query.limit,
+    }), () => this.db.user.count({ where }));
   }
 
   async substitute(
@@ -783,21 +815,24 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       ...(input.programId ? { id: input.programId } : {}),
       ...(input.grade ? { grade: input.grade } : {}),
     };
-    const rows = await this.db.class.findMany({
-      where: {
+    const where: Prisma.ClassWhereInput = {
+        AND: [input.teacherId ? assignedTeacherWhere(input.teacherId, new Date()) : {}],
+        ...(input.roomId ? { roomId: input.roomId } : {}),
         ...(user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {}),
         ...(Object.keys(programWhere).length ? { program: programWhere } : {}),
         ...(input.search ? { name: { contains: input.search.trim() } } : {}),
         ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
         ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
-      },
+    };
+    const rows = await this.db.class.findMany({
+      where,
       include: {
         program: true,
         room: true,
         weeklySchedules: true,
         _count: { select: { enrollments: true } },
       },
-      orderBy: [{ isOpen: 'desc' }, { name: 'asc' }],
+      orderBy: [{ isOpen: 'desc' }, { name: 'asc' }, { id: 'asc' }],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     });
@@ -830,7 +865,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       ),
     );
     const listed = rows.map((row, index) => ({ ...row, rosterCount: rosterCounts[index] }));
-    if (!input.startDate || !input.packageMonths || user.role === 'TEACHER') return listed;
+    if (!input.startDate || !input.packageMonths || user.role === 'TEACHER')
+      return pageResult(input, Promise.resolve(listed), () => this.db.class.count({ where }));
     const startDate = localDate(input.startDate);
     const endDate = addCalendarMonths(startDate, input.packageMonths);
     const termWhere = {
@@ -851,7 +887,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     const studentEnrollments = student
       ? await this.studentTermEnrollments(this.db, student.id, startDate, endDate)
       : [];
-    return listed.map((row) => {
+    const items = listed.map((row) => {
       const occupied = classEnrollments.filter((item) => item.classId === row.id);
       const availableSeats = Math.max(
         0,
@@ -873,6 +909,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         ineligibleMessage: problem?.message ?? null,
       };
     });
+    return pageResult(input, Promise.resolve(items), () => this.db.class.count({ where }));
   }
 
   async replaceClassSchedules(
@@ -916,12 +953,18 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async classSchedules(user: AuthenticatedUser, classId: string): Promise<unknown> {
+  async classSchedules(user: AuthenticatedUser, classId: string, query = new WeeklyScheduleQueryDto()): Promise<unknown> {
     await this.getClass(user, classId, { page: 1, limit: 1 });
-    return this.db.classWeeklySchedule.findMany({
-      where: { classId },
-      orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }],
-    });
+    const where: Prisma.ClassWeeklyScheduleWhereInput = { AND: [{ classId }, {
+      ...(query.weekday ? { weekday: query.weekday } : {}),
+      ...(query.classId ? { classId: query.classId } : {}),
+      class: { ...(query.search ? { name: { contains: query.search } } : {}), ...(query.subject ? { program: { subject: query.subject } } : {}) },
+    }] };
+    return pageResult(query, this.db.classWeeklySchedule.findMany({
+      where,
+      orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }, { id: 'asc' }],
+      take: query.limit, skip: (query.page - 1) * query.limit,
+    }), () => this.db.classWeeklySchedule.count({ where }));
   }
 
   async updateClassSchedule(
@@ -1162,6 +1205,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
 
   async listRegistrations(user: AuthenticatedUser, query: ListRegistrationsDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
+    dateTimeRange(query.fromDate, query.toDate);
     const search = query.search?.trim();
     const where: Prisma.RegistrationOrderWhereInput = {
       ...(query.status ? { status: query.status } : {}),
@@ -1169,12 +1213,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       ...(query.classId ? { classId: query.classId } : {}),
       ...(query.fromDate || query.toDate
         ? {
-            createdAt: {
-              ...(query.fromDate ? { gte: atStartOfLocalDay(localDate(query.fromDate)) } : {}),
-              ...(query.toDate
-                ? { lt: atStartOfLocalDay(addDays(localDate(query.toDate), 1)) }
-                : {}),
-            },
+            createdAt: dateTimeRange(query.fromDate, query.toDate),
           }
         : {}),
       ...(search
@@ -1191,7 +1230,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       this.db.registrationOrder.findMany({
         where,
         include: registrationInclude,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: (query.page - 1) * query.limit,
         take: query.limit,
       }),
@@ -1202,16 +1241,16 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
 
   async listPayments(user: AuthenticatedUser, query: ListPaymentsDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
+    dateTimeRange(query.fromDate, query.toDate);
     const search = query.search?.trim();
     const where: Prisma.PaymentWhereInput = {
+      AND: [{ registrationOrder: {
+        ...(query.classId ? { classId: query.classId } : {}),
+        ...(query.studentId ? { targetStudentId: query.studentId } : {}),
+      } }],
       ...(query.fromDate || query.toDate
         ? {
-            confirmedAt: {
-              ...(query.fromDate ? { gte: atStartOfLocalDay(localDate(query.fromDate)) } : {}),
-              ...(query.toDate
-                ? { lt: atStartOfLocalDay(addDays(localDate(query.toDate), 1)) }
-                : {}),
-            },
+            confirmedAt: dateTimeRange(query.fromDate, query.toDate),
           }
         : {}),
       ...(search
@@ -1242,7 +1281,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             },
           },
         },
-        orderBy: { confirmedAt: 'desc' },
+        orderBy: [{ confirmedAt: 'desc' }, { id: 'asc' }],
         skip: (query.page - 1) * query.limit,
         take: query.limit,
       }),
@@ -1269,10 +1308,15 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     return order;
   }
 
-  async myBills(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async myBills(user: AuthenticatedUser, page: MyBillsQueryDto): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     const where: Prisma.RegistrationOrderWhereInput = {
       targetStudent: { is: { parentProfile: { is: { userId: user.id } } } },
+      ...(page.studentId ? { targetStudentId: page.studentId } : {}),
+      ...(page.classId ? { classId: page.classId } : {}),
+      ...(page.status ? { status: page.status } : {}),
+      ...(page.search ? { OR: [{ studentFullName: { contains: page.search.trim() } }, { payment: { receiptNumber: { contains: page.search.trim() } } }] } : {}),
+      createdAt: dateTimeRange(page.fromDate, page.toDate),
     };
     const [orders, total] = await Promise.all([
       this.db.registrationOrder.findMany({
@@ -1501,16 +1545,16 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     return receiptResponse(order);
   }
 
-  async myStudentEnrollments(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+  async myStudentEnrollments(user: AuthenticatedUser, studentId: string, query = new StudentHistoryQueryDto()): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     await this.findVisibleStudent(user, studentId);
-    return this.enrollmentsOf(studentId);
+    return pageResult(query, this.enrollmentsOf(studentId, query), () => this.db.enrollment.count({ where: this.historyWhere(studentId, query) }));
   }
 
-  async myStudentSchedule(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+  async myStudentSchedule(user: AuthenticatedUser, studentId: string, query = new WeeklyScheduleQueryDto()): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     await this.findVisibleStudent(user, studentId);
-    return scheduleOf(await this.enrollmentsOf(studentId));
+    return pageArray(this.filteredSchedule(scheduleOf(await this.enrollmentsOf(studentId)), query), query);
   }
 
   async listStudents(user: AuthenticatedUser, query: ListStudentsDto): Promise<unknown> {
@@ -1666,19 +1710,40 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async studentEnrollments(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+  async studentEnrollments(user: AuthenticatedUser, studentId: string, query = new StudentHistoryQueryDto()): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
     await this.findVisibleStudent(user, studentId);
-    return this.enrollmentsOf(studentId);
+    return pageResult(query, this.enrollmentsOf(studentId, query), () => this.db.enrollment.count({ where: this.historyWhere(studentId, query) }));
   }
 
-  async studentSchedule(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+  async studentSchedule(user: AuthenticatedUser, studentId: string, query = new WeeklyScheduleQueryDto()): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
     await this.findVisibleStudent(user, studentId);
-    return scheduleOf(await this.enrollmentsOf(studentId));
+    return pageArray(this.filteredSchedule(scheduleOf(await this.enrollmentsOf(studentId)), query), query);
   }
 
-  private async enrollmentsOf(studentId: string): Promise<
+  private filteredSchedule(rows: Record<string, unknown>[], query: WeeklyScheduleQueryDto): Record<string, unknown>[] {
+    return rows.filter((row) =>
+      (!query.weekday || row.weekday === query.weekday) &&
+      (!query.classId || row.classId === query.classId) &&
+      (!query.subject || row.subject === query.subject) &&
+      (!query.search || String(row.className).toLocaleLowerCase().includes(query.search.trim().toLocaleLowerCase())),
+    ).sort((a, b) => Number(a.weekday) - Number(b.weekday) || String(a.startTime).localeCompare(String(b.startTime)) || String(a.classId).localeCompare(String(b.classId)) || String(a.enrollmentId).localeCompare(String(b.enrollmentId)));
+  }
+
+  private historyWhere(studentId: string, query?: StudentHistoryQueryDto): Prisma.EnrollmentWhereInput {
+    return {
+      studentProfileId: studentId,
+      status: query?.status ?? { not: 'PENDING_LINK' },
+      ...(query?.classId ? { OR: [{ classId: query.classId }, { placements: { some: { classId: query.classId } } }] } : {}),
+      class: {
+        ...(query?.subject ? { program: { subject: query.subject } } : {}),
+        ...(query?.search ? { name: { contains: query.search.trim() } } : {}),
+      },
+    };
+  }
+
+  private async enrollmentsOf(studentId: string, query?: StudentHistoryQueryDto): Promise<
     Array<
       EnrollmentWithPlacements & {
         term: ReturnType<typeof termStatus> & { startDate: string | null; endDate: string | null };
@@ -1686,7 +1751,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     >
   > {
     const rows = await this.db.enrollment.findMany({
-      where: { studentProfileId: studentId, status: { not: 'PENDING_LINK' } },
+      where: this.historyWhere(studentId, query),
+      ...(query ? { take: query.limit, skip: (query.page - 1) * query.limit } : {}),
       include: {
         class: {
           include: {
@@ -1709,7 +1775,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         },
         registrationOrder: { include: { payment: true } },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
     });
     return rows.map((row) => ({
       ...row,
@@ -1724,7 +1790,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   async getClass(
     user: AuthenticatedUser,
     id: string,
-    page: PageDto & { at?: string },
+    page: ClassRosterQueryDto,
   ): Promise<unknown> {
     await this.activateDueTeachers();
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER');
@@ -1749,6 +1815,11 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     const where: Prisma.EnrollmentWhereInput = {
       status: { not: 'PENDING_LINK' },
       studentProfileId: { not: null },
+      studentProfile: {
+        ...(page.studentId ? { id: page.studentId } : {}),
+        ...(page.search ? { fullName: { contains: page.search.trim() } } : {}),
+        ...(page.grade ? { grade: page.grade } : {}),
+      },
       startDate: { lte: day },
       endDate: { gt: day },
       OR: [
@@ -1789,7 +1860,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             },
           },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: (page.page - 1) * page.limit,
         take: page.limit,
       }),
@@ -2441,10 +2512,6 @@ function termStatus(order: {
 
 function hashRequest(value: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
-function addDays(value: Date, days: number): Date {
-  return new Date(value.getTime() + days * 86_400_000);
 }
 
 function localDate(value: string): Date {

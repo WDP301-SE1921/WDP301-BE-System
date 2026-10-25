@@ -25,7 +25,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
-import { PageDto } from '../academic/academic.dto';
+import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '../academic/academic-list.dto';
 import { AcademicErrorsFilter } from '../academic/academic-errors.filter';
 import {
   CreateCurriculumUnitDto,
@@ -71,7 +71,7 @@ export class CurriculumSchedulingController {
   studentCurriculum(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Query() page: PageDto,
+    @Query() page: ParentCurriculumQueryDto,
   ): Promise<unknown> {
     return this.service.studentCurriculum(user, id, page);
   }
@@ -121,8 +121,8 @@ export class CurriculumSchedulingController {
 
   @Get('curriculum-units/:id/reviewers')
   @ApiOperation({ summary: 'List active teachers responsible for the curriculum program' })
-  reviewers(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
-    return this.service.reviewers(user, id);
+  reviewers(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Query() query: SearchPageDto): Promise<unknown> {
+    return this.service.reviewers(user, id, query);
   }
 
   @Post('curriculum-units/:id/technical-review')
@@ -283,8 +283,9 @@ export class CurriculumSchedulingController {
   generationList(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: ClassContentQueryDto,
   ): Promise<unknown> {
-    return this.service.generationList(user, id);
+    return this.service.generationList(user, id, query);
   }
 
   @Get('session-generations/:id')

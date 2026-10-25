@@ -134,6 +134,118 @@ describe('Demo seed against MySQL and shared APIs', () => {
     }
   });
 
+  it('exposes 48 sourced CLO drafts for math, chemistry and biology without claiming approval', async () => {
+    expect(await db.outcomeSet.count()).toBe(12);
+    expect(await db.learningOutcome.count()).toBe(48);
+    expect(await db.outcomeSet.count({ where: { status: 'APPROVED' } })).toBe(0);
+    expect(await db.learningOutcome.count({ where: { sourceStatus: 'VERIFIED' } })).toBe(0);
+    const auth = app.get(AuthService);
+    const manager = (await auth.login('manager@edugrade.local', password)).tokens.accessToken;
+    const parent = (await auth.login('parent@edugrade.local', password)).tokens.accessToken;
+    const url = `/api/v1/academic/programs/${demoId('program_math-8')}/outcome-sets`;
+    const managerResponse = await request(server)
+      .get(url)
+      .set('Authorization', `Bearer ${manager}`)
+      .expect(200);
+    const managerData = (managerResponse.body as { data: Array<{ outcomes: unknown[] }> }).data;
+    expect(managerData).toHaveLength(1);
+    expect(managerData[0].outcomes).toHaveLength(4);
+    const parentResponse = await request(server)
+      .get(url)
+      .set('Authorization', `Bearer ${parent}`)
+      .expect(200);
+    const parentData = (parentResponse.body as { data: unknown[] }).data;
+    expect(parentData).toEqual([]);
+  });
+
+  it('paginates and filters list APIs while keeping role scope and totals', async () => {
+    const auth = app.get(AuthService);
+    const tokens = {
+      manager: (await auth.login('manager@edugrade.local', password)).tokens.accessToken,
+      teacher: (await auth.login('teacher@edugrade.local', password)).tokens.accessToken,
+      parent: (await auth.login('parent@edugrade.local', password)).tokens.accessToken,
+      staff: (await auth.login('staff@edugrade.local', password)).tokens.accessToken,
+    };
+    const classId = demoId('class_math-8-a');
+    const programId = demoId('program_math-8');
+    const studentId = demoId('student_an');
+    const session = await db.classSession.findFirstOrThrow({ where: { classId } });
+    const assignment = await db.assignment.findFirstOrThrow({ where: { classId } });
+    const cases: Array<[keyof typeof tokens, string, Record<string, string | number | boolean>]> = [
+      ['manager', 'subjects', { search: 'Toán' }],
+      ['manager', 'programs', { grade: 8 }],
+      ['manager', 'rooms', { isActive: false }],
+      ['manager', 'classes', { programId }],
+      ['manager', 'academic/programs', { grade: 8 }],
+      ['manager', 'academic/classes', { programId }],
+      ['manager', 'academic/lessons', { programId }],
+      ['manager', 'academic/sessions', { classId }],
+      ['manager', 'academic/enrollments', { classId }],
+      ['manager', `academic/sessions/${session.id}/roster`, { attendance: 'PRESENT' }],
+      ['manager', 'academic/feedback', { status: 'OPEN' }],
+      ['manager', 'academic/announcements', { classId }],
+      ['teacher', 'academic/reports', { classId }],
+      ['teacher', 'academic/assignments', { classId }],
+      ['teacher', `academic/assignments/${assignment.id}/submissions`, {}],
+      ['manager', 'academic/makeups', { status: 'BOOKED' }],
+      ['manager', 'academic/makeup-sources', { completedOnly: true }],
+      ['manager', 'academic/leaves', { classId }],
+      ['manager', 'academic/curriculum-units', { grade: 8 }],
+      ['manager', 'academic/scheduled-sessions', { classId }],
+      ['manager', `academic/programs/${programId}/outcome-sets`, { status: 'DRAFT' }],
+      ['manager', `academic/classes/${classId}/session-generations`, {}],
+      ['manager', `academic/curriculum-units/${demoId('unit_math-8_v2')}/reviewers`, {}],
+      ['manager', 'staff', { status: 'ACTIVE' }],
+      ['manager', 'teachers', { search: 'teacher' }],
+      ['manager', 'curriculum-designers', { status: 'ACTIVE' }],
+      ['manager', 'parents', { status: 'ACTIVE' }],
+      ['manager', 'managers', { status: 'ACTIVE' }],
+      ['manager', 'teacher-invitations', { status: 'INVITED' }],
+      ['manager', 'manager-invitations', { status: 'ACCEPTED' }],
+      ['manager', 'audit-logs', {}],
+      ['manager', 'registrations', { status: 'DRAFT' }],
+      ['manager', 'payments', {}],
+      ['manager', 'students', { grade: 8 }],
+      ['parent', 'me/bills', {}],
+      ['parent', 'me/students', { grade: 8 }],
+      ['parent', `me/students/${studentId}/enrollments`, {}],
+      ['parent', `me/students/${studentId}/schedule`, {}],
+      ['manager', `students/${studentId}/enrollments`, {}],
+      ['manager', `students/${studentId}/schedule`, {}],
+      ['manager', `classes/${classId}/schedules`, {}],
+      ['manager', `academic/students/${studentId}/grades`, {}],
+      ['parent', `academic/me/students/${studentId}/curriculum`, {}],
+      ['manager', 'academic/email-deliveries', { status: 'PENDING' }],
+      ['parent', 'notifications', { unreadOnly: true }],
+      ['staff', 'parents/search', { email: 'parent' }],
+    ];
+    for (const [role, path, filters] of cases) {
+      const response = await request(server).get(`/api/v1/${path}`)
+        .query({ paginated: true, page: 1, limit: 1, ...filters })
+        .set('Authorization', `Bearer ${tokens[role]}`);
+      expect({ path, status: response.status, body: response.body as unknown }).toMatchObject({ path, status: 200 });
+      const data = (response.body as { data: { items: unknown[]; total: number; page: number; limit: number } }).data;
+      expect({ path, page: data.page, limit: data.limit }).toEqual({ path, page: 1, limit: 1 });
+      expect(Array.isArray(data.items)).toBe(true);
+      expect(data.items.length).toBeLessThanOrEqual(1);
+      expect(data.total).toBeGreaterThanOrEqual(data.items.length);
+    }
+    const lessonsUrl = `/api/v1/academic/lessons?programId=${programId}&paginated=true&limit=1`;
+    const first = await request(server).get(`${lessonsUrl}&page=1`).set('Authorization', `Bearer ${tokens.manager}`).expect(200);
+    const second = await request(server).get(`${lessonsUrl}&page=2`).set('Authorization', `Bearer ${tokens.manager}`).expect(200);
+    const firstData = (first.body as { data: { items: Array<{ id: string }>; total: number } }).data;
+    const secondData = (second.body as { data: { items: Array<{ id: string }>; total: number } }).data;
+    expect(firstData.total).toBe(secondData.total);
+    expect(firstData.items[0].id).not.toBe(secondData.items[0].id);
+    const empty = await request(server).get('/api/v1/academic/assignments')
+      .query({ paginated: true, status: 'DRAFT' }).set('Authorization', `Bearer ${tokens.parent}`).expect(200);
+    expect((empty.body as { data: { total: number } }).data.total).toBe(0);
+    await request(server).get('/api/v1/academic/assignments?status=INVALID').set('Authorization', `Bearer ${tokens.teacher}`).expect(400);
+    await request(server).get('/api/v1/rooms?isActive=wrong').set('Authorization', `Bearer ${tokens.manager}`).expect(400);
+    await request(server).get('/api/v1/academic/lessons?limit=101').set('Authorization', `Bearer ${tokens.manager}`).expect(400);
+    await request(server).get('/api/v1/academic/sessions?fromDate=2026-10-25&toDate=2026-10-24').set('Authorization', `Bearer ${tokens.manager}`).expect(400);
+  }, 120_000);
+
   it('keeps payment, placement, attendance, makeup and grade records consistent', async () => {
     const orders = await db.registrationOrder.findMany({
       include: { payment: true, enrollment: { include: { placements: true } } },
@@ -260,6 +372,13 @@ describe('Demo seed against MySQL and shared APIs', () => {
   });
 
   it('can run again without duplicates or overwriting account and workflow changes', async () => {
+    const editedOutcome = await db.learningOutcome.findUniqueOrThrow({
+      where: { id: demoId('outcome_math-8_1') },
+    });
+    await db.learningOutcome.update({
+      where: { id: editedOutcome.id },
+      data: { statement: 'CLO đã được người soạn chỉnh sửa' },
+    });
     await db.user.update({
       where: { email: 'manager@edugrade.local' },
       data: { displayName: 'Tên quản lý đã sửa', passwordHash: 'preserved-test-password-hash' },
@@ -271,6 +390,9 @@ describe('Demo seed against MySQL and shared APIs', () => {
     });
     const before = await counts(db);
     await seedDemo(db, 'a-new-hash-must-not-replace-existing-passwords', undefined, {});
+    expect(
+      (await db.learningOutcome.findUniqueOrThrow({ where: { id: editedOutcome.id } })).statement,
+    ).toBe('CLO đã được người soạn chỉnh sửa');
     expect(await counts(db)).toEqual(before);
     const manager = await db.user.findUniqueOrThrow({ where: { email: 'manager@edugrade.local' } });
     expect(manager.displayName).toBe('Tên quản lý đã sửa');

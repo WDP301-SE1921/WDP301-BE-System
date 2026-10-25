@@ -213,6 +213,7 @@ model Program {
   classes         Class[]
   lessons         Lesson[]
   curriculumUnits CurriculumUnit[]
+  outcomeSets     OutcomeSet[]
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -565,6 +566,7 @@ model Lesson {
   unit             CurriculumUnit?      @relation(fields: [unitId], references: [id], onDelete: Restrict)
   designer         User                 @relation(fields: [designerId], references: [id], onDelete: Restrict)
   sessions         ClassSession[]
+  outcomeLinks     LessonOutcome[]
   feedback         CurriculumFeedback[]
   createdAt        DateTime             @default(now())
 
@@ -781,10 +783,13 @@ model Assignment {
   session            ClassSession?         @relation(fields: [sessionId], references: [id], onDelete: Restrict)
   questions          AssignmentQuestion[]
   recipients         AssignmentRecipient[]
+  outcomeSetId       String?               @db.VarChar(191)
+  outcomeSet         OutcomeSet?           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
   createdAt          DateTime              @default(now())
 
   @@index([classId, status])
   @@index([sessionId])
+  @@index([outcomeSetId])
   @@map("assignments")
 }
 
@@ -799,9 +804,79 @@ model AssignmentQuestion {
   rubric        String?      @db.Text
   maxScore      Float
   assignment    Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  outcomeId     String?      @db.VarChar(191)
+  outcome       LearningOutcome? @relation(fields: [outcomeId], references: [id], onDelete: Restrict)
 
   @@unique([assignmentId, position])
+  @@index([outcomeId])
   @@map("assignment_questions")
+}
+
+enum OutcomeSetStatus {
+  DRAFT
+  TECHNICALLY_APPROVED
+  APPROVED
+}
+
+enum OutcomeSourceStatus {
+  CANDIDATE
+  VERIFIED
+}
+
+model OutcomeSet {
+  id              String           @id @default(cuid()) @db.VarChar(191)
+  programId       String           @db.VarChar(191)
+  level           String           @db.VarChar(100)
+  version         Int              @default(1)
+  status          OutcomeSetStatus @default(DRAFT)
+  designerId      String           @db.VarChar(191)
+  reviewerId      String?          @db.VarChar(191)
+  reviewedAt      DateTime?
+  approvedById    String?          @db.VarChar(191)
+  approvedAt      DateTime?
+  program         Program          @relation(fields: [programId], references: [id], onDelete: Restrict)
+  outcomes        LearningOutcome[]
+  assignments     Assignment[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([programId, level, version])
+  @@index([programId, status])
+  @@map("outcome_sets")
+}
+
+model LearningOutcome {
+  id             String              @id @default(cuid()) @db.VarChar(191)
+  outcomeSetId   String              @db.VarChar(191)
+  code           String              @db.VarChar(64)
+  title          String              @db.VarChar(255)
+  statement      String              @db.Text
+  sourceTitle    String              @db.VarChar(255)
+  sourceUrl      String              @db.Text
+  sourceLocator  String              @db.VarChar(255)
+  sourceStatus   OutcomeSourceStatus @default(CANDIDATE)
+  sourceNote     String?             @db.Text
+  verifiedById   String?             @db.VarChar(191)
+  verifiedAt     DateTime?
+  required       Boolean             @default(true)
+  outcomeSet     OutcomeSet          @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
+  lessonLinks    LessonOutcome[]
+  questions      AssignmentQuestion[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@unique([outcomeSetId, code])
+  @@map("learning_outcomes")
+}
+
+model LessonOutcome {
+  lessonId  String          @db.VarChar(191)
+  outcomeId String          @db.VarChar(191)
+  lesson    Lesson          @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  outcome   LearningOutcome @relation(fields: [outcomeId], references: [id], onDelete: Restrict)
+
+  @@id([lessonId, outcomeId])
+  @@map("lesson_outcomes")
 }
 
 model AssignmentRecipient {

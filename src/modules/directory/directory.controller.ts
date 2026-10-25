@@ -7,7 +7,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DirectoryService } from './directory.service';
 import {
   CreateStaffAccountDto,
-  DirectoryPageDto,
+  InvitationQueryDto,
   AuditLogQueryDto,
   AcceptAccountInvitationDto,
   CreateAccountInvitationDto,
@@ -201,7 +201,7 @@ export class DirectoryController {
   @Get('teacher-invitations')
   teacherInvitations(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: DirectoryPageDto,
+    @Query() page: InvitationQueryDto,
   ): Promise<unknown> {
     return this.directory.invitations(user, 'TEACHER', page);
   }
@@ -217,7 +217,7 @@ export class DirectoryController {
   @Get('manager-invitations')
   managerInvitations(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: DirectoryPageDto,
+    @Query() page: InvitationQueryDto,
   ): Promise<unknown> {
     return this.directory.invitations(user, 'MANAGER', page);
   }

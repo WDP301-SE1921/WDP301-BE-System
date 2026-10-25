@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { dateTimeRange } from '../../common/list-query';
 import type { Notification, Prisma } from '@prisma/client';
 import { DatabaseService } from '../../database/orm/database.service';
 import type {
@@ -28,6 +29,9 @@ export class NotificationsRepository {
   async list(userId: string, query: NotificationQueryDto): Promise<NotificationPageDto> {
     const where: Prisma.NotificationWhereInput = {
       recipientUserId: userId,
+      ...(query.classId ? { classId: query.classId } : {}),
+      ...(query.search ? { OR: [{ title: { contains: query.search.trim() } }, { body: { contains: query.search.trim() } }] } : {}),
+      ...(query.fromDate || query.toDate ? { createdAt: dateTimeRange(query.fromDate, query.toDate) } : {}),
       ...(query.unreadOnly ? { readAt: null } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.studentId ? { studentIds: { array_contains: [query.studentId] } } : {}),

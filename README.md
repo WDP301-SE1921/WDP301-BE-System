@@ -52,7 +52,11 @@ pnpm prisma:validate
 Xem [kiến trúc](docs/architecture.md) và [quy ước API](docs/api-conventions.md) trước khi
 thêm module nghiệp vụ.
 
+Phân trang, bộ lọc và ví dụ gọi GET danh sách: [Data list API](docs/data-list-api.md).
+
 Chi tiết các API dành cho phụ huynh và migration mới: [Parent learning API](docs/parent-learning-api.md).
+
+CLO bản nháp cho Toán, Hóa học và Sinh học khối 6–9, nguồn tham chiếu, API và quy trình duyệt: [Danh mục CLO](docs/clo-catalog-6-9.md) và [Hướng dẫn triển khai CLO](docs/clo-implementation-guide.md).
 
 Thông báo realtime, contract và ví dụ tích hợp web/mobile: [Notifications API](docs/notifications-api.md).
 
