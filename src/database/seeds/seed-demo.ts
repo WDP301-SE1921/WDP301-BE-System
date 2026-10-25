@@ -64,7 +64,8 @@ export async function seedDemo(
       return { referenceDate: today.toISOString().slice(0, 10), users };
     },
     {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      // TiDB supports repeatable-read and read-committed, but not serializable.
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       maxWait: 10_000,
       timeout: 120_000,
     },

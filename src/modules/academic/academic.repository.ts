@@ -9,7 +9,10 @@ export class AcademicRepository {
   async transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.db.$transaction(work, { isolationLevel: 'Serializable', timeout: 20000 });
+        return await this.db.$transaction(work, {
+          isolationLevel: 'RepeatableRead',
+          timeout: 20000,
+        });
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&

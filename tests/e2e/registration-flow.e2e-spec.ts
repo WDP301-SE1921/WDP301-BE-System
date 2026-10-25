@@ -175,7 +175,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       .expect(200);
     otherParentToken = (otherLogin.body as Envelope<AuthData>).data.tokens.accessToken;
     const program = await call('MANAGER', 'post', 'programs')
-      .send({ name: 'Toán 8', subject: 'Toán', grade: 8 })
+      .send({ name: 'Toán 8', subject: 'Toán', grade: 8, sessionsPerWeek: 1 })
       .expect(201);
     const classroom = await call('MANAGER', 'post', 'classes')
       .send({
@@ -622,7 +622,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
 
     it('edits and deletes unused programs, and archives programs in use', async () => {
       const fresh = await call('MANAGER', 'post', 'programs')
-        .send({ name: 'Lý 7', subject: 'Lý', grade: 7 })
+        .send({ name: 'Lý 7', subject: 'Lý', grade: 7, sessionsPerWeek: 1 })
         .expect(201);
       const id = (fresh.body as Envelope<WithId>).data.id;
       await call('MANAGER', 'patch', `programs/${id}`)
@@ -647,7 +647,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .expect(201);
       const subjectId = (subject.body as Envelope<WithId>).data.id;
       const program = await call('MANAGER', 'post', 'programs')
-        .send({ name: 'Khoa học 7', subjectId, grade: 7 })
+        .send({ name: 'Khoa học 7', subjectId, grade: 7, sessionsPerWeek: 1 })
         .expect(201);
       const programId = (program.body as Envelope<WithId>).data.id;
       await call('MANAGER', 'get', `programs/${programId}`).expect(200);
@@ -732,6 +732,158 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       await call('MANAGER', 'delete', `classes/${classroomId}`).expect(200);
       await call('MANAGER', 'delete', `programs/${programId}`).expect(200);
       await call('MANAGER', 'delete', `subjects/${subjectId}`).expect(200);
+    });
+  });
+
+  describe('program sessions per week', () => {
+    const twoSlots = [
+      { weekday: 2, startTime: '08:00', endTime: '10:00' },
+      { weekday: 2, startTime: '10:00', endTime: '12:00' },
+    ];
+    let programId: string;
+    let classroomId: string;
+    const put = (schedules: typeof twoSlots): request.Test =>
+      request(httpServer)
+        .put(`/api/v1/classes/${classroomId}/schedules`)
+        .set('Authorization', `Bearer ${tokens.MANAGER}`)
+        .send({ schedules });
+
+    beforeEach(async () => {
+      const program = await call('MANAGER', 'post', 'programs')
+        .send({ name: 'Frequency fixture', subject: 'Toán', grade: 8, sessionsPerWeek: 2 })
+        .expect(201);
+      programId = (program.body as Envelope<WithId>).data.id;
+      const teacher = await db.user.findFirstOrThrow({ where: { role: 'TEACHER' } });
+      const classroom = await call('MANAGER', 'post', 'classes')
+        .send({
+          programId,
+          name: 'Frequency class',
+          teacherId: teacher.id,
+          capacity: 20,
+          monthlyFee: 500000,
+        })
+        .expect(201);
+      classroomId = (classroom.body as Envelope<WithId>).data.id;
+    });
+
+    it('validates frequency, keeps migration omissions, and returns it to catalog readers', async () => {
+      for (const sessionsPerWeek of [null, 0, -1, 1.5, 15, '2']) {
+        await call('MANAGER', 'post', 'programs')
+          .send({ name: 'Invalid frequency', subject: 'Toán', grade: 8, sessionsPerWeek })
+          .expect(400);
+        await call('MANAGER', 'patch', `programs/${programId}`)
+          .send({ sessionsPerWeek })
+          .expect(400);
+      }
+      await call('MANAGER', 'patch', `programs/${programId}`)
+        .send({ name: 'Renamed course' })
+        .expect(200);
+      for (const role of ['MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER'] as const) {
+        const result = await call(role, 'get', `programs/${programId}`).expect(200);
+        expect(result.body).toMatchObject({ data: { sessionsPerWeek: 2 } });
+      }
+      await call('STAFF', 'patch', `programs/${programId}`)
+        .send({ sessionsPerWeek: 3 })
+        .expect(403);
+      const legacy = await call('MANAGER', 'post', 'programs')
+        .send({ name: 'Migration course', subject: 'Toán', grade: 8 })
+        .expect(201);
+      expect(legacy.body).toMatchObject({ data: { sessionsPerWeek: null } });
+    });
+
+    it('counts slots on the same weekday, protects atomic replacement, and prevents partial deletion', async () => {
+      await put(twoSlots).expect(200);
+      for (const schedules of [
+        twoSlots.slice(0, 1),
+        [...twoSlots, { weekday: 4, startTime: '08:00', endTime: '10:00' }],
+      ]) {
+        for (const method of ['put', 'post'] as const) {
+          const rejected = await request(httpServer)
+            [method](`/api/v1/classes/${classroomId}/schedules`)
+            .set('Authorization', `Bearer ${tokens.MANAGER}`)
+            .send({ schedules })
+            .expect(409);
+          expect(rejected.body).toMatchObject({
+            error: { code: 'CLASS_WEEKLY_SESSION_COUNT_MISMATCH' },
+          });
+        }
+      }
+      const rows = await db.classWeeklySchedule.findMany({ where: { classId: classroomId } });
+      expect(rows).toHaveLength(2);
+      const rejectedDelete = await call(
+        'MANAGER',
+        'delete',
+        `classes/${classroomId}/schedules/${rows[0].id}`,
+      ).expect(409);
+      expect(rejectedDelete.body).toMatchObject({
+        error: { code: 'CLASS_WEEKLY_SESSION_COUNT_MISMATCH' },
+      });
+      await call('MANAGER', 'patch', `classes/${classroomId}/schedules/${rows[0].id}`)
+        .send({ weekday: 3, startTime: '08:00', endTime: '10:00' })
+        .expect(200);
+      await put([{ ...twoSlots[0] }, { ...twoSlots[0], startTime: '09:00' }]).expect(409);
+      expect(await db.classWeeklySchedule.count({ where: { classId: classroomId } })).toBe(2);
+      await put([]).expect(200);
+    });
+
+    it('blocks standard changes that invalidate active classes and rechecks activation, opening and confirmation', async () => {
+      await put(twoSlots).expect(200);
+      const conflict = await call('MANAGER', 'patch', `programs/${programId}`)
+        .send({ sessionsPerWeek: 3 })
+        .expect(409);
+      expect(conflict.body).toMatchObject({
+        error: {
+          code: 'PROGRAM_FREQUENCY_CHANGE_CONFLICT',
+          details: { conflictingClasses: [{ id: classroomId, actual: 2 }] },
+        },
+      });
+      await call('MANAGER', 'patch', `classes/${classroomId}`)
+        .send({ isActive: false })
+        .expect(200);
+      await call('MANAGER', 'patch', `programs/${programId}`)
+        .send({ sessionsPerWeek: 3 })
+        .expect(200);
+      const activation = await call('MANAGER', 'patch', `classes/${classroomId}`)
+        .send({ isActive: true })
+        .expect(409);
+      expect(activation.body).toMatchObject({
+        error: { code: 'CLASS_WEEKLY_SESSION_COUNT_MISMATCH' },
+      });
+      await db.class.update({ where: { id: classroomId }, data: { isActive: true } });
+      const opening = await call('MANAGER', 'patch', `classes/${classroomId}`)
+        .send({ isOpen: true })
+        .expect(409);
+      expect(opening.body).toMatchObject({
+        error: { code: 'CLASS_WEEKLY_SESSION_COUNT_MISMATCH' },
+      });
+      const confirmation = await request(httpServer)
+        .put(`/api/v1/classes/${classroomId}/schedule-confirmation`)
+        .set('Authorization', `Bearer ${tokens.TEACHER}`)
+        .send({ confirmed: true })
+        .expect(409);
+      expect(confirmation.body).toMatchObject({
+        error: { code: 'CLASS_WEEKLY_SESSION_COUNT_MISMATCH' },
+      });
+      const slot = await db.classWeeklySchedule.findFirstOrThrow({
+        where: { classId: classroomId },
+      });
+      await call('MANAGER', 'patch', `classes/${classroomId}/schedules/${slot.id}`)
+        .send(twoSlots[0])
+        .expect(409);
+      await db.program.update({ where: { id: programId }, data: { sessionsPerWeek: null } });
+      const missing = await put(twoSlots).expect(409);
+      expect(missing.body).toMatchObject({ error: { code: 'PROGRAM_FREQUENCY_NOT_CONFIGURED' } });
+    });
+
+    it('serializes a frequency change against a timetable write without leaving inconsistent data', async () => {
+      const responses = await Promise.all([
+        call('MANAGER', 'patch', `programs/${programId}`).send({ sessionsPerWeek: 3 }),
+        put(twoSlots),
+      ]);
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      const program = await db.program.findUniqueOrThrow({ where: { id: programId } });
+      const count = await db.classWeeklySchedule.count({ where: { classId: classroomId } });
+      expect(count === 0 || count === program.sessionsPerWeek).toBe(true);
     });
   });
 

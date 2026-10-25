@@ -209,6 +209,7 @@ model Program {
   subjectId       String?          @db.VarChar(191)
   isActive        Boolean          @default(true)
   grade           Int
+  sessionsPerWeek Int?
   subjectRecord   Subject?         @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   classes         Class[]
   lessons         Lesson[]
@@ -429,6 +430,9 @@ model CurriculumUnit {
   toDate              DateTime                  @db.Date
   status              CurriculumUnitStatus      @default(DRAFT)
   approvedAt          DateTime?
+  archivedAt          DateTime?
+  archiveReason       String?                   @db.VarChar(32)
+  supersededById      String?                   @db.VarChar(191)
   track               CurriculumTrack           @relation(fields: [trackId], references: [id], onDelete: Restrict)
   program             Program                   @relation(fields: [programId], references: [id], onDelete: Restrict)
   designer            User                      @relation(fields: [designerId], references: [id], onDelete: Restrict)

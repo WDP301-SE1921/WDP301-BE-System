@@ -6,6 +6,11 @@ import { AcademicProgramQueryDto, AcademicClassQueryDto, LessonQueryDto, Academi
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
+import { assertProgramFrequency } from '../registration-flow/program-frequency';
+import {
+  assertCurriculumSessionDates,
+  lockCurriculumProgram,
+} from '../curriculum-scheduling/curriculum-lifecycle';
 import { AcademicRepository } from './academic.repository';
 import { AcademicAccessService, assertRule, roles, studyDate } from './academic-access.service';
 import {
@@ -54,7 +59,7 @@ export class CatalogService {
       where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE' },
     });
     assertRule(teacher, 'INVALID_TEACHER', 'An active teacher is required');
-    return this.repo.db.class.create({ data: input });
+    return this.repo.db.class.create({ data: { ...input, isOpen: false } });
   }
 
   async classes(user: AuthenticatedUser, page: AcademicClassQueryDto): Promise<unknown> {
@@ -150,11 +155,17 @@ export class CatalogService {
       'INVALID_SESSION_TIME',
       'Session must last between zero and twelve hours',
     );
+    const classHint = await this.repo.db.class.findUniqueOrThrow({ where: { id: input.classId } });
     return this.repo.transaction(async (tx) => {
-      const classroom = await tx.class.findUniqueOrThrow({ where: { id: input.classId } });
+      await lockCurriculumProgram(tx, classHint.programId);
+      await tx.$queryRaw`SELECT id FROM classes WHERE id = ${input.classId} FOR UPDATE`;
+      const classroom = await tx.class.findUniqueOrThrow({
+        where: { id: input.classId },
+        include: { program: true, weeklySchedules: true },
+      });
       const lesson = await tx.lesson.findUniqueOrThrow({
         where: { id: input.lessonId },
-        include: { unit: { select: { status: true } } },
+        include: { unit: { select: { status: true, fromDate: true, toDate: true } } },
       });
       assertRule(
         lesson.kind !== 'MONTHLY_TEST',
@@ -173,6 +184,8 @@ export class CatalogService {
         'INVALID_LESSON',
         'Use an approved lesson from the class program',
       );
+      assertProgramFrequency(classroom.program, classroom.weeklySchedules.length, classroom.id);
+      if (lesson.unit) assertCurriculumSessionDates(lesson.unit, start, end);
       const teacher = await tx.user.findFirst({
         where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE' },
       });

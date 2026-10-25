@@ -18,6 +18,7 @@ import {
   MinLength,
   Matches,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import {
   AssignmentKind,
@@ -113,6 +114,16 @@ export class ProgramDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) name!: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(100) subject!: string;
   @ApiProperty() @IsInt() @Min(6) @Max(9) grade!: number;
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 14,
+    description: 'Weekly slots; optional during migration.',
+  })
+  @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(14)
+  sessionsPerWeek?: number;
 }
 export class ClassDto {
   @ApiProperty() @IsString() @MinLength(1) programId!: string;

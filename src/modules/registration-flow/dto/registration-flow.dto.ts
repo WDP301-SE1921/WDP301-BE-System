@@ -18,6 +18,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -189,6 +190,17 @@ export class ProgramDto {
   @Min(6)
   @Max(9)
   grade!: number;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 14,
+    description: 'Optional during migration; null is invalid.',
+  })
+  @ValidateIf((_input: unknown, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(14)
+  sessionsPerWeek?: number;
 }
 
 export class UpdateProgramDto {
@@ -216,6 +228,17 @@ export class UpdateProgramDto {
   grade?: number;
 
   @ApiPropertyOptional() @IsOptional() @IsBoolean() isActive?: boolean;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 14,
+    description: 'Omit to preserve the existing frequency; null is invalid.',
+  })
+  @ValidateIf((_input: unknown, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(14)
+  sessionsPerWeek?: number;
 }
 
 export class ProgramFilterDto extends PageDto {
