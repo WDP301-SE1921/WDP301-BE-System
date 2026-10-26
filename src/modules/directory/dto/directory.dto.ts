@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
+  IsBoolean,
   IsEmail,
   IsIn,
   IsInt,
@@ -19,10 +20,16 @@ const normalizeEmail = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toLowerCase() : value;
 
 export class DirectoryPageDto {
+  @ApiPropertyOptional({ description: 'Accepted for consistency; directory lists always return pagination metadata.' })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => value === 'true' ? true : value === 'false' ? false : value)
+  @IsBoolean()
+  paginated?: boolean;
   @ApiPropertyOptional({ default: 1 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(1000000)
   page = 1;
 
   @ApiPropertyOptional({ default: 20 })
@@ -34,6 +41,8 @@ export class DirectoryPageDto {
 }
 
 export class ListAccountsDto extends DirectoryPageDto {
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
   @ApiPropertyOptional({ enum: ['ACTIVE', 'DISABLED'] })
   @IsOptional()
   @IsIn(['ACTIVE', 'DISABLED'])
@@ -45,6 +54,15 @@ export class ListAccountsDto extends DirectoryPageDto {
   @IsString()
   @MaxLength(255)
   search?: string;
+}
+
+export class InvitationQueryDto extends DirectoryPageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+  @ApiPropertyOptional({ enum: ['INVITED', 'ACCEPTED', 'APPROVED', 'REJECTED', 'REVOKED'] })
+  @IsOptional() @IsIn(['INVITED', 'ACCEPTED', 'APPROVED', 'REJECTED', 'REVOKED'])
+  status?: 'INVITED' | 'ACCEPTED' | 'APPROVED' | 'REJECTED' | 'REVOKED';
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
 }
 
 export class CreateStaffAccountDto {

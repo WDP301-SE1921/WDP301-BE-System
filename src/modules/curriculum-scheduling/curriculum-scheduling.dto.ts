@@ -46,6 +46,8 @@ export class UpdateCurriculumUnitDto {
 }
 
 export class CurriculumUnitFilterDto {
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() programId?: string;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(6) @Max(9) grade?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() subject?: string;
@@ -53,7 +55,7 @@ export class CurriculumUnitFilterDto {
   @IsOptional()
   @IsIn(['DRAFT', 'PENDING_REVIEW', 'APPROVED', 'ARCHIVED'])
   status?: 'DRAFT' | 'PENDING_REVIEW' | 'APPROVED' | 'ARCHIVED';
-  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page?: number;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1000000) page?: number;
   @ApiPropertyOptional()
   @IsOptional()
   @Type(() => Number)
@@ -173,6 +175,11 @@ export class ScheduleRangeDto {
 }
 
 export class SessionQueryDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() teacherId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() lessonId?: string;
+  @ApiPropertyOptional({ enum: ['SCHEDULED', 'COMPLETED', 'CANCELLED'] }) @IsOptional() @IsIn(['SCHEDULED', 'COMPLETED', 'CANCELLED']) status?: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
   @ApiPropertyOptional({
     description: 'Return pagination metadata; omitted keeps the legacy array.',
   })
@@ -197,7 +204,7 @@ export class SessionQueryDto {
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   toDate?: string;
-  @ApiPropertyOptional({ default: 1 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @ApiPropertyOptional({ default: 1 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1000000) page = 1;
   @ApiPropertyOptional({ default: 20 })
   @IsOptional()
   @Type(() => Number)

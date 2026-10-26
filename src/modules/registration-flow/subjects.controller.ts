@@ -6,6 +6,8 @@ import { DatabaseService } from '../../database/orm/database.service';
 import { AppError } from '../../common/errors/app.error';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { SubjectFilterDto } from './dto/registration-flow.dto';
+import { pageResult } from '../../common/pagination';
 
 class SubjectDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(64) code!: string;
@@ -33,15 +35,18 @@ export class SubjectsController {
   }
 
   @Get()
-  list(@CurrentUser() user: AuthenticatedUser, @Query('search') search?: string): Promise<unknown> {
+  list(@CurrentUser() user: AuthenticatedUser, @Query() query: SubjectFilterDto): Promise<unknown> {
     this.require(user);
-    return this.db.subject.findMany({
-      where: search
-        ? { OR: [{ code: { contains: search.trim() } }, { name: { contains: search.trim() } }] }
-        : {},
+    const where = {
+      ...(query.search ? { OR: [{ code: { contains: query.search.trim() } }, { name: { contains: query.search.trim() } }] } : {}),
+      ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
+    };
+    return pageResult(query, this.db.subject.findMany({
+      where,
       include: { _count: { select: { programs: true } } },
-      orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
-    });
+      orderBy: [{ isActive: 'desc' }, { name: 'asc' }, { id: 'asc' }],
+      take: query.limit, skip: (query.page - 1) * query.limit,
+    }), () => this.db.subject.count({ where }));
   }
 
   @Get(':id')

@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsDateString, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PageDto } from '../academic/academic.dto';
 
 export const NOTIFICATION_TYPES = [
@@ -41,6 +41,10 @@ export const NOTIFICATION_TYPES = [
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
 export class NotificationQueryDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) classId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
   @ApiPropertyOptional()
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>

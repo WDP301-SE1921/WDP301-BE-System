@@ -1,5 +1,7 @@
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import { pageResult } from '../../common/pagination';
+import { dateTimeRange } from '../../common/list-query';
+import { MakeupQueryDto, AcademicSessionQueryDto } from './academic-list.dto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { Enrollment, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -30,8 +32,6 @@ import {
   LeaveFilterDto,
   MakeupDto,
   MakeupSourceFilterDto,
-  StudentPageDto,
-  PageDto,
   ReactivateStudentDto,
   RescheduleMakeupDto,
   TransferDto,
@@ -91,7 +91,12 @@ export class EnrollmentWorkflowsService {
 
   async leaves(user: AuthenticatedUser, query: LeaveFilterDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'PARENT');
+    dateTimeRange(query.fromDate, query.toDate);
     const where: Prisma.LeaveRequestWhereInput = {
+      AND: [{ enrollment: {
+        ...(query.classId ? { classId: query.classId } : {}),
+        ...(query.search ? { studentProfile: { fullName: { contains: query.search.trim() } } } : {}),
+      } }],
       ...(user.role === 'PARENT'
         ? { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } }
         : {}),
@@ -133,7 +138,7 @@ export class EnrollmentWorkflowsService {
     );
   }
 
-  async makeups(user: AuthenticatedUser, page: StudentPageDto): Promise<unknown> {
+  async makeups(user: AuthenticatedUser, page: MakeupQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const where: Prisma.MakeupBookingWhereInput =
       user.role === 'MANAGER' || user.role === 'STAFF'
@@ -143,9 +148,17 @@ export class EnrollmentWorkflowsService {
           : {
               original: { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } },
             };
-    if (page.studentId) {
-      where.AND = [{ original: { enrollment: { studentProfileId: page.studentId } } }];
-    }
+    where.AND = [{
+      ...(page.status ? { status: page.status } : {}),
+      original: { enrollment: {
+        ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+        ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
+      } },
+      replacement: { session: {
+        ...(page.classId ? { classId: page.classId } : {}),
+        startsAt: dateTimeRange(page.fromDate, page.toDate),
+      } },
+    }];
     return pageResult(
       page,
       this.repo.db.makeupBooking.findMany({
@@ -180,7 +193,7 @@ export class EnrollmentWorkflowsService {
       'INVALID_DATE',
       'Use YYYY-MM-DD dates',
     );
-    assertRule(from <= to, 'INVALID_DATE_RANGE', 'Start must not follow end');
+    assertRule(from <= to, 'INVALID_DATE_RANGE', 'Start must not follow end', HttpStatus.BAD_REQUEST);
     assertRule(
       (input.kind === 'SINGLE_ABSENCE') === !!input.sessionId,
       'INVALID_LEAVE',
@@ -477,19 +490,25 @@ export class EnrollmentWorkflowsService {
 
   async makeupSources(user: AuthenticatedUser, query: MakeupSourceFilterDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
-    return this.repo.db.sessionParticipant.findMany({
-      where: {
+    const where: Prisma.SessionParticipantWhereInput = {
         cancelled: false,
         kind: 'REGULAR',
         attendance: { notIn: ['PRESENT', 'EXCUSED'] },
         // completedOnly: the absence already happened (UNMARKED in a completed session counts as absent).
-        session: query.completedOnly ? { status: 'COMPLETED' } : { status: { not: 'CANCELLED' } },
+        session: {
+          ...(query.completedOnly ? { status: 'COMPLETED' as const } : { status: { not: 'CANCELLED' as const } }),
+          ...(query.classId ? { classId: query.classId } : {}),
+          startsAt: dateTimeRange(query.fromDate, query.toDate),
+        },
         sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
         enrollment: {
           status: 'ACTIVE',
           ...(query.studentId ? { studentProfileId: query.studentId } : {}),
+          ...(query.search ? { studentProfile: { fullName: { contains: query.search } } } : {}),
         },
-      },
+    };
+    return pageResult(query, this.repo.db.sessionParticipant.findMany({
+      where,
       select: {
         id: true,
         attendance: true,
@@ -508,16 +527,16 @@ export class EnrollmentWorkflowsService {
           },
         },
       },
-      orderBy: { session: { startsAt: 'desc' } },
+      orderBy: [{ session: { startsAt: 'desc' } }, { id: 'asc' }],
       take: query.limit,
       skip: (query.page - 1) * query.limit,
-    });
+    }), () => this.repo.db.sessionParticipant.count({ where }));
   }
 
   async makeupCandidates(
     user: AuthenticatedUser,
     participantId: string,
-    page: PageDto,
+    page: AcademicSessionQueryDto,
   ): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
     return this.repo.transaction(async (tx) => {
@@ -525,19 +544,28 @@ export class EnrollmentWorkflowsService {
         where: { id: participantId },
         include: { session: true },
       });
-      const targets = await tx.classSession.findMany({
-        where: {
+      const where: Prisma.ClassSessionWhereInput = {
           id: { not: original.sessionId },
           lessonId: original.session.lessonId,
           startsAt: { gt: new Date() },
           status: 'SCHEDULED',
-        },
+          AND: [{
+            startsAt: dateTimeRange(page.fromDate, page.toDate),
+            ...(page.classId ? { classId: page.classId } : {}),
+            ...(page.teacherId ? { teacherId: page.teacherId } : {}),
+            ...(page.lessonId ? { lessonId: page.lessonId } : {}),
+            ...(page.status ? { status: page.status } : {}),
+            ...(page.search ? { class: { name: { contains: page.search } } } : {}),
+          }],
+      };
+      const targets = await tx.classSession.findMany({
+        where,
         include: { class: { select: { name: true, capacity: true } } },
         take: page.limit,
         skip: (page.page - 1) * page.limit,
-        orderBy: { startsAt: 'asc' },
+        orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       });
-      return Promise.all(
+      return pageResult(page, Promise.all(
         targets.map(async (target) => {
           const state = await this.makeupTargetState(tx, participantId, target.id);
           return {
@@ -547,7 +575,7 @@ export class EnrollmentWorkflowsService {
             reasonCodes: state.reasonCodes,
           };
         }),
-      );
+      ), () => tx.classSession.count({ where }));
     });
   }
 
@@ -657,7 +685,10 @@ export class EnrollmentWorkflowsService {
           startsAt: { gte: from, lte: to },
           status: 'COMPLETED',
         },
-        enrollment: input.studentId ? { studentProfileId: input.studentId } : {},
+        enrollment: {
+          ...(input.studentId ? { studentProfileId: input.studentId } : {}),
+          ...(input.search ? { studentProfile: { fullName: { contains: input.search.trim() } } } : {}),
+        },
       },
       select: {
         id: true,
@@ -704,7 +735,7 @@ export class EnrollmentWorkflowsService {
           },
         },
       },
-      orderBy: { session: { startsAt: 'asc' } },
+      orderBy: [{ session: { startsAt: 'asc' } }, { id: 'asc' }],
       take: 20001,
     });
     assertRule(rows.length <= 20000, 'ATTENDANCE_TOO_LARGE', 'Reduce the attendance date range');
@@ -781,7 +812,10 @@ export class EnrollmentWorkflowsService {
       attendancePercent: counts.required
         ? Math.round((counts.attended / counts.required) * 10000) / 100
         : null,
-      history,
+      history: history.slice((input.page - 1) * input.limit, input.page * input.limit),
+      page: input.page,
+      limit: input.limit,
+      total: history.length,
     };
   }
 

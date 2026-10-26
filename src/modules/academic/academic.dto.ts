@@ -41,19 +41,25 @@ export class PageDto {
   )
   @IsBoolean()
   paginated?: boolean;
-  @ApiPropertyOptional({ default: 1 }) @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @ApiPropertyOptional({ default: 1, maximum: 1000000 }) @Type(() => Number) @IsInt() @Min(1) @Max(1000000) page = 1;
   @ApiPropertyOptional({ default: 20 }) @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
 }
 export class StudentPageDto extends PageDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(191) studentId?: string;
 }
 export class EmailDeliveryFilterDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) eventType?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
   @ApiPropertyOptional({ enum: OutboxStatus, description: 'Only deliveries in this state.' })
   @IsOptional()
   @IsEnum(OutboxStatus)
   status?: OutboxStatus;
 }
 export class LeaveFilterDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) classId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
   @ApiPropertyOptional({ enum: RequestStatus })
   @IsOptional()
   @IsEnum(RequestStatus)
@@ -77,6 +83,10 @@ export class LeaveFilterDto extends PageDto {
   toDate?: string;
 }
 export class MakeupSourceFilterDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(191) classId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
   @ApiPropertyOptional({ description: 'Student profile id.' })
   @IsOptional()
   @IsString()
@@ -95,6 +105,7 @@ export class MakeupSourceFilterDto extends PageDto {
   completedOnly?: boolean;
 }
 export class AttendanceQueryDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) search?: string;
   @ApiPropertyOptional() @IsOptional() @IsDateString() fromDate?: string;
   @ApiPropertyOptional() @IsOptional() @IsDateString() toDate?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() studentId?: string;
@@ -210,6 +221,8 @@ export class QuestionDto {
   choices?: string[];
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(10000) correctAnswer?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(10000) rubric?: string;
+  @ApiPropertyOptional({ description: 'Approved CLO measured by this question' })
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(191) outcomeId?: string;
   @ApiProperty() @IsNumber() @Min(0.01) @Max(100) maxScore!: number;
 }
 export class AssignmentDto {
@@ -220,6 +233,8 @@ export class AssignmentDto {
   @ApiPropertyOptional({ enum: TestType }) @IsOptional() @IsEnum(TestType) testType?: TestType;
   @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) sessionId?: string;
   @ApiProperty() @IsString() @MinLength(1) classId!: string;
+  @ApiPropertyOptional({ description: 'Approved CLO set for this assignment' })
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(191) outcomeSetId?: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MaxLength(10000) instructions!: string;
   @ApiProperty() @IsDateString() dueAt!: string;
@@ -234,6 +249,42 @@ export class AssignmentDto {
 }
 export class AssignmentImportDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) classId!: string;
+}
+
+export class OutcomeSourceReviewDto {
+  @ApiProperty({ description: 'Exact requirement, section and printed page of the source' })
+  @IsString()
+  @MinLength(12)
+  @MaxLength(255)
+  sourceLocator!: string;
+
+  @ApiProperty({ description: 'Teacher explanation of how this CLO follows the cited requirement' })
+  @IsString()
+  @MinLength(12)
+  @MaxLength(5000)
+  sourceNote!: string;
+}
+
+export class OutcomeSetCreateDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) programId!: string;
+  @ApiProperty() @IsString() @MinLength(2) @MaxLength(100) level!: string;
+}
+
+export class LearningOutcomeWriteDto {
+  @ApiProperty() @IsString() @MinLength(2) @MaxLength(64) code!: string;
+  @ApiProperty() @IsString() @MinLength(2) @MaxLength(255) title!: string;
+  @ApiProperty() @IsString() @MinLength(12) @MaxLength(5000) statement!: string;
+  @ApiProperty() @IsString() @MinLength(5) @MaxLength(255) sourceTitle!: string;
+  @ApiProperty() @IsString() @MinLength(12) @MaxLength(2000) sourceUrl!: string;
+  @ApiProperty() @IsString() @MinLength(12) @MaxLength(255) sourceLocator!: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(5000) sourceNote?: string;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() required?: boolean;
+}
+
+export class LessonOutcomeWriteDto {
+  @ApiProperty({ type: [String] })
+  @IsArray() @ArrayUnique() @IsString({ each: true })
+  outcomeIds!: string[];
 }
 export class RecipientsDto {
   @ApiProperty({ type: [String] })

@@ -30,6 +30,9 @@ import { ParentGradesResponseDto } from './parent-learning-response.dto';
 import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
+import { OutcomeService } from './outcome.service';
+import { StudentGradeQueryDto } from './academic-list.dto';
+import { AcademicProgramQueryDto, AcademicClassQueryDto, LessonQueryDto, AcademicSessionQueryDto, FeedbackQueryDto, EnrollmentQueryDto, RosterQueryDto, AssignmentQueryDto, SubmissionQueryDto, MakeupQueryDto, ClassContentQueryDto, OutcomeSetQueryDto } from './academic-list.dto';
 import { AssignmentImportService } from './assignment-import.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
@@ -42,8 +45,11 @@ import {
   AnalyticsQueryDto,
   AttendanceQueryDto,
   AssignmentDto,
-  StudentPageDto,
   AssignmentImportDto,
+  OutcomeSourceReviewDto,
+  OutcomeSetCreateDto,
+  LearningOutcomeWriteDto,
+  LessonOutcomeWriteDto,
   AttendanceDto,
   ClassDto,
   DecisionDto,
@@ -58,7 +64,6 @@ import {
   LessonRevisionDto,
   SubmissionWindowDto,
   MakeupDto,
-  PageDto,
   ProgramDto,
   RecipientsDto,
   ReactivateStudentDto,
@@ -81,6 +86,7 @@ export class AcademicController {
     private readonly catalog: CatalogService,
     private readonly workflows: EnrollmentWorkflowsService,
     private readonly assessment: AssessmentService,
+    private readonly outcomes: OutcomeService,
     private readonly assignmentImport: AssignmentImportService,
     private readonly grading: GradingWorkerService,
     private readonly reports: ReportsService,
@@ -137,6 +143,74 @@ export class AcademicController {
   program(@CurrentUser() user: AuthenticatedUser, @Body() input: ProgramDto): Promise<unknown> {
     return this.catalog.createProgram(user, input);
   }
+
+  @Get('programs/:id/outcome-sets')
+  @ApiOperation({ summary: 'List sourced CLO drafts and approved sets for one program' })
+  outcomeSets(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Query() query: OutcomeSetQueryDto): Promise<unknown> {
+    return this.outcomes.list(user, id, query);
+  }
+
+  @Post('outcome-sets')
+  @ApiOperation({ summary: 'Curriculum designer: create a new versioned CLO set' })
+  createOutcomeSet(@CurrentUser() user: AuthenticatedUser, @Body() input: OutcomeSetCreateDto): Promise<unknown> {
+    return this.outcomes.createSet(user, input.programId, input.level);
+  }
+
+  @Post('outcome-sets/:id/outcomes')
+  @ApiOperation({ summary: 'Curriculum designer: add a sourced CLO to a draft set' })
+  addOutcome(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: LearningOutcomeWriteDto,
+  ): Promise<unknown> {
+    return this.outcomes.writeOutcome(user, id, input);
+  }
+
+  @Patch('outcome-sets/:setId/outcomes/:outcomeId')
+  @ApiOperation({ summary: 'Curriculum designer: edit a draft CLO and reset source verification' })
+  editOutcome(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('setId') setId: string,
+    @Param('outcomeId') outcomeId: string,
+    @Body() input: LearningOutcomeWriteDto,
+  ): Promise<unknown> {
+    return this.outcomes.writeOutcome(user, setId, input, outcomeId);
+  }
+
+  @Patch('lessons/:id/outcomes')
+  @ApiOperation({ summary: 'Curriculum designer: map a draft lesson to draft CLOs' })
+  mapLessonOutcomes(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: LessonOutcomeWriteDto,
+  ): Promise<unknown> {
+    return this.outcomes.setLessonOutcomes(user, id, input.outcomeIds);
+  }
+
+  @Post('outcomes/:id/verify-source')
+  @ApiOperation({ summary: 'Assigned teacher: verify exact source requirement for a draft CLO' })
+  verifyOutcomeSource(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: OutcomeSourceReviewDto,
+  ): Promise<unknown> {
+    return this.outcomes.verifySource(user, id, input.sourceLocator, input.sourceNote);
+  }
+
+  @Post('outcome-sets/:id/technical-approve')
+  @ApiOperation({ summary: 'Assigned teacher: approve a verified CLO set' })
+  technicalApproveOutcomes(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.outcomes.technicalApprove(user, id);
+  }
+
+  @Post('outcome-sets/:id/approve')
+  @ApiOperation({ summary: 'Manager: approve a teacher-reviewed CLO set' })
+  approveOutcomes(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.outcomes.approve(user, id);
+  }
   @Patch('assignments/:id') updateAssignment(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -154,20 +228,20 @@ export class AcademicController {
   }
   @Get('enrollments') enrollments(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: EnrollmentQueryDto,
   ): Promise<unknown> {
     return this.catalog.enrollments(user, page);
   }
   @Get('sessions/:id/roster') readRoster(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Query() page: PageDto,
+    @Query() page: RosterQueryDto,
   ): Promise<unknown> {
     return this.catalog.roster(user, id, page);
   }
   @Get('makeups') makeups(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: StudentPageDto,
+    @Query() page: MakeupQueryDto,
   ): Promise<unknown> {
     return this.workflows.makeups(user, page);
   }
@@ -180,7 +254,7 @@ export class AcademicController {
   }
   @Get('programs') programs(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: AcademicProgramQueryDto,
   ): Promise<unknown> {
     return this.catalog.programs(user, page);
   }
@@ -192,7 +266,7 @@ export class AcademicController {
   }
   @Get('classes') classes(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: AcademicClassQueryDto,
   ): Promise<unknown> {
     return this.catalog.classes(user, page);
   }
@@ -204,7 +278,7 @@ export class AcademicController {
   }
   @Get('lessons') lessons(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: LessonQueryDto,
   ): Promise<unknown> {
     return this.catalog.lessons(user, page);
   }
@@ -223,7 +297,7 @@ export class AcademicController {
   }
   @Get('feedback') feedbackList(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: FeedbackQueryDto,
   ): Promise<unknown> {
     return this.catalog.listFeedback(user, page);
   }
@@ -242,7 +316,7 @@ export class AcademicController {
   }
   @Get('sessions') sessions(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: AcademicSessionQueryDto,
   ): Promise<unknown> {
     return this.catalog.sessions(user, page);
   }
@@ -302,7 +376,7 @@ export class AcademicController {
   @Get('participants/:id/makeup-candidates') candidates(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Query() page: PageDto,
+    @Query() page: AcademicSessionQueryDto,
   ): Promise<unknown> {
     return this.workflows.makeupCandidates(user, id, page);
   }
@@ -370,8 +444,9 @@ export class AcademicController {
   backOfficeStudentGrades(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Query() query: StudentGradeQueryDto,
   ): Promise<unknown> {
-    return this.assessment.backOfficeStudentGrades(user, id);
+    return this.assessment.backOfficeStudentGrades(user, id, query);
   }
   @Post('students/:id/end-study') endStudent(
     @CurrentUser() user: AuthenticatedUser,
@@ -432,7 +507,7 @@ export class AcademicController {
   studentGrades(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Query() page: PageDto,
+    @Query() page: StudentGradeQueryDto,
   ): Promise<unknown> {
     return this.assessment.studentGrades(user, id, page);
   }
@@ -445,7 +520,7 @@ export class AcademicController {
   @Get('assignments')
   assignments(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: StudentPageDto,
+    @Query() page: AssignmentQueryDto,
   ): Promise<unknown> {
     return this.assessment.list(user, page);
   }
@@ -477,7 +552,7 @@ export class AcademicController {
   @Get('assignments/:id/submissions') submissions(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Query() page: PageDto,
+    @Query() page: SubmissionQueryDto,
   ): Promise<unknown> {
     return this.assessment.submissions(user, id, page);
   }
@@ -532,7 +607,7 @@ export class AcademicController {
   }
   @Get('reports') reportsList(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: ClassContentQueryDto,
   ): Promise<unknown> {
     return this.reports.list(user, page);
   }
@@ -577,7 +652,7 @@ export class AcademicController {
   }
   @Get('announcements') announcementsList(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() page: PageDto,
+    @Query() page: ClassContentQueryDto,
   ): Promise<unknown> {
     return this.announcements.list(user, page);
   }

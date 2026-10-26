@@ -1,4 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { pageResult } from '../../common/pagination';
+import { dateTimeRange } from '../../common/list-query';
+import { ClassContentQueryDto } from './academic-list.dto';
 import { Workbook } from 'exceljs';
 import * as PDFDocument from 'pdfkit';
 import { resolve } from 'node:path';
@@ -8,7 +11,7 @@ import { AcademicRepository } from './academic.repository';
 import { attendanceContribution } from './attendance-calculation';
 import { AcademicAccessService, assertRule, roles } from './academic-access.service';
 import { AcademicAiService, isRecord } from '../../integrations/academic-ai.service';
-import { PageDto, ReportDto } from './academic.dto';
+import { ReportDto } from './academic.dto';
 
 export interface ReportRow {
   studentId: string;
@@ -202,21 +205,25 @@ export class ReportsService {
     });
   }
 
-  async list(user: AuthenticatedUser, page: PageDto): Promise<unknown> {
+  async list(user: AuthenticatedUser, page: ClassContentQueryDto): Promise<unknown> {
     roles(user, 'TEACHER');
     const classes = await this.repo.db.class.findMany({
-      where: assignedTeacherWhere(user.id, new Date()),
+      where: { AND: [assignedTeacherWhere(user.id, new Date()), {
+        ...(page.classId ? { id: page.classId } : {}),
+        ...(page.search ? { name: { contains: page.search } } : {}),
+      }] },
       select: { id: true },
     });
+    const where = { classId: { in: classes.map((c) => c.id) }, createdAt: dateTimeRange(page.fromDate, page.toDate) };
     const reports = await this.repo.db.learningReport.findMany({
-      where: { classId: { in: classes.map((c) => c.id) } },
+      where,
       select: { id: true, classId: true, createdAt: true, snapshot: true },
       take: page.limit,
       skip: (page.page - 1) * page.limit,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
     });
     // The list exposes scope and range only; per-student rows stay in the export.
-    return reports.map(({ snapshot, ...report }) => {
+    const items = reports.map(({ snapshot, ...report }) => {
       const data = snapshot as unknown as ReportSnapshot;
       const scoped = typeof data.studentId === 'string';
       return {
@@ -230,6 +237,7 @@ export class ReportsService {
           : null,
       };
     });
+    return pageResult(page, Promise.resolve(items), () => this.repo.db.learningReport.count({ where }));
   }
 
   async export(
