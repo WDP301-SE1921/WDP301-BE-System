@@ -95,15 +95,32 @@ export class OutcomeService {
     return pageResult(query, Promise.resolve(sets), () => this.repo.db.outcomeSet.count({ where }));
   }
 
-  async createSet(user: AuthenticatedUser, programId: string, level: string): Promise<unknown> {
+  async createSet(
+    user: AuthenticatedUser,
+    programId: string,
+    level: string,
+    copyFromId?: string,
+  ): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     await this.assertProgramDesigner(user, programId);
     return this.repo.transaction(async (tx) => {
+      const source = copyFromId
+        ? await tx.outcomeSet.findUnique({
+            where: { id: copyFromId },
+            include: { outcomes: { include: { lessonLinks: true } } },
+          })
+        : null;
+      if (copyFromId)
+        assertRule(
+          source?.programId === programId,
+          'INVALID_OUTCOME_SET',
+          'Copy CLOs from a set in the same program',
+        );
       const latest = await tx.outcomeSet.findFirst({
         where: { programId, level: level.trim() },
         orderBy: { version: 'desc' },
       });
-      return tx.outcomeSet.create({
+      const created = await tx.outcomeSet.create({
         data: {
           programId,
           level: level.trim(),
@@ -111,6 +128,60 @@ export class OutcomeService {
           designerId: user.id,
         },
       });
+      // A new version is reviewed again: copied CLOs restart as unverified candidates.
+      for (const outcome of source?.outcomes ?? []) {
+        const copy = await tx.learningOutcome.create({
+          data: {
+            outcomeSetId: created.id,
+            code: outcome.code,
+            title: outcome.title,
+            statement: outcome.statement,
+            sourceTitle: outcome.sourceTitle,
+            sourceUrl: outcome.sourceUrl,
+            sourceLocator: outcome.sourceLocator,
+            sourceNote: outcome.sourceNote,
+            required: outcome.required,
+            sourceStatus: 'CANDIDATE',
+            verifiedById: null,
+            verifiedAt: null,
+          },
+        });
+        if (outcome.lessonLinks.length)
+          await tx.lessonOutcome.createMany({
+            data: outcome.lessonLinks.map((link) => ({
+              lessonId: link.lessonId,
+              outcomeId: copy.id,
+            })),
+          });
+      }
+      return created;
+    });
+  }
+
+  async requestChanges(user: AuthenticatedUser, setId: string, reason: string): Promise<unknown> {
+    roles(user, 'MANAGER');
+    return this.repo.transaction(async (tx) => {
+      const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
+      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
+      assertRule(
+        set.status === 'TECHNICALLY_APPROVED',
+        'OUTCOME_SET_NOT_REVIEWED',
+        'Only a teacher-reviewed set can be sent back to draft',
+      );
+      const result = await tx.outcomeSet.update({
+        where: { id: setId },
+        data: { status: 'DRAFT', reviewNote: reason.trim(), reviewerId: null, reviewedAt: null },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'OUTCOME_SET_CHANGES_REQUESTED',
+          entityType: 'OutcomeSet',
+          entityId: setId,
+          afterData: { reason: reason.trim() },
+        },
+      });
+      return result;
     });
   }
 
@@ -176,14 +247,12 @@ export class OutcomeService {
         where: { id: { in: outcomeIds } },
         include: { outcomeSet: true },
       });
+      // A new curriculum period re-links its draft lessons to the CLO set already in use.
       assertRule(
         outcomes.length === outcomeIds.length &&
-          outcomes.every(
-            (item) =>
-              item.outcomeSet.programId === lesson.programId && item.outcomeSet.status === 'DRAFT',
-          ),
+          outcomes.every((item) => item.outcomeSet.programId === lesson.programId),
         'INVALID_OUTCOME_MAPPING',
-        'Outcomes must belong to a draft set in the same program',
+        'Outcomes must belong to a set in the same program',
       );
       await tx.lessonOutcome.deleteMany({ where: { lessonId } });
       await tx.lessonOutcome.createMany({

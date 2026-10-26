@@ -1079,6 +1079,26 @@ export class CurriculumSchedulingService {
             kind: 'LESSON',
           })),
       });
+      // Keep each lesson's CLO links so a new period does not lose its outcome mapping.
+      const taught = unit.lessons.filter((lesson) => lesson.kind === 'LESSON');
+      const links = await tx.lessonOutcome.findMany({
+        where: { lessonId: { in: taught.map((lesson) => lesson.id) } },
+      });
+      if (links.length) {
+        const sequenceOf = new Map(taught.map((lesson) => [lesson.id, lesson.sequence]));
+        const copied = await tx.lesson.findMany({
+          where: { unitId: copy.id, kind: 'LESSON' },
+          select: { id: true, sequence: true },
+        });
+        const lessonAt = new Map(copied.map((lesson) => [lesson.sequence, lesson.id]));
+        await tx.lessonOutcome.createMany({
+          data: links.flatMap((link) => {
+            const lessonId = lessonAt.get(sequenceOf.get(link.lessonId) ?? -1);
+            return lessonId ? [{ lessonId, outcomeId: link.outcomeId }] : [];
+          }),
+          skipDuplicates: true,
+        });
+      }
       return tx.curriculumUnit.findUniqueOrThrow({
         where: { id: copy.id },
         include: unitInclude,

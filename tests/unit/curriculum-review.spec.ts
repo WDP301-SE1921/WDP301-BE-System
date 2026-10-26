@@ -29,6 +29,7 @@ interface ReviewFixture {
     class: Record<'count' | 'findMany', jest.Mock>;
     user: Record<'findFirst' | 'findMany', jest.Mock>;
     lesson: Record<'updateMany' | 'createMany', jest.Mock>;
+    lessonOutcome: Record<'findMany' | 'createMany', jest.Mock>;
     auditLog: { create: jest.Mock };
     curriculumImportPreview: { create: jest.Mock };
   };
@@ -76,6 +77,7 @@ function setup(overrides: Record<string, unknown> = {}): ReviewFixture {
       findMany: jest.fn().mockResolvedValue([]),
     },
     lesson: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), createMany: jest.fn() },
+    lessonOutcome: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn() },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
     curriculumImportPreview: { create: jest.fn().mockResolvedValue({ id: 'preview' }) },
   };

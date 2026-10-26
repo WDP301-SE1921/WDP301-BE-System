@@ -838,6 +838,8 @@ model OutcomeSet {
   reviewedAt      DateTime?
   approvedById    String?          @db.VarChar(191)
   approvedAt      DateTime?
+  /// Manager's reason when a teacher-reviewed set is sent back to draft.
+  reviewNote      String?          @db.Text
   program         Program          @relation(fields: [programId], references: [id], onDelete: Restrict)
   outcomes        LearningOutcome[]
   assignments     Assignment[]

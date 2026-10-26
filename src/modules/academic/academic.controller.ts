@@ -48,6 +48,7 @@ import {
   AssignmentImportDto,
   OutcomeSourceReviewDto,
   OutcomeSetCreateDto,
+  OutcomeChangeRequestDto,
   LearningOutcomeWriteDto,
   LessonOutcomeWriteDto,
   AttendanceDto,
@@ -153,7 +154,17 @@ export class AcademicController {
   @Post('outcome-sets')
   @ApiOperation({ summary: 'Curriculum designer: create a new versioned CLO set' })
   createOutcomeSet(@CurrentUser() user: AuthenticatedUser, @Body() input: OutcomeSetCreateDto): Promise<unknown> {
-    return this.outcomes.createSet(user, input.programId, input.level);
+    return this.outcomes.createSet(user, input.programId, input.level, input.copyFromId);
+  }
+
+  @Post('outcome-sets/:id/request-changes')
+  @ApiOperation({ summary: 'Manager: send a teacher-reviewed CLO set back to draft' })
+  requestOutcomeChanges(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: OutcomeChangeRequestDto,
+  ): Promise<unknown> {
+    return this.outcomes.requestChanges(user, id, input.reason);
   }
 
   @Post('outcome-sets/:id/outcomes')

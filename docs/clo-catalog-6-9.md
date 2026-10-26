@@ -27,6 +27,9 @@ Ngày tạo: 24/10/2026. Dữ liệu trong `src/database/seeds/seed-learning-out
 4. Teacher đang phụ trách chương trình đối chiếu **từng** CLO với phụ lục, gọi `POST /api/v1/academic/outcomes/:id/verify-source` với `sourceLocator` (đúng mục/trang) và `sourceNote` (giải thích đối chiếu). Sau khi tất cả đã xác minh và có bài học, gọi `POST /api/v1/academic/outcome-sets/:id/technical-approve`.
 5. Manager gọi `POST /api/v1/academic/outcome-sets/:id/approve`. Chỉ bộ đã duyệt được dùng khi tạo assignment qua `outcomeSetId` và `questions[].outcomeId`. Từ lúc chương trình có bộ đã duyệt, publish assignment mới phải có bộ CLO và mapping cho từng câu.
 6. `GET /api/v1/academic/assignments/:id` trả `learningTargets` và `outcomeId` cho từng câu, theo quyền hiện có. Bài đã phát hành trước đó tiếp tục hoạt động mà không cần gán CLO hồi tố.
+7. Bộ đã được giáo viên duyệt (`TECHNICALLY_APPROVED`) nhưng Manager thấy cần sửa: `POST /api/v1/academic/outcome-sets/:id/request-changes` với `{ reason }` (1–2000 ký tự). Bộ trở về `DRAFT`, lý do nằm ở `reviewNote`, người duyệt chuyên môn bị xóa; CLO nào được Designer sửa sẽ về `CANDIDATE`, giáo viên duyệt lại toàn bộ. Không áp dụng cho bộ `APPROVED`.
+8. Muốn đổi bộ đã `APPROVED`: Designer tạo phiên bản mới bằng `POST /api/v1/academic/outcome-sets` kèm `copyFromId` (bộ cùng chương trình). CLO và liên kết bài học được chép sang bản nháp mới, nguồn trở về `CANDIDATE` để giáo viên xác minh lại.
+9. Giáo trình kỳ mới tạo bằng `POST curriculum-units/:id/revisions` giữ liên kết CLO của từng bài (theo `sequence`). `PATCH lessons/:id/outcomes` gắn bài nháp với CLO của bất kỳ bộ nào cùng chương trình, kể cả bộ đã duyệt.
 
 ## Giới hạn cần biết
 

@@ -268,6 +268,12 @@ export class OutcomeSourceReviewDto {
 export class OutcomeSetCreateDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) programId!: string;
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(100) level!: string;
+  @ApiPropertyOptional({ description: 'Copy CLOs and lesson links from this set of the same program' })
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(191) copyFromId?: string;
+}
+
+export class OutcomeChangeRequestDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
 }
 
 export class LearningOutcomeWriteDto {
