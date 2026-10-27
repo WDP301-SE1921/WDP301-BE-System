@@ -17,6 +17,7 @@ export interface AppConfiguration {
     storageBucket: string;
     storageKey: string;
     storageSecret: string;
+    storagePublicEndpoint: string;
     smtpUrl: string;
     mailFrom: string;
   };
@@ -111,6 +112,7 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
       storageBucket: environment.STORAGE_BUCKET?.trim() || '',
       storageKey: environment.STORAGE_ACCESS_KEY?.trim() || '',
       storageSecret: environment.STORAGE_SECRET_KEY?.trim() || '',
+      storagePublicEndpoint: environment.STORAGE_PUBLIC_ENDPOINT?.trim() || environment.STORAGE_ENDPOINT?.trim() || '',
       smtpUrl: environment.SMTP_URL?.trim() || '',
       mailFrom: environment.MAIL_FROM?.trim() || '',
     },

@@ -8,6 +8,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { AppConfigModule } from './config/config.module';
 import type { AppConfiguration } from './config/configuration';
 import { DatabaseModule } from './database/orm/database.module';
+import { ObjectStorageModule } from './integrations/object-storage.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -26,6 +27,7 @@ import { CurriculumSchedulingModule } from './modules/curriculum-scheduling/curr
       ],
     }),
     DatabaseModule,
+    ObjectStorageModule,
     AuthModule,
     HealthModule,
     NotificationsModule,

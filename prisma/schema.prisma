@@ -80,6 +80,7 @@ model User {
   status                     UserStatus               @default(ACTIVE)
   permissions                Json?
   emailVerifiedAt            DateTime?
+  avatarStorageKey           String?                  @db.VarChar(255)
   parentProfile              ParentProfile?
   notifications              Notification[]
   notificationDispatches     NotificationDispatch[]

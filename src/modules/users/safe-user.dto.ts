@@ -27,6 +27,9 @@ export class SafeUserDto {
   @ApiProperty({ nullable: true, example: '2026-10-02T03:00:00.000Z' })
   emailVerifiedAt!: Date | null;
 
+  @ApiProperty({ example: false, description: 'Whether the user has an active avatar set.' })
+  hasAvatar!: boolean;
+
   @ApiProperty({ example: '2026-09-23T03:00:00.000Z' })
   createdAt!: Date;
 

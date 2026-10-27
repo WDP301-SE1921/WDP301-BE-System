@@ -13,6 +13,10 @@ import { AuthSessionsRepository } from './auth-sessions.repository';
 import type { AuthResponseDto, AuthTokensDto } from './dto/auth-response.dto';
 import type { RealtimeTicketDto } from './dto/realtime-ticket.dto';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { Logger } from '@nestjs/common';
+import { ObjectStorageService } from '../../integrations/object-storage.service';
+import { validateAvatarImageFile } from '../../integrations/file-validation';
+import type { AvatarUrlResponseDto, DeleteAvatarResponseDto } from './dto/avatar-response.dto';
 import type { JwtPayload } from './jwt-payload';
 
 const PASSWORD_HASH_ROUNDS = 12;
@@ -31,7 +35,9 @@ export class AuthService {
     private readonly db: DatabaseService,
     private readonly jwtService: JwtService,
     private readonly usersService: UsersService,
+    private readonly objectStorage: ObjectStorageService,
   ) {}
+  private readonly logger = new Logger(AuthService.name);
 
   async registerParent(input: {
     email: string;
@@ -131,8 +137,8 @@ export class AuthService {
   }
 
   async currentProfile(user: SafeUser): Promise<SafeUser> {
-    const { id, email, displayName, role, status, emailVerifiedAt, createdAt, updatedAt } = user;
-    const safe = { id, email, displayName, role, status, emailVerifiedAt, createdAt, updatedAt };
+    const { id, email, displayName, role, status, emailVerifiedAt, hasAvatar, createdAt, updatedAt } = user;
+    const safe = { id, email, displayName, role, status, emailVerifiedAt, hasAvatar, createdAt, updatedAt };
     if (user.role !== 'PARENT') return safe;
     const parent = await this.db.parentProfile.findUnique({
       where: { userId: user.id },
@@ -513,5 +519,100 @@ export class AuthService {
 
   private secondsUntil(date: Date): number {
     return Math.max(1, Math.floor((date.getTime() - Date.now()) / 1000));
+  }
+
+  async getAvatar(user: AuthenticatedUser): Promise<AvatarUrlResponseDto> {
+    const record = await this.db.user.findUnique({
+      where: { id: user.id },
+      select: { avatarStorageKey: true },
+    });
+    if (!record?.avatarStorageKey) {
+      return { url: null, expiresIn: null };
+    }
+    const signed = await this.objectStorage.createSignedGetUrl(record.avatarStorageKey, {
+      expiresInSeconds: 900,
+      inline: true,
+    });
+    return { url: signed.url, expiresIn: signed.expiresIn };
+  }
+
+  async updateAvatar(user: AuthenticatedUser, file?: Express.Multer.File): Promise<AvatarUrlResponseDto> {
+    const { extension, mimeType } = validateAvatarImageFile(file);
+    const nonNullFile = file!;
+
+    const existing = await this.db.user.findUniqueOrThrow({
+      where: { id: user.id },
+      select: { avatarStorageKey: true },
+    });
+    const oldKey = existing.avatarStorageKey;
+    const newKey = `avatars/${user.id}/${randomUUID()}${extension}`;
+
+    await this.objectStorage.putObject({
+      key: newKey,
+      buffer: nonNullFile.buffer,
+      mimeType,
+      timeoutMs: 30000,
+    });
+
+    try {
+      const updated = await this.db.user.updateMany({
+        where: {
+          id: user.id,
+          avatarStorageKey: oldKey,
+        },
+        data: {
+          avatarStorageKey: newKey,
+        },
+      });
+
+      if (updated.count === 0) {
+        throw new AppError(
+          'AVATAR_CONFLICT',
+          'Avatar was modified concurrently by another request',
+          HttpStatus.CONFLICT,
+        );
+      }
+    } catch (error) {
+      try {
+        await this.objectStorage.deleteObject(newKey);
+      } catch (cleanupErr) {
+        this.logger.error(`Failed to clean up newly uploaded avatar "${newKey}": ${(cleanupErr as Error).message}`);
+      }
+      throw error;
+    }
+
+    if (oldKey) {
+      this.objectStorage.deleteObject(oldKey).catch((delErr) => {
+        this.logger.warn(`Failed to delete replaced avatar object "${oldKey}": ${delErr.message}`);
+      });
+    }
+
+    const signed = await this.objectStorage.createSignedGetUrl(newKey, {
+      expiresInSeconds: 900,
+      inline: true,
+      contentType: mimeType,
+    });
+    return { url: signed.url, expiresIn: signed.expiresIn };
+  }
+
+  async deleteAvatar(user: AuthenticatedUser): Promise<DeleteAvatarResponseDto> {
+    const existing = await this.db.user.findUnique({
+      where: { id: user.id },
+      select: { avatarStorageKey: true },
+    });
+    const oldKey = existing?.avatarStorageKey;
+
+    if (oldKey) {
+      await this.db.user.update({
+        where: { id: user.id },
+        data: { avatarStorageKey: null },
+      });
+
+      this.objectStorage.deleteObject(oldKey).catch((delErr) => {
+        this.logger.warn(`Failed to delete removed avatar object "${oldKey}": ${delErr.message}`);
+      });
+    }
+
+    return { deleted: true };
   }
 }

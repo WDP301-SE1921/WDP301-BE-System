@@ -1,4 +1,7 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Patch, Post, Put, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBody, ApiConsumes } from '@nestjs/swagger';
+import { AvatarUrlResponseDto, DeleteAvatarResponseDto } from './dto/avatar-response.dto';
 import {
   ApiBearerAuth,
   ApiBadRequestResponse,
@@ -31,7 +34,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto/password.dto';
 
 @ApiTags('auth')
-@ApiExtraModels(AuthResponseDto, LogoutResponseDto, RealtimeTicketDto, SafeUserDto)
+@ApiExtraModels(AuthResponseDto, LogoutResponseDto, RealtimeTicketDto, SafeUserDto, AvatarUrlResponseDto, DeleteAvatarResponseDto)
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -222,6 +225,71 @@ export class AuthController {
   resetPassword(@Body() body: ResetPasswordDto): Promise<{ reset: true }> {
     return this.authService.resetPassword(body);
   }
+
+  @Get('me/avatar')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get current user avatar signed URL',
+    description: 'Returns a signed URL for current user avatar (expires in 900 seconds) or null if no avatar is set.',
+  })
+  @ApiOkResponse({
+    description: 'Current user avatar access URL.',
+    schema: successEnvelopeSchema({ $ref: '#/components/schemas/AvatarUrlResponseDto' }),
+  })
+  getAvatar(@CurrentUser() user: AuthenticatedUser): Promise<AvatarUrlResponseDto> {
+    return this.authService.getAvatar(user);
+  }
+
+  @Put('me/avatar')
+  @ApiBearerAuth()
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload or update current user avatar',
+    description: 'Uploads a new avatar image (PNG or JPEG, up to 5MB) and replaces the previous avatar.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Avatar image file (PNG/JPEG up to 5MB)',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Updated avatar signed URL.',
+    schema: successEnvelopeSchema({ $ref: '#/components/schemas/AvatarUrlResponseDto' }),
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 },
+    }),
+  )
+  updateAvatar(
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<AvatarUrlResponseDto> {
+    return this.authService.updateAvatar(user, file);
+  }
+
+  @Delete('me/avatar')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete current user avatar',
+    description: 'Removes the avatar for current user account and cleans up storage.',
+  })
+  @ApiOkResponse({
+    description: 'Avatar deleted status.',
+    schema: successEnvelopeSchema({ $ref: '#/components/schemas/DeleteAvatarResponseDto' }),
+  })
+  deleteAvatar(@CurrentUser() user: AuthenticatedUser): Promise<DeleteAvatarResponseDto> {
+    return this.authService.deleteAvatar(user);
+  }
+
 }
 
 function successEnvelopeSchema(dataSchema: Record<string, unknown>): Record<string, unknown> {

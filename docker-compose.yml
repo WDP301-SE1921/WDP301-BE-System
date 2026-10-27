@@ -17,5 +17,51 @@ services:
       retries: 20
       start_period: 20s
 
+  minio:
+    build:
+      context: .
+      dockerfile: docker/minio/Dockerfile
+      args:
+        MINIO_VERSION: RELEASE.2025-09-07T16-13-09Z
+        MINIO_COMMIT: 07c3a429bfed433e49018cb0f78a52145d4bedeb
+    container_name: edugrade_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  minio-init:
+    build:
+      context: .
+      dockerfile: docker/minio-init/Dockerfile
+      args:
+        MC_VERSION: RELEASE.2025-08-13T08-35-41Z
+        MC_COMMIT: 7394ce0dd2a80935aded936b09fa12cbb3cb8096
+    container_name: edugrade_minio_init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_HOST: minio
+      MINIO_PORT: 9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-edugrade}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-edugrade_app}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-edugrade_app_secret123}
+
 volumes:
   mysql_data:
+  minio_data:

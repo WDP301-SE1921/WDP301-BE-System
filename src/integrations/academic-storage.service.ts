@@ -1,93 +1,60 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { extname } from 'node:path';
-import type { AppConfiguration } from '../config/configuration';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { AcademicRepository } from '../modules/academic/academic.repository';
 import { assertRule, roles } from '../modules/academic/academic-access.service';
+import { ObjectStorageService } from './object-storage.service';
+import { validateAcademicSubmissionFile } from './file-validation';
 
 @Injectable()
 export class AcademicStorageService {
+  private readonly logger = new Logger(AcademicStorageService.name);
+
   constructor(
-    private readonly config: ConfigService<AppConfiguration, true>,
+    private readonly objectStorage: ObjectStorageService,
     private readonly repo: AcademicRepository,
   ) {}
-  private client(): { client: S3Client; bucket: string } {
-    const c = this.config.get('academic', { infer: true });
-    if (!c.storageBucket || !c.storageKey || !c.storageSecret)
-      throw new ServiceUnavailableException('Object storage is not configured');
-    return {
-      client: new S3Client({
-        region: c.storageRegion,
-        endpoint: c.storageEndpoint || undefined,
-        forcePathStyle: !!c.storageEndpoint,
-        credentials: { accessKeyId: c.storageKey, secretAccessKey: c.storageSecret },
-        maxAttempts: 2,
-      }),
-      bucket: c.storageBucket,
-    };
-  }
+
   async upload(user: AuthenticatedUser, file?: Express.Multer.File): Promise<unknown> {
     roles(user, 'PARENT');
-    assertRule(
-      file && file.size > 0 && file.size <= 10 * 1024 * 1024,
-      'INVALID_FILE_SIZE',
-      'A file up to 10MB is required',
-    );
-    const extension = extname(file.originalname).toLowerCase();
-    const valid =
-      (extension === '.pdf' &&
-        file.mimetype === 'application/pdf' &&
-        file.buffer.subarray(0, 5).toString() === '%PDF-') ||
-      (['.jpg', '.jpeg'].includes(extension) &&
-        file.mimetype === 'image/jpeg' &&
-        file.buffer.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) ||
-      (extension === '.png' &&
-        file.mimetype === 'image/png' &&
-        file.buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
-    assertRule(valid, 'INVALID_FILE_TYPE', 'Only matching PDF, PNG and JPEG files are accepted');
-    const { client, bucket } = this.client();
+    const { extension, mimeType } = validateAcademicSubmissionFile(file);
+    const nonNullFile = file!;
+
     const storageKey = `submissions/${user.id}/${randomUUID()}${extension}`;
+
+    // Upload to object storage first
+    await this.objectStorage.putObject({
+      key: storageKey,
+      buffer: nonNullFile.buffer,
+      mimeType,
+      timeoutMs: 30000,
+    });
+
     try {
-      await client.send(
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: storageKey,
-          Body: file.buffer,
-          ContentType: file.mimetype,
-        }),
-        { abortSignal: AbortSignal.timeout(30000) },
-      );
+      return await this.repo.db.fileAsset.create({
+        data: {
+          ownerId: user.id,
+          storageKey,
+          name: nonNullFile.originalname.slice(0, 255),
+          mimeType,
+          size: nonNullFile.size,
+        },
+        select: { id: true, name: true, mimeType: true, size: true },
+      });
+    } catch (error) {
+      // Compensating deletion on DB failure
       try {
-        return await this.repo.db.fileAsset.create({
-          data: {
-            ownerId: user.id,
-            storageKey,
-            name: file.originalname.slice(0, 255),
-            mimeType: file.mimetype,
-            size: file.size,
-          },
-          select: { id: true, name: true, mimeType: true, size: true },
-        });
-      } catch (error) {
-        await client
-          .send(new DeleteObjectCommand({ Bucket: bucket, Key: storageKey }))
-          .catch(() => undefined);
-        throw error;
+        await this.objectStorage.deleteObject(storageKey);
+      } catch (cleanupErr) {
+        this.logger.error(
+          `Compensating cleanup failed for key "${storageKey}": ${(cleanupErr as Error).message}`,
+        );
       }
-    } finally {
-      client.destroy();
+      throw error;
     }
   }
-  async download(user: AuthenticatedUser, id: string): Promise<unknown> {
+
+  private async checkFileAccess(user: AuthenticatedUser, id: string) {
     roles(user, 'PARENT', 'TEACHER');
     const file = await this.repo.db.fileAsset.findUniqueOrThrow({ where: { id } });
     const permitted =
@@ -100,24 +67,26 @@ export class AcademicStorageService {
               recipient: { assignment: { teacherId: user.id, class: { teacherId: user.id } } },
             },
           },
-        })));
+        })) > 0);
     assertRule(permitted, 'FORBIDDEN', 'File is not accessible to this user');
-    const { client, bucket } = this.client();
-    try {
-      return {
-        url: await getSignedUrl(
-          client,
-          new GetObjectCommand({
-            Bucket: bucket,
-            Key: file.storageKey,
-            ResponseContentDisposition: 'attachment',
-          }),
-          { expiresIn: 60 },
-        ),
-        expiresIn: 60,
-      };
-    } finally {
-      client.destroy();
-    }
+    return file;
+  }
+
+  async download(user: AuthenticatedUser, id: string): Promise<{ url: string; expiresIn: number }> {
+    const file = await this.checkFileAccess(user, id);
+    return this.objectStorage.createSignedGetUrl(file.storageKey, {
+      expiresInSeconds: 60,
+      inline: false,
+    });
+  }
+
+  async preview(user: AuthenticatedUser, id: string): Promise<{ url: string; expiresIn: number }> {
+    const file = await this.checkFileAccess(user, id);
+    const isImage = file.mimeType === 'image/png' || file.mimeType === 'image/jpeg';
+    return this.objectStorage.createSignedGetUrl(file.storageKey, {
+      expiresInSeconds: 300,
+      inline: isImage,
+      contentType: file.mimeType,
+    });
   }
 }

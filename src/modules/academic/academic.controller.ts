@@ -655,6 +655,13 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.storage.download(user, id);
   }
+
+  @Get('files/:id/preview') previewFile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.storage.preview(user, id);
+  }
   @Post('announcements') announcement(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: AnnouncementDto,

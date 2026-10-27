@@ -3,7 +3,7 @@ import { Prisma, UserRole, UserStatus, type User } from '@prisma/client';
 
 import { DatabaseService } from '../../database/orm/database.service';
 
-export type SafeUser = Omit<User, 'passwordHash' | 'permissions'> & { phone?: string | null };
+export type SafeUser = Omit<User, 'passwordHash' | 'permissions' | 'avatarStorageKey'> & { phone?: string | null; hasAvatar: boolean };
 
 @Injectable()
 export class UsersRepository {
@@ -53,6 +53,7 @@ export class UsersRepository {
       role: user.role,
       status: user.status,
       emailVerifiedAt: user.emailVerifiedAt,
+      hasAvatar: Boolean(user.avatarStorageKey),
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

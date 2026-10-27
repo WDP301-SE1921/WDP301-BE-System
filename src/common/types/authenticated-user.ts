@@ -8,6 +8,7 @@ export interface AuthenticatedUser {
   role: UserRole;
   status: UserStatus;
   emailVerifiedAt: Date | null;
+  hasAvatar: boolean;
   createdAt: Date;
   updatedAt: Date;
   sessionId: string;
