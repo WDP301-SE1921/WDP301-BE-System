@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Patch, Post, Put, UploadedFile, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Patch,
+  Post,
+  Put,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes } from '@nestjs/swagger';
 import { AvatarUrlResponseDto, DeleteAvatarResponseDto } from './dto/avatar-response.dto';
@@ -34,7 +46,14 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto/password.dto';
 
 @ApiTags('auth')
-@ApiExtraModels(AuthResponseDto, LogoutResponseDto, RealtimeTicketDto, SafeUserDto, AvatarUrlResponseDto, DeleteAvatarResponseDto)
+@ApiExtraModels(
+  AuthResponseDto,
+  LogoutResponseDto,
+  RealtimeTicketDto,
+  SafeUserDto,
+  AvatarUrlResponseDto,
+  DeleteAvatarResponseDto,
+)
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -230,7 +249,8 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get current user avatar signed URL',
-    description: 'Returns a signed URL for current user avatar (expires in 900 seconds) or null if no avatar is set.',
+    description:
+      'Returns a signed URL for current user avatar (expires in 900 seconds) or null if no avatar is set.',
   })
   @ApiOkResponse({
     description: 'Current user avatar access URL.',
@@ -245,7 +265,8 @@ export class AuthController {
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Upload or update current user avatar',
-    description: 'Uploads a new avatar image (PNG or JPEG, up to 5MB) and replaces the previous avatar.',
+    description:
+      'Uploads a new avatar image (PNG or JPEG, up to 5MB) and replaces the previous avatar.',
   })
   @ApiBody({
     schema: {
@@ -266,7 +287,8 @@ export class AuthController {
   })
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 },
+      // Multer rejects at its limit; validation still caps accepted files at 5 MiB.
+      limits: { fileSize: 5 * 1024 * 1024 + 1, files: 1, fields: 0 },
     }),
   )
   updateAvatar(
@@ -289,7 +311,6 @@ export class AuthController {
   deleteAvatar(@CurrentUser() user: AuthenticatedUser): Promise<DeleteAvatarResponseDto> {
     return this.authService.deleteAvatar(user);
   }
-
 }
 
 function successEnvelopeSchema(dataSchema: Record<string, unknown>): Record<string, unknown> {
