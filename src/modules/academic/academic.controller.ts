@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -221,6 +222,53 @@ export class AcademicController {
   @ApiOperation({ summary: 'Manager: approve a teacher-reviewed CLO set' })
   approveOutcomes(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
     return this.outcomes.approve(user, id);
+  }
+
+  @Get('outcome-sets/:id')
+  @ApiOperation({ summary: 'Get single outcome set details by id' })
+  outcomeSet(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.outcomes.getSet(user, id);
+  }
+
+  @Delete('outcome-sets/:id')
+  @ApiOperation({ summary: 'Curriculum designer / Manager: delete a draft outcome set' })
+  deleteOutcomeSet(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.outcomes.deleteSet(user, id);
+  }
+
+  @Get('outcome-sets/:setId/outcomes/:outcomeId')
+  @ApiOperation({ summary: 'Get single outcome details within a set' })
+  outcomeInSet(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('setId') setId: string,
+    @Param('outcomeId') outcomeId: string,
+  ): Promise<unknown> {
+    return this.outcomes.getOutcome(user, outcomeId, setId);
+  }
+
+  @Get('outcomes/:id')
+  @ApiOperation({ summary: 'Get single outcome details by id' })
+  outcome(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.outcomes.getOutcome(user, id);
+  }
+
+  @Delete('outcome-sets/:setId/outcomes/:outcomeId')
+  @ApiOperation({ summary: 'Curriculum designer: delete a draft outcome within a set' })
+  deleteOutcome(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('setId') setId: string,
+    @Param('outcomeId') outcomeId: string,
+  ): Promise<unknown> {
+    return this.outcomes.deleteOutcome(user, setId, outcomeId);
+  }
+
+  @Delete('outcomes/:id')
+  @ApiOperation({ summary: 'Curriculum designer: delete a draft outcome by id' })
+  deleteOutcomeDirect(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.outcomes.deleteOutcomeById(user, id);
   }
   @Patch('assignments/:id') updateAssignment(
     @CurrentUser() user: AuthenticatedUser,

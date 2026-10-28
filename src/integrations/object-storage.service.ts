@@ -29,6 +29,11 @@ export class ObjectStorageService implements OnApplicationShutdown {
 
   constructor(private readonly config: ConfigService<AppConfiguration, true>) {}
 
+  available(): boolean {
+    const c = this.config.get('academic', { infer: true });
+    return Boolean(c.storageBucket && c.storageKey && c.storageSecret);
+  }
+
   private getStorageConfig(): {
     endpoint: string;
     publicEndpoint: string;

@@ -95,6 +95,13 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
     throw new Error('WEB_ORIGIN must be an HTTP(S) origin');
   }
 
+  const aiKey = environment.AI_API_KEY?.trim() || '';
+  const aiUrl =
+    environment.AI_CHAT_URL?.trim() ||
+    (aiKey ? 'https://api.deepseek.com/chat/completions' : '');
+  const aiModel =
+    environment.AI_MODEL?.trim() || (aiKey ? 'deepseek-chat' : '');
+
   return {
     nodeEnv,
     port: parsePort(environment.PORT),
@@ -104,9 +111,9 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
     throttleLimitPerMinute: parsePositiveInteger(environment, 'THROTTLE_LIMIT_PER_MINUTE', 120),
     academic: {
-      aiUrl: environment.AI_CHAT_URL?.trim() || '',
-      aiKey: environment.AI_API_KEY?.trim() || '',
-      aiModel: environment.AI_MODEL?.trim() || '',
+      aiUrl,
+      aiKey,
+      aiModel,
       storageEndpoint: environment.STORAGE_ENDPOINT?.trim() || '',
       storageRegion: environment.STORAGE_REGION?.trim() || 'us-east-1',
       storageBucket: environment.STORAGE_BUCKET?.trim() || '',
