@@ -109,7 +109,8 @@ export async function seedAssessments(
           kind: 'ESSAY',
           prompt: 'Giải phương trình 3x - 7 = 8 và kiểm tra nghiệm.',
           correctAnswer: 'x = 5; thay vào được 3 × 5 - 7 = 8.',
-          rubric: 'Chuyển vế đúng: 2 điểm; tìm nghiệm x = 5: 3 điểm; kiểm tra nghiệm: 1 điểm.',
+          rubric:
+            'Barem điểm (6 điểm): Bước 1 - Áp dụng quy tắc chuyển vế đổi dấu được 3x = 15 (2.0 điểm); Bước 2 - Chia hai vế cho 3 tìm đúng nghiệm x = 5 và kết luận tập nghiệm (3.0 điểm); Bước 3 - Thay x = 5 vào vế trái 3(5) - 7 = 8 = vế phải để kiểm tra nghiệm (1.0 điểm). Trừ 0.5 điểm nếu thiếu kết luận nghiệm.',
           maxScore: 6,
         },
       }),

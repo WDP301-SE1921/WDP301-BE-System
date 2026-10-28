@@ -10,6 +10,11 @@ import { AcademicAiService, isRecord } from '../../integrations/academic-ai.serv
 import { AcademicRepository } from './academic.repository';
 import { AssessmentService, validateScores } from './assessment.service';
 import { assertRule } from './academic-access.service';
+import {
+  buildGradingSkillPayload,
+  GRADING_SKILL_INSTRUCTION,
+  MAX_PROGRAM_LESSONS_CONTEXT,
+} from './ai-grading-skill';
 
 @Injectable()
 export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
@@ -51,11 +56,6 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
       throw new ServiceUnavailableException(
         'AI is not configured; manual grading remains available',
       );
-    assertRule(
-      !submission.files.length,
-      'AI_ATTACHMENTS_UNSUPPORTED',
-      'Attached files require manual review; AI currently grades text answers only',
-    );
     return this.repo.transaction(async (tx) => {
       const pending = await tx.gradingJob.findFirst({
         where: { submissionId, status: { in: ['QUEUED', 'PROCESSING'] } },
@@ -98,21 +98,55 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
     try {
       const submission = await this.repo.db.submission.findUniqueOrThrow({
         where: { id: job.submissionId },
-        include: { recipient: { include: { assignment: { include: { questions: true } } } } },
-      });
-      const questions = submission.recipient.assignment.questions;
-      const response = await this.ai.json(
-        'Suggest grades. Shape: {"scores":[{"questionId":"id","score":0,"feedback":"reason"}]}. Use the supplied rubric and maximum score. Do not publish results.',
-        {
-          questions: questions.map((q) => ({
-            id: q.id,
-            prompt: q.prompt,
-            rubric: q.rubric,
-            correctAnswer: q.correctAnswer,
-            maxScore: q.maxScore,
-          })),
-          answers: submission.answers,
+        include: {
+          files: true,
+          recipient: {
+            include: {
+              assignment: {
+                include: {
+                  class: { include: { program: true } },
+                  session: { include: { lesson: true } },
+                  questions: {
+                    orderBy: { position: 'asc' },
+                    include: { outcome: true },
+                  },
+                },
+              },
+            },
+          },
         },
+      });
+      const assignment = submission.recipient.assignment;
+      const questions = assignment.questions;
+      const programLessons =
+        !assignment.session?.lesson && assignment.class?.programId
+          ? await this.repo.db.lesson.findMany({
+              where: {
+                programId: assignment.class.programId,
+                status: 'APPROVED',
+              },
+              orderBy: { sequence: 'asc' },
+              take: MAX_PROGRAM_LESSONS_CONTEXT,
+              select: { id: true, title: true, sequence: true, content: true },
+            })
+          : [];
+      const response = await this.ai.json(
+        GRADING_SKILL_INSTRUCTION,
+        buildGradingSkillPayload({
+          assignment: {
+            id: assignment.id,
+            title: assignment.title,
+            instructions: assignment.instructions,
+            kind: assignment.kind,
+            testType: assignment.testType,
+            program: assignment.class?.program ?? null,
+            sessionLesson: assignment.session?.lesson ?? null,
+          },
+          programLessons,
+          questions,
+          answers: submission.answers,
+          hasAttachments: Boolean(submission.files?.length),
+        }),
       );
       assertRule(
         isRecord(response) && Array.isArray(response.scores),
