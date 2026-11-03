@@ -144,10 +144,10 @@ Nguồn: AuthService, AuthSessionsRepository, UsersRepository.
 1. Gửi email, password, displayName và phone nếu có vào POST /auth/register.
 2. DTO kiểm tra đầu vào; service kiểm tra giới hạn bcrypt 72 byte.
 3. Mật khẩu được hash bcrypt, tạo User role PARENT và ParentProfile.
-4. Tạo token xác minh email, lưu hash và hạn 24 giờ.
-5. Nếu có SMTP, gửi token xác minh.
+4. Tạo mã xác minh email 6 số, lưu hash (kèm id bản ghi) và hạn 15 phút; tối đa 5 mã mỗi giờ cho một tài khoản, mã mới làm mã cũ hết hạn.
+5. Nếu có SMTP, gửi mã xác minh (chỉ trong nội dung email).
 6. Trả user an toàn và cặp access/refresh token.
-7. Parent gọi verify-email để ghi emailVerifiedAt.
+7. Parent gọi verify-email với email và mã để ghi emailVerifiedAt; sai 5 lần thì mã hết hiệu lực. Token dài của email cũ vẫn được nhận.
 8. Các thao tác quản lý con yêu cầu Parent đã xác minh email.
 
 Không cho field role tùy ý để tự đăng ký Teacher/Manager.
@@ -160,7 +160,7 @@ Giới hạn: gửi xác minh chưa dùng outbox. Nếu provider gửi lỗi sau
 2. So sánh bcrypt; sai trả AUTH_INVALID_CREDENTIALS.
 3. Tạo AuthSession và lưu hash refresh token.
 4. JWT chứa định danh user/session; access request kiểm tra session còn hoạt động.
-5. Refresh xác minh JWT và hash hiện tại, xoay cả cặp token.
+5. Refresh xác minh JWT và hash hiện tại, xoay cả cặp token và gia hạn phiên thêm JWT_REFRESH_TTL_SECONDS, không quá JWT_SESSION_MAX_AGE_SECONDS (mặc định 90 ngày) kể từ lúc đăng nhập.
 6. Dùng lại refresh cũ làm session bị thu hồi.
 7. Logout thu hồi session hiện tại, không tự logout mọi thiết bị.
 
@@ -726,7 +726,7 @@ Thiếu cấu hình S3/object storage trả lỗi; chưa có bằng chứng đã
 ### 14.5. AI chấm bài — đã có worker gợi ý
 
 1. Teacher gọi grade-ai.
-2. Kiểm tra assignment ownership, provider được cấu hình, không có file đính kèm.
+2. Kiểm tra assignment ownership, provider được cấu hình. Bài có file đính kèm vẫn chấm được: câu tự luận để trống (bài làm nằm trong file) không gửi AI và nằm ở `result.manualReviewQuestionIds`.
 3. Trả job đang QUEUED/PROCESSING nếu đã có hoặc tạo QUEUED.
 4. Worker khoảng 2 giây lấy job, claim bằng update có điều kiện.
 5. Gửi rubric/câu/đáp án text cho provider.

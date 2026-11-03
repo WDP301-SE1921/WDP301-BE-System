@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import * as bcrypt from 'bcrypt';
 
 import { AppError } from '../../common/errors/app.error';
@@ -22,7 +22,12 @@ import type { JwtPayload } from './jwt-payload';
 const PASSWORD_HASH_ROUNDS = 12;
 const BCRYPT_MAX_BYTES = 72;
 const PENDING_REFRESH_TOKEN_HASH = '0'.repeat(64);
-const VERIFY_EMAIL_TTL_MS = 24 * 60 * 60 * 1000;
+/** A 6-digit code is short-lived and allows few guesses: 10^6 codes, 5 tries each. */
+const VERIFY_EMAIL_CODE_TTL_MS = 15 * 60 * 1000;
+export const VERIFY_EMAIL_CODE_MAX_ATTEMPTS = 5;
+/** Caps guesses per account across resent codes. */
+export const VERIFY_EMAIL_CODES_PER_HOUR = 5;
+const HOUR_MS = 60 * 60 * 1000;
 const RESET_PASSWORD_TTL_MS = 30 * 60 * 1000;
 /** A ticket only has to survive the socket handshake. */
 export const REALTIME_TICKET_TTL_SECONDS = 60;
@@ -64,7 +69,20 @@ export class AuthService {
     return this.issueEmailVerification(user.id, user.email);
   }
 
-  async verifyEmail(token: string): Promise<{ verified: true }> {
+  /** `email` with the 6-digit `code`, or the long `token` of emails sent before codes. */
+  async verifyEmail(input: {
+    token?: string;
+    email?: string;
+    code?: string;
+  }): Promise<{ verified: true }> {
+    if (input.token !== undefined) return this.verifyEmailToken(input.token);
+    if (input.email === undefined || input.code === undefined) {
+      throw this.invalidEmailTokenError();
+    }
+    return this.verifyEmailCode(input.email, input.code);
+  }
+
+  private async verifyEmailToken(token: string): Promise<{ verified: true }> {
     const tokenHash = this.hashToken(token);
     const now = new Date();
     const record = await this.db.emailVerificationToken.findUnique({
@@ -72,16 +90,50 @@ export class AuthService {
       include: { user: true },
     });
     if (!record || record.usedAt || record.expiresAt <= now) {
-      throw new AppError(
-        'AUTH_INVALID_EMAIL_TOKEN',
-        'Verification token is invalid or expired',
-        HttpStatus.BAD_REQUEST,
-      );
+      throw this.invalidEmailTokenError();
     }
     await this.db.$transaction([
       this.db.emailVerificationToken.update({ where: { id: record.id }, data: { usedAt: now } }),
       this.db.user.update({ where: { id: record.userId }, data: { emailVerifiedAt: now } }),
     ]);
+    return { verified: true };
+  }
+
+  /** Only the newest code of the account works: issuing a code expires the previous ones. */
+  private async verifyEmailCode(email: string, code: string): Promise<{ verified: true }> {
+    const user = await this.usersService.findByEmailWithPassword(email);
+    if (!user || user.role !== 'PARENT') throw this.invalidEmailTokenError();
+    const now = new Date();
+    const record = await this.db.emailVerificationToken.findFirst({
+      where: { userId: user.id, usedAt: null, expiresAt: { gt: now } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    if (!record) throw this.invalidEmailTokenError();
+    if (record.failedAttempts >= VERIFY_EMAIL_CODE_MAX_ATTEMPTS) {
+      throw this.codeAttemptsExceededError();
+    }
+    if (!this.hashesMatch(record.tokenHash, this.hashVerificationCode(record.id, code))) {
+      await this.db.emailVerificationToken.updateMany({
+        where: { id: record.id, usedAt: null },
+        data: { failedAttempts: { increment: 1 } },
+      });
+      throw record.failedAttempts + 1 >= VERIFY_EMAIL_CODE_MAX_ATTEMPTS
+        ? this.codeAttemptsExceededError()
+        : this.invalidEmailTokenError();
+    }
+    await this.db.$transaction(async (tx) => {
+      const claimed = await tx.emailVerificationToken.updateMany({
+        where: {
+          id: record.id,
+          usedAt: null,
+          expiresAt: { gt: now },
+          failedAttempts: { lt: VERIFY_EMAIL_CODE_MAX_ATTEMPTS },
+        },
+        data: { usedAt: now },
+      });
+      if (claimed.count !== 1) throw this.invalidEmailTokenError();
+      await tx.user.update({ where: { id: user.id }, data: { emailVerifiedAt: now } });
+    });
     return { verified: true };
   }
 
@@ -114,13 +166,19 @@ export class AuthService {
       throw this.invalidRefreshTokenError();
     }
 
+    const expiresAt = this.renewedSessionExpiry(session, now);
+    if (expiresAt <= now) {
+      await this.authSessionsRepository.revoke(session.id, now);
+      throw this.invalidRefreshTokenError();
+    }
     const safeUser = await this.currentProfile(this.usersService.toSafeUser(session.user));
-    const tokens = await this.signTokenPair(safeUser, session.id, session.expiresAt);
+    const tokens = await this.signTokenPair(safeUser, session.id, expiresAt);
     const rotated = await this.authSessionsRepository.rotateRefreshToken({
       sessionId: session.id,
       previousRefreshTokenHash: presentedHash,
       nextRefreshTokenHash: this.hashToken(tokens.refreshToken),
       now,
+      expiresAt,
     });
 
     if (!rotated) {
@@ -372,11 +430,26 @@ export class AuthService {
     return this.usersService.toSafeUser(session.user);
   }
 
+  /**
+   * Sliding expiry: an app opened at least once per refresh TTL keeps its session, up to the
+   * absolute max age counted from login. Never shortens a session except for that cap.
+   */
+  private renewedSessionExpiry(session: { createdAt: Date; expiresAt: Date }, now: Date): Date {
+    const { refreshTtlSeconds, sessionMaxAgeSeconds } = this.config.get('jwt', { infer: true });
+    const renewed = Math.max(
+      session.expiresAt.getTime(),
+      this.addSeconds(now, refreshTtlSeconds).getTime(),
+    );
+    const cap = this.addSeconds(session.createdAt, sessionMaxAgeSeconds).getTime();
+    return new Date(Math.min(renewed, cap));
+  }
+
   private async createAuthenticatedSession(user: SafeUser): Promise<AuthResponseDto> {
     user = await this.currentProfile(user);
+    const { refreshTtlSeconds, sessionMaxAgeSeconds } = this.config.get('jwt', { infer: true });
     const expiresAt = this.addSeconds(
       new Date(),
-      this.config.get('jwt.refreshTtlSeconds', { infer: true }),
+      Math.min(refreshTtlSeconds, sessionMaxAgeSeconds),
     );
     const temporarySession = await this.authSessionsRepository.create({
       userId: user.id,
@@ -455,30 +528,76 @@ export class AuthService {
     return createHash('sha256').update(token, 'utf8').digest('hex');
   }
 
+  /** The code lives only in the email body: the subject is listed in the email delivery log. */
   private async issueEmailVerification(userId: string, email: string): Promise<{ sent: boolean }> {
-    const token = randomBytes(32).toString('base64url');
-    const tokenHash = this.hashToken(token);
+    const now = new Date();
+    const recentCodes = await this.db.emailVerificationToken.count({
+      where: { userId, createdAt: { gt: new Date(now.getTime() - HOUR_MS) } },
+    });
+    if (recentCodes >= VERIFY_EMAIL_CODES_PER_HOUR) {
+      throw new AppError(
+        'AUTH_VERIFICATION_RATE_LIMITED',
+        'Too many verification codes requested, try again later',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const id = randomUUID();
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    const tokenHash = this.hashVerificationCode(id, code);
     await this.db.$transaction(async (tx) => {
-      const record = await tx.emailVerificationToken.create({
+      await tx.emailVerificationToken.updateMany({
+        where: { userId, usedAt: null, expiresAt: { gt: now } },
+        data: { expiresAt: now },
+      });
+      await tx.emailVerificationToken.create({
         data: {
+          id,
           userId,
           tokenHash,
-          expiresAt: new Date(Date.now() + VERIFY_EMAIL_TTL_MS),
+          expiresAt: new Date(now.getTime() + VERIFY_EMAIL_CODE_TTL_MS),
         },
       });
       await tx.outboxEvent.create({
         data: {
           eventType: 'EMAIL_VERIFICATION',
           aggregateType: 'EmailVerificationToken',
-          aggregateId: record.id,
+          aggregateId: id,
           recipient: email,
           subject: 'EduGrade - Xác minh email',
-          dedupeKey: `email-verification:${record.id}`,
-          payload: { tokenHash, text: `Mã xác minh tài khoản EduGrade: ${token}` },
+          dedupeKey: `email-verification:${id}`,
+          payload: {
+            tokenHash,
+            text: [
+              `Mã xác minh tài khoản EduGrade của bạn là: ${code}`,
+              'Nhập mã này trong ứng dụng EduGrade. Mã hết hạn sau 15 phút.',
+              'Nếu bạn không đăng ký tài khoản EduGrade, hãy bỏ qua email này.',
+            ].join('\n'),
+          },
         },
       });
     });
     return { sent: true };
+  }
+
+  /** Salted with the token id: a 6-digit code alone would repeat across accounts. */
+  private hashVerificationCode(tokenId: string, code: string): string {
+    return this.hashToken(`email-code:${tokenId}:${code}`);
+  }
+
+  private invalidEmailTokenError(): AppError {
+    return new AppError(
+      'AUTH_INVALID_EMAIL_TOKEN',
+      'Verification code is invalid or expired',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private codeAttemptsExceededError(): AppError {
+    return new AppError(
+      'AUTH_EMAIL_CODE_ATTEMPTS_EXCEEDED',
+      'Too many wrong codes, request a new verification code',
+      HttpStatus.BAD_REQUEST,
+    );
   }
 
   private hashesMatch(storedHash: string, presentedHash: string): boolean {

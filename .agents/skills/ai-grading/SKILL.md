@@ -26,6 +26,8 @@ Khi AI thực hiện chấm bài qua `GradingWorkerService`, ngữ cảnh gửi 
   - Chấm từng bước theo barem điểm (`rubric`) và kiến thức bài học trong giáo trình.
   - Tổng điểm các bước phải thỏa mãn: `0 <= score <= maxScore`.
   - Nhận xét (`feedback`): Viết bằng tiếng Việt, giải thích rõ các bước đạt điểm theo barem và các điểm thiếu/sai đối chiếu với bài học.
+  - `feedback` là lời gửi học sinh: web chép nó vào ô nhận xét khi giáo viên áp đề xuất, công bố xong thì phụ huynh đọc được trên mobile. Không viết lời nhắc cho giáo viên, không nhắc tới tệp đính kèm.
+- **Bài nộp có tệp đính kèm:** AI không đọc được tệp. Câu tự luận để trống khi bài nộp có tệp (bài làm nằm trong ảnh) không gửi cho AI và không có đề xuất; id các câu đó nằm ở `GradingJob.result.manualReviewQuestionIds` để giáo viên chấm theo tệp. Câu tự luận có chữ vẫn được AI chấm theo phần chữ.
 
 ## 3. Cấu hình AI Provider (DeepSeek / OpenAI)
 - `AI_API_KEY`: API key của DeepSeek hoặc OpenAI.

@@ -83,6 +83,8 @@ Chỉnh nội dung mẫu tại [curriculum-content.ts](../src/database/seeds/cur
 | Nhân viên đã khóa                     | `staff.disabled@edugrade.local`                                                                     |
 | Giáo viên chờ duyệt / bị từ chối      | `candidate.pending@edugrade.local`, `candidate.rejected@edugrade.local`                             |
 
+Thông tin liên hệ trung tâm (`GET /center`, bảng `center_profiles`): seed demo ghi tên "Trung tâm bồi dưỡng văn hóa EduGrade", số điện thoại `0123 456 789` (đầu số đã ngừng dùng từ 2018), email `lienhe@edugrade.local`, địa chỉ và giờ mở cửa mẫu. Biến `CENTER_*` có giá trị thì ghi đè lên mỗi lần chạy seed.
+
 Tổng cộng 20 tài khoản; tài khoản bị khóa/chờ duyệt không dùng để đăng nhập luồng thông thường. Không in mật khẩu hoặc token khi chạy seed. Token lời mời chỉ có hash ngẫu nhiên; dùng chức năng gửi lại lời mời nếu muốn thử chấp nhận qua email.
 
 ## Các tình huống nghiệp vụ

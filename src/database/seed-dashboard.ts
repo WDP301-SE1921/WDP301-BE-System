@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { readSeedConfiguration } from './seeds/seed-configuration';
 import { addDays, localInstant, monthStart, referenceDate } from './seeds/seed-calendar';
+import { seedCenterProfile } from './seeds/seed-center';
 import { demoReferenceDate, seedDashboard } from './seeds/seed-dashboard';
 import { seedDemo } from './seeds/seed-demo';
 
@@ -18,6 +19,7 @@ async function seedDashboardData(): Promise<void> {
       console.log('Demo dataset not found; running the demo seed first.');
       await seedDemo(prisma, passwordHash, config.referenceDate);
     }
+    await seedCenterProfile(prisma, config.center, true);
     const result = await seedDashboard(prisma, passwordHash);
     console.log(
       result.created

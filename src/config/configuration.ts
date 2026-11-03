@@ -28,6 +28,8 @@ export interface AppConfiguration {
     audience: string;
     accessTtlSeconds: number;
     refreshTtlSeconds: number;
+    /** Hard cap from login: refreshing extends a session by refreshTtlSeconds up to this age. */
+    sessionMaxAgeSeconds: number;
   };
 }
 
@@ -130,6 +132,11 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
       audience: environment.JWT_AUDIENCE?.trim() || 'edugrade-clients',
       accessTtlSeconds: parsePositiveInteger(environment, 'JWT_ACCESS_TTL_SECONDS', 900),
       refreshTtlSeconds: parsePositiveInteger(environment, 'JWT_REFRESH_TTL_SECONDS', 604800),
+      sessionMaxAgeSeconds: parsePositiveInteger(
+        environment,
+        'JWT_SESSION_MAX_AGE_SECONDS',
+        7776000,
+      ),
     },
   };
 }

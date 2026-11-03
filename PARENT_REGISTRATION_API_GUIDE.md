@@ -10,7 +10,7 @@ sequenceDiagram
     participant API as Backend
     participant NV as Nhân viên
     PH->>API: POST /auth/register
-    API-->>PH: Token đăng nhập + email chứa token xác minh
+    API-->>PH: Token đăng nhập + email chứa mã xác minh 6 số
     PH->>API: POST /auth/verify-email
     PH->>API: POST /me/students
     NV->>API: GET /parents/lookup?email=...
@@ -132,12 +132,14 @@ Backend tạo tài khoản PARENT và trả `data.user`, `data.tokens`:
 `POST /auth/verify-email` — public.
 
 ```json
-{ "token": "<token-trong-email>" }
+{ "email": "parent@example.com", "code": "123456" }
 ```
 
 Response `data`: `{ "verified": true }`.
 
-Email hiện chứa **token dạng văn bản, chưa chứa link frontend**. Triển khai màn hình cho phụ huynh dán token vào rồi gửi API. Token có hạn 24 giờ, chỉ lưu hash trong database và bị từ chối sau khi đã sử dụng.
+Email chứa **mã 6 chữ số** (chỉ trong nội dung email, không ghi ở tiêu đề), chưa có link frontend. Màn hình cho phụ huynh nhập 6 số rồi gửi kèm email của tài khoản. Mã hết hạn sau 15 phút, chỉ lưu hash trong database và bị từ chối sau khi đã dùng. Chỉ mã mới nhất của tài khoản dùng được: đăng ký hoặc gửi lại mã làm mã cũ hết hạn. Nhập sai 5 lần thì mã đó không dùng được nữa (`AUTH_EMAIL_CODE_ATTEMPTS_EXCEEDED`), phụ huynh phải gửi lại mã; mã sai, đã dùng hoặc hết hạn trả `AUTH_INVALID_EMAIL_TOKEN`. Cả hai là HTTP 400.
+
+Email gửi trước khi đổi sang mã 6 số chứa token dài 43 ký tự (hạn 24 giờ); `{ "token": "<token-trong-email>" }` vẫn được nhận cho tới khi các token đó hết hạn.
 
 Sau khi thành công, gọi `GET /auth/me` bằng access token hiện có để cập nhật `emailVerifiedAt` trong trạng thái frontend. Nếu không có phiên thì chuyển sang đăng nhập.
 
@@ -149,7 +151,7 @@ Gửi lại email: `POST /auth/resend-verification`, body:
 
 Response `data`: `{ "sent": true }` hoặc `{ "sent": false }`. Không diễn giải `sent: true` là chắc chắn email mới đã đến hộp thư: tài khoản đã xác minh cũng trả true. Backend cần `SMTP_URL` và `MAIL_FROM` để gửi email; thiếu cấu hình thì trả false ở bước gửi lại. Đăng ký vẫn có thể tạo tài khoản khi thiếu SMTP, nhưng phụ huynh không nhận được token qua API.
 
-Giới hạn tại controller: đăng ký/đăng nhập 5 lần mỗi 60 giây; xác minh 10 lần; gửi lại 3 lần. Frontend xử lý HTTP 429 và cho thử lại sau.
+Giới hạn tại controller: đăng ký/đăng nhập 5 lần mỗi 60 giây; xác minh 10 lần; gửi lại 3 lần. Mỗi tài khoản nhận tối đa 5 mã mỗi giờ (tính cả mã gửi khi đăng ký); quá thì gửi lại trả HTTP 429 `AUTH_VERIFICATION_RATE_LIMITED`. Frontend xử lý HTTP 429 và cho thử lại sau.
 
 ### 4.3. Đăng nhập, duy trì phiên và đăng xuất
 
@@ -157,8 +159,10 @@ Giới hạn tại controller: đăng ký/đăng nhập 5 lần mỗi 60 giây; 
 | --- | --- | --- |
 | `POST /auth/login` | `{ "email": "parent@example.com", "password": "StrongPass123!" }` | Public; nhận `data.user` và `data.tokens`; dùng chung cho nhân viên/quản lý |
 | `GET /auth/me` | Bearer token | Lấy người dùng, role, status, emailVerifiedAt |
-| `POST /auth/refresh` | `{ "refreshToken": "<refresh-token>" }` | Public; thay cả access token và refresh token bằng cặp mới |
+| `POST /auth/refresh` | `{ "refreshToken": "<refresh-token>" }` | Public; thay cả access token và refresh token bằng cặp mới, đồng thời gia hạn phiên |
 | `POST /auth/logout` | Bearer token, không cần body | Thu hồi phiên hiện tại; frontend xóa token |
+
+Phiên trượt: mỗi lần refresh gia hạn phiên thêm `JWT_REFRESH_TTL_SECONDS` (mặc định 7 ngày) tính từ lúc refresh, nhưng không quá `JWT_SESSION_MAX_AGE_SECONDS` (mặc định 90 ngày) tính từ lúc đăng nhập. Ứng dụng mở ít nhất mỗi tuần một lần thì không phải đăng nhập lại cho tới hết hạn tuyệt đối. Đổi mật khẩu, đặt lại mật khẩu, đăng xuất hay dùng lại refresh token cũ vẫn thu hồi phiên như trước.
 
 Frontend chỉ chạy một yêu cầu refresh tại một thời điểm, cho các request khác chờ cùng kết quả. Không dùng lại refresh token cũ vì backend có thể thu hồi phiên. Refresh thất bại thì yêu cầu đăng nhập lại. Đăng nhập được khi chưa xác minh, nhưng thao tác tạo/cập nhật con sẽ bị chặn.
 

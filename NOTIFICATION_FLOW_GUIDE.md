@@ -255,7 +255,7 @@ FROM notification_dispatches ORDER BY createdAt DESC LIMIT 20;
 | Không có Notification | Thao tác đã đổi trạng thái chưa; đúng người nhận chưa; có đang xem người thực hiện không |
 | Parent không nhận announcement | Kiểm tra ownership, kỳ học, ACTIVE và placement lúc đăng |
 | `AUTH_UNAUTHORIZED` | Access token/phiên còn hạn; không dùng refresh token để nối socket |
-| `ORIGIN_NOT_ALLOWED` | Cấu hình đúng origin FE trong `CORS_ORIGINS` rồi restart |
+| `ORIGIN_NOT_ALLOWED` | Cấu hình đúng origin FE trong `CORS_ORIGINS` rồi restart. App mobile (React Native gửi `Origin` là chính địa chỉ API) không cần khai báo |
 | `REALTIME_RATE_LIMITED` | Giảm số lần handshake và backoff |
 | `REALTIME_CONNECTION_LIMIT` | Tối đa 10 socket/user; đóng khi unmount/logout |
 | `REALTIME_UNAVAILABLE` | Kiểm tra log/backend, thử lại có backoff |

@@ -110,7 +110,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Refresh token pair',
     description:
-      'Rotates the refresh token. FE should replace both stored tokens with the returned pair. Reusing an old refresh token revokes that session.',
+      'Rotates the refresh token and extends the session by JWT_REFRESH_TTL_SECONDS, never past JWT_SESSION_MAX_AGE_SECONDS after login. FE should replace both stored tokens with the returned pair. Reusing an old refresh token revokes that session.',
   })
   @ApiOkResponse({
     description: 'Token pair refreshed.',
@@ -130,18 +130,35 @@ export class AuthController {
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Verify a parent email address' })
+  @ApiOperation({
+    summary: 'Verify a parent email address',
+    description:
+      'Send `email` with the 6-digit `code` from the email. The code expires after 15 minutes and stops working after 5 wrong tries (AUTH_EMAIL_CODE_ATTEMPTS_EXCEEDED); only the newest code works. `token` still accepts the long token of emails sent before codes.',
+  })
   @ApiOkResponse({ description: 'Email verified.' })
+  @ApiBadRequestResponse({
+    description:
+      'AUTH_INVALID_EMAIL_TOKEN (wrong, used or expired code), AUTH_EMAIL_CODE_ATTEMPTS_EXCEEDED, or VALIDATION_ERROR.',
+    type: ApiErrorResponseDto,
+  })
   verifyEmail(@Body() body: VerifyEmailDto): Promise<{ verified: true }> {
-    return this.authService.verifyEmail(body.token);
+    return this.authService.verifyEmail(body);
   }
 
   @Public()
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Resend parent email verification token' })
+  @ApiOperation({
+    summary: 'Resend parent email verification code',
+    description:
+      'Issues a new 6-digit code and expires the previous ones. At most 5 codes per account per hour (429 AUTH_VERIFICATION_RATE_LIMITED).',
+  })
   @ApiOkResponse({ description: 'Verification email accepted for delivery when configured.' })
+  @ApiTooManyRequestsResponse({
+    description: 'Too many requests, or AUTH_VERIFICATION_RATE_LIMITED.',
+    type: ApiErrorResponseDto,
+  })
   resendVerification(@Body() body: ResendVerificationDto): Promise<{ sent: boolean }> {
     return this.authService.resendVerification(body.email);
   }

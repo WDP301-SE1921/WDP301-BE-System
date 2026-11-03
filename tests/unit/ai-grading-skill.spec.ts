@@ -1,10 +1,42 @@
 import { validateEnvironment } from '../../src/config/configuration';
 import {
   buildGradingSkillPayload,
+  essaysAnsweredInFiles,
+  GRADING_SKILL_INSTRUCTION,
   LESSON_CONTENT_MAX_CHARS,
 } from '../../src/modules/academic/ai-grading-skill';
 
 describe('AI Grading Skill & Configuration', () => {
+  describe('feedback audience', () => {
+    it('keeps teacher notes and attachment remarks out of student feedback', () => {
+      expect(GRADING_SKILL_INSTRUCTION).not.toContain('Lưu ý');
+      expect(GRADING_SKILL_INSTRUCTION).toContain('never mention attached files');
+    });
+  });
+
+  describe('essaysAnsweredInFiles', () => {
+    const questions = [
+      { id: 'mc', kind: 'MULTIPLE_CHOICE' as const },
+      { id: 'blank', kind: 'ESSAY' as const },
+      { id: 'spaces', kind: 'ESSAY' as const },
+      { id: 'written', kind: 'ESSAY' as const },
+    ];
+    const answers = [
+      { questionId: 'mc', answer: '' },
+      { questionId: 'blank', answer: '' },
+      { questionId: 'spaces', answer: '  \n ' },
+      { questionId: 'written', answer: 'x = 5' },
+    ];
+
+    it('returns blank essays when the submission has files', () => {
+      expect([...essaysAnsweredInFiles(questions, answers, true)]).toEqual(['blank', 'spaces']);
+    });
+
+    it('returns nothing when the submission has no files', () => {
+      expect(essaysAnsweredInFiles(questions, answers, false).size).toBe(0);
+    });
+  });
+
   describe('buildGradingSkillPayload', () => {
     it('packages curriculum lesson, questions with rubric and student answers', () => {
       const payload = buildGradingSkillPayload({

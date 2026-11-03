@@ -1,3 +1,4 @@
+import { centerContactFromEnv, type CenterContact } from '../../modules/center/center-profile';
 import { validateSeedAccountEmails } from './seed-accounts';
 import { referenceDate } from './seed-calendar';
 
@@ -6,6 +7,8 @@ export interface SeedConfiguration {
   password: string;
   databaseUrl: string;
   referenceDate?: string;
+  /** CENTER_* values that are set; written to the center row on every seed. */
+  center: Partial<CenterContact>;
 }
 
 export function readSeedConfiguration(env: NodeJS.ProcessEnv, reset = false): SeedConfiguration {
@@ -44,5 +47,11 @@ export function readSeedConfiguration(env: NodeJS.ProcessEnv, reset = false): Se
     )
   )
     throw new Error('Reseed cannot reset a MySQL system database.');
-  return { mode, password, databaseUrl: url.toString(), referenceDate: date };
+  return {
+    mode,
+    password,
+    databaseUrl: url.toString(),
+    referenceDate: date,
+    center: centerContactFromEnv(env),
+  };
 }

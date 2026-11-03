@@ -5,6 +5,20 @@ import type { Namespace, Socket } from 'socket.io';
 import type { AppConfiguration } from '../../config/configuration';
 import { AuthService } from '../auth/auth.service';
 
+/**
+ * React Native's WebSocket sends the API's own address as `Origin` (e.g. `https://<api host>`), so
+ * the mobile app is accepted without listing the API in CORS_ORIGINS. A browser page on another site
+ * cannot claim this origin, so web clients still need CORS_ORIGINS.
+ */
+export function isSameHostOrigin(origin: string, host: string | undefined): boolean {
+  if (!host) return false;
+  try {
+    return new URL(origin).host === host.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 type Client = Socket<
   Record<string, never>,
   Record<string, (payload: object) => void>,
@@ -76,8 +90,12 @@ export class NotificationsGateway implements OnGatewayInit, OnModuleDestroy {
     this.attempts.set(ip, entry);
     if (entry.count > this.config.get('throttleLimitPerMinute', { infer: true }))
       throw new Error('REALTIME_RATE_LIMITED');
-    const origin = socket.handshake.headers.origin;
-    if (origin && !this.config.get('corsOrigins', { infer: true }).includes(origin))
+    const { origin, host } = socket.handshake.headers;
+    if (
+      origin &&
+      !this.config.get('corsOrigins', { infer: true }).includes(origin) &&
+      !isSameHostOrigin(origin, host)
+    )
       throw new Error('ORIGIN_NOT_ALLOWED');
     const token: unknown = (socket.handshake.auth as Record<string, unknown>).token;
     if (typeof token !== 'string' || token.length > 8192) throw new Error('AUTH_UNAUTHORIZED');

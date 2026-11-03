@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { seedAccounts } from './seed-accounts';
+import { seedCenterProfile } from './seed-center';
 import { seedDemo } from './seed-demo';
 import type { SeedConfiguration } from './seed-configuration';
 
@@ -12,11 +13,13 @@ export async function runSeed(config: SeedConfiguration, reset = false): Promise
       config.mode === 'demo'
         ? (await seedDemo(prisma, passwordHash, config.referenceDate)).users
         : await prisma.$transaction((tx) => seedAccounts(tx, passwordHash, false, new Date()));
+    const center = await seedCenterProfile(prisma, config.center, config.mode === 'demo');
     console.log(
       `${reset ? 'Reseed' : 'Seed'} ${config.mode} completed. ${reset ? 'Database was reset and seeded again.' : 'Existing records and passwords were preserved.'}`,
     );
     for (const user of Object.values(users))
       console.log(`${user.role.padEnd(20)} ${user.email} (${user.status})`);
+    console.log(`Center (GET /center): ${JSON.stringify(center)}`);
     if (config.mode === 'demo') {
       const tables = [
         ['subjects', prisma.subject.count()],

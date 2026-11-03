@@ -59,6 +59,61 @@ describe('CLO CRUD operations', () => {
     });
   });
 
+  describe('parent access', () => {
+    const parent = { id: 'parent-1', role: 'PARENT' } as AuthenticatedUser;
+    const approvedSet = {
+      id: 'set-1',
+      programId: 'program-1',
+      status: 'APPROVED',
+      program: { id: 'program-1', name: 'Toán 8', subject: 'Toán', grade: 8 },
+      level: 'Lớp 8',
+      version: 1,
+      outcomes: [
+        {
+          id: 'clo-1',
+          code: 'M8-01',
+          title: 'A',
+          statement: 'S',
+          required: false,
+          lessonLinks: [],
+        },
+      ],
+    };
+
+    it('accepts a child moved to a class of the program, not only the registration class', async () => {
+      const findFirst = jest.fn<Promise<{ id: string }>, [{ where: unknown }]>(() =>
+        Promise.resolve({ id: 'enrollment-1' }),
+      );
+      const db = {
+        outcomeSet: { findUnique: jest.fn().mockResolvedValue(approvedSet) },
+        enrollment: { findFirst },
+      };
+
+      const result = (await outcomeService(db).getSet(parent, 'set-1')) as {
+        outcomes: { required: boolean }[];
+      };
+      expect(result.outcomes[0].required).toBe(false);
+      expect(findFirst.mock.calls[0]?.[0].where).toMatchObject({
+        OR: [
+          { class: { programId: 'program-1' } },
+          { placements: { some: { class: { programId: 'program-1' } } } },
+        ],
+        studentProfile: { parentProfile: { userId: 'parent-1' } },
+      });
+    });
+
+    it('refuses a parent whose children never studied the program', async () => {
+      const db = {
+        outcomeSet: { findUnique: jest.fn().mockResolvedValue(approvedSet) },
+        enrollment: { findFirst: jest.fn().mockResolvedValue(null) },
+      };
+
+      await expect(outcomeService(db).getSet(parent, 'set-1')).rejects.toThrow(
+        'Program does not belong to a linked child',
+      );
+    });
+  });
+
   describe('deleteOutcome', () => {
     it('allows the set designer to delete a draft outcome not used in assignments', async () => {
       const deleteLinks = jest.fn().mockResolvedValue({ count: 1 });

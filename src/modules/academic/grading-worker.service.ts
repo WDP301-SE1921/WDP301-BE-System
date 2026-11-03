@@ -12,6 +12,7 @@ import { AssessmentService, validateScores } from './assessment.service';
 import { assertRule } from './academic-access.service';
 import {
   buildGradingSkillPayload,
+  essaysAnsweredInFiles,
   GRADING_SKILL_INSTRUCTION,
   MAX_PROGRAM_LESSONS_CONTEXT,
 } from './ai-grading-skill';
@@ -117,7 +118,21 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
         },
       });
       const assignment = submission.recipient.assignment;
-      const questions = assignment.questions;
+      // Essays answered only in files are left to the teacher instead of getting a 0-point suggestion.
+      const manualReview = essaysAnsweredInFiles(
+        assignment.questions,
+        submission.answers,
+        submission.files.length > 0,
+      );
+      const questions = assignment.questions.filter((question) => !manualReview.has(question.id));
+      const manualReviewQuestionIds = [...manualReview];
+      if (!questions.length) {
+        await this.repo.db.gradingJob.updateMany({
+          where: { id: job.id, status: 'PROCESSING' },
+          data: { status: 'SUCCEEDED', result: { scores: [], manualReviewQuestionIds } },
+        });
+        return;
+      }
       const programLessons =
         !assignment.session?.lesson && assignment.class?.programId
           ? await this.repo.db.lesson.findMany({
@@ -145,7 +160,6 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
           programLessons,
           questions,
           answers: submission.answers,
-          hasAttachments: Boolean(submission.files?.length),
         }),
       );
       assertRule(
@@ -168,7 +182,7 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
       validateScores(questions, scores);
       await this.repo.db.gradingJob.updateMany({
         where: { id: job.id, status: 'PROCESSING' },
-        data: { status: 'SUCCEEDED', result: { scores } },
+        data: { status: 'SUCCEEDED', result: { scores, manualReviewQuestionIds } },
       });
     } catch {
       await this.repo.db.gradingJob.updateMany({

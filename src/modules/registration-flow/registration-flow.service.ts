@@ -1791,6 +1791,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             program: true,
             weeklySchedules: true,
             teacher: { select: { id: true, displayName: true } },
+            room: { select: { id: true, name: true } },
           },
         },
         placements: {
@@ -1800,6 +1801,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
                 program: true,
                 weeklySchedules: true,
                 teacher: { select: { id: true, displayName: true } },
+                room: { select: { id: true, name: true } },
               },
             },
           },

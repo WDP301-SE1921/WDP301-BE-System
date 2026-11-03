@@ -16,6 +16,7 @@ import { AcademicModule } from './modules/academic/academic.module';
 import { DirectoryModule } from './modules/directory/directory.module';
 import { RegistrationFlowModule } from './modules/registration-flow/registration-flow.module';
 import { CurriculumSchedulingModule } from './modules/curriculum-scheduling/curriculum-scheduling.module';
+import { CenterModule } from './modules/center/center.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { CurriculumSchedulingModule } from './modules/curriculum-scheduling/curr
     ObjectStorageModule,
     AuthModule,
     HealthModule,
+    CenterModule,
     NotificationsModule,
     AcademicModule,
     CurriculumSchedulingModule,

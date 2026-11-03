@@ -110,11 +110,11 @@ export class CurriculumSchedulingService {
     dateTimeRange(page.fromDate, page.toDate);
     const now = new Date();
     const today = localDate(dateOnly(new Date(now.getTime() + HCM_OFFSET_MS)));
+    // In-term and upcoming enrollments, so parents can preview the next term.
     const enrollments = await this.db.enrollment.findMany({
       where: {
         studentProfileId: studentId,
         status: 'ACTIVE',
-        startDate: { lte: today },
         endDate: { gt: today },
       },
       select: {
@@ -122,20 +122,25 @@ export class CurriculumSchedulingService {
         endDate: true,
         class: { select: { id: true, name: true, programId: true } },
         placements: {
-          where: {
-            effectiveFrom: { lte: now },
-            OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+          select: {
+            effectiveFrom: true,
+            effectiveTo: true,
+            class: { select: { id: true, name: true, programId: true } },
           },
-          select: { class: { select: { id: true, name: true, programId: true } } },
+          orderBy: { effectiveFrom: 'asc' },
         },
-        _count: { select: { placements: true } },
       },
     });
     const scopes = enrollments.flatMap((enrollment) => {
+      if (!enrollment.startDate || !enrollment.endDate) return [];
+      // Class of an upcoming term: the placement that takes effect when the term starts.
+      const at = enrollment.startDate > now ? enrollment.startDate : now;
+      const placement = enrollment.placements.find(
+        (item) => item.effectiveFrom <= at && (!item.effectiveTo || item.effectiveTo > at),
+      );
       const classroom =
-        enrollment.placements[0]?.class ??
-        (enrollment._count.placements === 0 ? enrollment.class : null);
-      return classroom && enrollment.startDate && enrollment.endDate
+        placement?.class ?? (enrollment.placements.length === 0 ? enrollment.class : null);
+      return classroom
         ? [{ classroom, startDate: enrollment.startDate, endDate: enrollment.endDate }]
         : [];
     });

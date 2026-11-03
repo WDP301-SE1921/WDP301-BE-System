@@ -477,7 +477,12 @@ export class AssessmentService {
       include: {
         session: { select: { id: true, startsAt: true, endsAt: true } },
         outcomeSet: {
-          include: { outcomes: { select: { id: true, code: true, title: true, statement: true } } },
+          include: {
+            outcomes: {
+              orderBy: { code: 'asc' },
+              select: { id: true, code: true, title: true, statement: true, required: true },
+            },
+          },
         },
         questions: { orderBy: { position: 'asc' } },
         recipients: {

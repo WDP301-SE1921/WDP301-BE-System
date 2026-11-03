@@ -54,7 +54,7 @@ For each assignment recipient, use the latest attempt with a PUBLISHED grade and
 
 `GET /academic/me/students/:id/curriculum?page=1&limit=20` is parent-only and returns `{ studentId, items, page, limit, total }`.
 
-Items contain approved units overlapping the child's active term for the program of their current placement (or original class when no placements exist): `id, title, programId, fromDate, toDate, version, program { subject, grade }, classes[] { id, name }, lessons[] { id, title, sequence, kind, monthKey }`. Approved unscheduled lessons are included. No current enrollment gives an empty page. Lesson content and answer keys are never selected. `sequence` remains local to the unit; it is not a course-wide lesson number. Privileged curriculum authoring routes keep their existing permissions.
+Items contain approved units overlapping the term of each in-term or upcoming `ACTIVE` enrollment of the child, for the program of the class the child is placed in (in-term: the current placement; upcoming: the placement effective when the term starts; the original class when no placements exist): `id, title, programId, fromDate, toDate, version, program { subject, grade }, classes[] { id, name }, lessons[] { id, title, sequence, kind, monthKey }`. Approved unscheduled lessons are included. No in-term or upcoming enrollment gives an empty page. Lesson content and answer keys are never selected. `sequence` remains local to the unit; it is not a course-wide lesson number. Privileged curriculum authoring routes keep their existing permissions.
 
 ## Attendance, leave and makeups
 
@@ -72,7 +72,13 @@ History keeps the legacy participant ID and enrollment/student fields so existin
 
 `GET/PATCH /auth/me` and authentication responses include the stored parent `phone` (string or null). Omitting phone during update preserves it; explicit empty string clears it. Other roles do not gain a phone property.
 
-`GET /me/students/:id/enrollments` adds `class.teacher { id, displayName }`, also under placements, and `term { startDate, endDate, status, label }`. Term states use the existing receipt rules: ENDED takes precedence, then EXPIRED at the exclusive local end date, UPCOMING before start, otherwise ACTIVE. This does not mutate stored `Enrollment.status`.
+`GET /me/students/:id/enrollments` adds `class.teacher { id, displayName }` and `class.room { id, name } | null`, also under placements, and `term { startDate, endDate, status, label }`. Term states use the existing receipt rules: ENDED takes precedence, then EXPIRED at the exclusive local end date, UPCOMING before start, otherwise ACTIVE. This does not mutate stored `Enrollment.status`.
+
+Email verification sends a 6-digit code (15 minutes, 5 wrong tries, newest code only); verify with `POST /auth/verify-email { email, code }`. Refresh slides the session by `JWT_REFRESH_TTL_SECONDS` up to `JWT_SESSION_MAX_AGE_SECONDS` (default 90 days) after login. See `PARENT_REGISTRATION_API_GUIDE.md` 4.2 and 4.3.
+
+## Center contact
+
+`GET /center` is public and returns `{ name, address, phone, email, openingHours }` from the single `center_profiles` row (migration `20261103010000_center_profile`); each value is null when the row or the value is missing. `pnpm seed` creates the row (demo contact details in demo mode, nothing in accounts mode) and on every run writes the non-empty `CENTER_NAME`, `CENTER_ADDRESS`, `CENTER_PHONE`, `CENTER_EMAIL`, `CENTER_OPENING_HOURS` values into it; `pnpm seed:dashboard` does the same. Apps use it for bill, receipt and the "call the center" action instead of hard-coded values.
 
 ## Deployment
 

@@ -46,7 +46,7 @@ async function runFullAcademicSimulation() {
 
   console.log(`[INIT] Connected to Database: ${testDbUrl}`);
   console.log(`[INIT] AI Service Available: ${aiService.available()}`);
-  console.log(`[INIT] Object Storage Available: ${true}`);
+  console.log(`[INIT] Object Storage Available: ${storageService.available()}`);
 
   const discoveredBugs: Array<{ step: string; type: string; description: string; impact: string }> = [];
 
@@ -242,9 +242,9 @@ Ví dụ: 3(x - 1) = 2x + 5 <=> 3x - 3 = 2x + 5 <=> 3x - 2x = 5 + 3 <=> x = 8.`;
     const samplePngBuffer = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
     
     // Thử upload file
-    const storageAvailable = false; if (storageAvailable) {
+    if (storageService.available()) {
       const uploadRes = await request(server)
-        .post('/api/v1/academic/files/upload')
+        .post('/api/v1/academic/files')
         .set('Authorization', `Bearer ${parentToken}`)
         .attach('file', samplePngBuffer, 'bai_lam_toan.png');
 

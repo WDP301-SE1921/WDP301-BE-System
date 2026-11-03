@@ -57,20 +57,7 @@ export class OutcomeService {
       orderBy: [{ version: 'desc' }, { id: 'asc' }],
     });
     if (user.role === 'PARENT') {
-      const child = await this.repo.db.enrollment.findFirst({
-        where: {
-          class: { programId },
-          status: { not: 'PENDING_LINK' },
-          studentProfile: { parentProfile: { userId: user.id } },
-        },
-        select: { id: true },
-      });
-      assertRule(
-        child,
-        'FORBIDDEN',
-        'Program does not belong to a linked child',
-        HttpStatus.FORBIDDEN,
-      );
+      await this.assertParentProgram(user, programId);
       return pageResult(
         query,
         Promise.resolve(
@@ -122,20 +109,7 @@ export class OutcomeService {
         'Outcome set is not approved',
         HttpStatus.FORBIDDEN,
       );
-      const child = await this.repo.db.enrollment.findFirst({
-        where: {
-          class: { programId: set.programId },
-          status: { not: 'PENDING_LINK' },
-          studentProfile: { parentProfile: { userId: user.id } },
-        },
-        select: { id: true },
-      });
-      assertRule(
-        child,
-        'FORBIDDEN',
-        'Program does not belong to a linked child',
-        HttpStatus.FORBIDDEN,
-      );
+      await this.assertParentProgram(user, set.programId);
       return {
         id: set.id,
         programId: set.programId,
@@ -204,20 +178,7 @@ export class OutcomeService {
         'Outcome set is not approved',
         HttpStatus.FORBIDDEN,
       );
-      const child = await this.repo.db.enrollment.findFirst({
-        where: {
-          class: { programId: set.programId },
-          status: { not: 'PENDING_LINK' },
-          studentProfile: { parentProfile: { userId: user.id } },
-        },
-        select: { id: true },
-      });
-      assertRule(
-        child,
-        'FORBIDDEN',
-        'Program does not belong to a linked child',
-        HttpStatus.FORBIDDEN,
-      );
+      await this.assertParentProgram(user, set.programId);
       return {
         id: outcome.id,
         outcomeSetId: outcome.outcomeSetId,
@@ -586,6 +547,24 @@ export class OutcomeService {
         data: { status: 'APPROVED', approvedById: user.id, approvedAt: new Date() },
       });
     });
+  }
+
+  /** The child's registration class or any class they were moved to belongs to the program. */
+  private async assertParentProgram(user: AuthenticatedUser, programId: string): Promise<void> {
+    const child = await this.repo.db.enrollment.findFirst({
+      where: {
+        OR: [{ class: { programId } }, { placements: { some: { class: { programId } } } }],
+        status: { not: 'PENDING_LINK' },
+        studentProfile: { parentProfile: { userId: user.id } },
+      },
+      select: { id: true },
+    });
+    assertRule(
+      child,
+      'FORBIDDEN',
+      'Program does not belong to a linked child',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   private async assertProgramTeacher(user: AuthenticatedUser, programId: string): Promise<void> {

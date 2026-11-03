@@ -43,6 +43,8 @@ export class AuthSessionsRepository {
     previousRefreshTokenHash: string;
     nextRefreshTokenHash: string;
     now: Date;
+    /** New session expiry; omitted keeps the current one. */
+    expiresAt?: Date;
   }): Promise<boolean> {
     const result = await this.database.authSession.updateMany({
       where: {
@@ -53,6 +55,7 @@ export class AuthSessionsRepository {
       },
       data: {
         refreshTokenHash: input.nextRefreshTokenHash,
+        ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
       },
     });
     return result.count === 1;

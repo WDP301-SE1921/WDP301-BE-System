@@ -132,13 +132,15 @@ model AccountInvitation {
 }
 
 model EmailVerificationToken {
-  id        String    @id @default(cuid()) @db.VarChar(191)
-  userId    String    @db.VarChar(191)
-  tokenHash String    @unique @db.Char(64)
-  expiresAt DateTime
-  usedAt    DateTime?
-  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
-  createdAt DateTime  @default(now())
+  id             String    @id @default(cuid()) @db.VarChar(191)
+  userId         String    @db.VarChar(191)
+  tokenHash      String    @unique @db.Char(64)
+  expiresAt      DateTime
+  usedAt         DateTime?
+  /// Wrong 6-digit codes entered for this token; the code stops working at the limit.
+  failedAttempts Int       @default(0)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdAt      DateTime  @default(now())
 
   @@index([userId, usedAt])
   @@index([expiresAt])
@@ -1130,4 +1132,19 @@ model NotificationDispatch {
   @@index([status, nextAttemptAt])
   @@index([status, leaseExpiresAt])
   @@map("notification_dispatches")
+}
+
+/// Contact details of the single center, returned by public GET /center. One row, id "default";
+/// `pnpm seed` creates it (demo values in demo mode) and applies CENTER_* environment values.
+model CenterProfile {
+  id           String   @id @default("default") @db.VarChar(32)
+  name         String?  @db.VarChar(255)
+  address      String?  @db.VarChar(500)
+  phone        String?  @db.VarChar(32)
+  email        String?  @db.VarChar(255)
+  openingHours String?  @db.VarChar(255)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("center_profiles")
 }

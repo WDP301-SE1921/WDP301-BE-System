@@ -68,16 +68,16 @@ CURRICULUM_DESIGNER
 ```text
 1. Phụ huynh gọi POST /api/v1/auth/register.
 2. Backend normalize email bằng trim + lowercase.
-3. Backend tạo User(role=PARENT), ParentProfile và email verification token.
-4. Backend gửi token xác minh qua SMTP nếu đã cấu hình.
-5. Phụ huynh gọi POST /api/v1/auth/verify-email.
+3. Backend tạo User(role=PARENT), ParentProfile và mã xác minh email 6 số (hạn 15 phút, sai 5 lần thì hết hiệu lực).
+4. Backend gửi mã xác minh qua SMTP nếu đã cấu hình.
+5. Phụ huynh gọi POST /api/v1/auth/verify-email với email và mã.
 6. Sau khi email đã xác minh, phụ huynh tạo hồ sơ con bằng POST /api/v1/me/students.
 ```
 
 Ràng buộc:
 
 - Email là duy nhất.
-- Token xác minh chỉ lưu dạng SHA-256 hash.
+- Mã xác minh chỉ lưu dạng SHA-256 hash (kèm id của bản ghi); gửi mã mới thì mã cũ hết hạn.
 - Token xác minh có hạn dùng và chỉ dùng một lần.
 - Nếu SMTP chưa cấu hình, backend không giả vờ gửi email; API trả trạng thái `sent: false`.
 - Hồ sơ con gồm `fullName`, `grade`, `dateOfBirth` tùy chọn.
@@ -510,11 +510,11 @@ sequenceDiagram
     participant DB as MySQL
 
     P->>API: POST /auth/register
-    API->>DB: Create User + ParentProfile + verification token
+    API->>DB: Create User + ParentProfile + 6-digit verification code
     API-->>P: Account + token pair
 
-    P->>API: POST /auth/verify-email
-    API->>DB: Mark token used + emailVerifiedAt
+    P->>API: POST /auth/verify-email (email + code)
+    API->>DB: Mark code used + emailVerifiedAt
     API-->>P: verified
 
     P->>API: POST /me/students
