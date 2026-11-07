@@ -22,6 +22,7 @@ RUN apk add --no-cache ca-certificates curl bash tzdata
 
 COPY --from=mc-builder /go/bin/mc /usr/bin/mc
 COPY docker/minio-init/entrypoint.sh /usr/local/bin/minio-init.sh
-RUN chmod +x /usr/local/bin/minio-init.sh
+RUN sed -i 's/\r$//' /usr/local/bin/minio-init.sh && \
+    chmod +x /usr/local/bin/minio-init.sh
 
 ENTRYPOINT ["/usr/local/bin/minio-init.sh"]

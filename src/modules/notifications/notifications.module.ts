@@ -7,10 +7,12 @@ import { NotificationEventsService } from './notification-events.service';
 import { NotificationRecipientsService } from './notification-recipients.service';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationsWorker } from './notifications.worker';
+import { PushNotificationsController } from './push-notifications.controller';
+import { PushNotificationsService } from './push-notifications.service';
 @Global()
 @Module({
   imports: [AuthModule],
-  controllers: [NotificationsController],
+  controllers: [NotificationsController, PushNotificationsController],
   providers: [
     NotificationsRepository,
     NotificationsService,
@@ -18,6 +20,7 @@ import { NotificationsWorker } from './notifications.worker';
     NotificationRecipientsService,
     NotificationsGateway,
     NotificationsWorker,
+    PushNotificationsService,
   ],
   exports: [NotificationEventsService, NotificationsService],
 })

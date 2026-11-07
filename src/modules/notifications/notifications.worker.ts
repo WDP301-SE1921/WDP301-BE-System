@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { DatabaseService } from '../../database/orm/database.service';
 import { NotificationsGateway } from './notifications.gateway';
+import { PushNotificationsService } from './push-notifications.service';
 
 @Injectable()
 export class NotificationsWorker implements OnModuleInit, OnModuleDestroy {
@@ -15,6 +16,7 @@ export class NotificationsWorker implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly db: DatabaseService,
     private readonly gateway: NotificationsGateway,
+    private readonly push: PushNotificationsService,
   ) {}
   onModuleInit(): void {
     this.stopping = false;
@@ -78,6 +80,12 @@ export class NotificationsWorker implements OnModuleInit, OnModuleDestroy {
           if (!claimed.count) return;
           try {
             await this.gateway.deliver(row.recipientUserId, row.event, row.payload as object);
+            if (row.event === 'notification.created') {
+              const notificationId = (row.payload as { notificationId?: unknown }).notificationId;
+              if (typeof notificationId === 'string') {
+                await this.push.deliver(row.recipientUserId, notificationId);
+              }
+            }
             await this.db.notificationDispatch.updateMany({
               where: { id: row.id, leaseToken, status: 'PROCESSING' },
               data: {

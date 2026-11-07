@@ -21,6 +21,18 @@ export interface PresignedUrlOptions {
   filename?: string;
 }
 
+function contentDisposition(inline: boolean | undefined, filename?: string): string {
+  const kind = inline ? 'inline' : 'attachment';
+  if (!filename) return kind;
+  const clean = filename.replace(/[\r\n]/g, '').slice(0, 180);
+  const fallback = clean.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(clean).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${kind}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 @Injectable()
 export class ObjectStorageService implements OnApplicationShutdown {
   private readonly logger = new Logger(ObjectStorageService.name);
@@ -135,7 +147,7 @@ export class ObjectStorageService implements OnApplicationShutdown {
       const command = new GetObjectCommand({
         Bucket: bucket,
         Key: key,
-        ResponseContentDisposition: options.inline ? 'inline' : 'attachment',
+        ResponseContentDisposition: contentDisposition(options.inline, options.filename),
         ...(options.contentType ? { ResponseContentType: options.contentType } : {}),
       });
 

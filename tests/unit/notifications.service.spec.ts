@@ -5,6 +5,7 @@ import type { DatabaseService } from '../../src/database/orm/database.service';
 import type { Prisma } from '@prisma/client';
 import { NotificationsService } from '../../src/modules/notifications/notifications.service';
 import type { NotificationsRepository } from '../../src/modules/notifications/notifications.repository';
+import type { PushNotificationsService } from '../../src/modules/notifications/push-notifications.service';
 
 describe('Notification read snapshot', () => {
   it('leaves a concurrent insertion unread and refreshes the count after commit', async () => {
@@ -60,6 +61,7 @@ describe('Notification read snapshot', () => {
       const worker = new NotificationsWorker(
         db as unknown as DatabaseService,
         { connectionCount: () => 0 } as unknown as NotificationsGateway,
+        { deliver: jest.fn() } as unknown as PushNotificationsService,
       );
       worker.onModuleInit();
       jest.advanceTimersByTime(1000);

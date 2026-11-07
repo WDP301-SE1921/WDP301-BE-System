@@ -37,6 +37,7 @@ export const NOTIFICATION_TYPES = [
   'CURRICULUM_APPROVED',
   'FEEDBACK_CREATED',
   'FEEDBACK_RESOLVED',
+  'CHAT_MESSAGE',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -71,6 +72,7 @@ export class NotificationTargetDto {
       'REGISTRATION',
       'CURRICULUM_UNIT',
       'FEEDBACK',
+      'CHAT_CONVERSATION',
     ],
   })
   kind!: string;

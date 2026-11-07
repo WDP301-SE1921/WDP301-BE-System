@@ -17,6 +17,7 @@ import { DirectoryModule } from './modules/directory/directory.module';
 import { RegistrationFlowModule } from './modules/registration-flow/registration-flow.module';
 import { CurriculumSchedulingModule } from './modules/curriculum-scheduling/curriculum-scheduling.module';
 import { CenterModule } from './modules/center/center.module';
+import { ChatModule } from './modules/chat/chat.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { CenterModule } from './modules/center/center.module';
     HealthModule,
     CenterModule,
     NotificationsModule,
+    ChatModule,
     AcademicModule,
     CurriculumSchedulingModule,
     RegistrationFlowModule,

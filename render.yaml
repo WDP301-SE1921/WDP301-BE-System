@@ -33,5 +33,11 @@ services:
         value: "604800"
       - key: THROTTLE_LIMIT_PER_MINUTE
         value: "120"
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
       - key: SEED_DEFAULT_PASSWORD
         sync: false

@@ -6,6 +6,11 @@ export interface AppConfiguration {
   databaseUrl: string;
   corsOrigins: string[];
   webOrigin: string;
+  webPush: {
+    publicKey: string;
+    privateKey: string;
+    subject: string;
+  };
   swaggerEnabled: boolean;
   throttleLimitPerMinute: number;
   academic: {
@@ -99,10 +104,18 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
 
   const aiKey = environment.AI_API_KEY?.trim() || '';
   const aiUrl =
-    environment.AI_CHAT_URL?.trim() ||
-    (aiKey ? 'https://api.deepseek.com/chat/completions' : '');
-  const aiModel =
-    environment.AI_MODEL?.trim() || (aiKey ? 'deepseek-chat' : '');
+    environment.AI_CHAT_URL?.trim() || (aiKey ? 'https://api.deepseek.com/chat/completions' : '');
+  const aiModel = environment.AI_MODEL?.trim() || (aiKey ? 'deepseek-chat' : '');
+  const vapidPublicKey = environment.VAPID_PUBLIC_KEY?.trim() || '';
+  const vapidPrivateKey = environment.VAPID_PRIVATE_KEY?.trim() || '';
+  if (Boolean(vapidPublicKey) !== Boolean(vapidPrivateKey)) {
+    throw new Error('VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be configured together');
+  }
+  const vapidSubject =
+    environment.VAPID_SUBJECT?.trim() || `mailto:admin@${new URL(webOrigin).hostname}`;
+  if (!vapidSubject.startsWith('mailto:') && !/^https?:$/.test(new URL(vapidSubject).protocol)) {
+    throw new Error('VAPID_SUBJECT must be a mailto: address or HTTP(S) URL');
+  }
 
   return {
     nodeEnv,
@@ -110,6 +123,11 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
     databaseUrl: required(environment, 'DATABASE_URL'),
     corsOrigins,
     webOrigin: new URL(webOrigin).origin,
+    webPush: {
+      publicKey: vapidPublicKey,
+      privateKey: vapidPrivateKey,
+      subject: vapidSubject,
+    },
     swaggerEnabled: parseBoolean(environment.SWAGGER_ENABLED, nodeEnv !== 'production'),
     throttleLimitPerMinute: parsePositiveInteger(environment, 'THROTTLE_LIMIT_PER_MINUTE', 120),
     academic: {
@@ -121,7 +139,8 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
       storageBucket: environment.STORAGE_BUCKET?.trim() || '',
       storageKey: environment.STORAGE_ACCESS_KEY?.trim() || '',
       storageSecret: environment.STORAGE_SECRET_KEY?.trim() || '',
-      storagePublicEndpoint: environment.STORAGE_PUBLIC_ENDPOINT?.trim() || environment.STORAGE_ENDPOINT?.trim() || '',
+      storagePublicEndpoint:
+        environment.STORAGE_PUBLIC_ENDPOINT?.trim() || environment.STORAGE_ENDPOINT?.trim() || '',
       smtpUrl: environment.SMTP_URL?.trim() || '',
       mailFrom: environment.MAIL_FROM?.trim() || '',
     },

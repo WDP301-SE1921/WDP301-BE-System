@@ -84,6 +84,9 @@ model User {
   parentProfile              ParentProfile?
   notifications              Notification[]
   notificationDispatches     NotificationDispatch[]
+  chatParticipants           ChatParticipant[]
+  sentChatMessages           ChatMessage[]            @relation("ChatMessageSender")
+  pushSubscriptions          PushSubscription[]
   sessions                   AuthSession[]
   emailVerificationTokens    EmailVerificationToken[]
   passwordResetTokens        PasswordResetToken[]
@@ -801,17 +804,17 @@ model Assignment {
 }
 
 model AssignmentQuestion {
-  id            String       @id @default(cuid()) @db.VarChar(191)
-  assignmentId  String       @db.VarChar(191)
+  id            String           @id @default(cuid()) @db.VarChar(191)
+  assignmentId  String           @db.VarChar(191)
   position      Int
   kind          QuestionKind
-  prompt        String       @db.Text
+  prompt        String           @db.Text
   choices       Json?
-  correctAnswer String?      @db.Text
-  rubric        String?      @db.Text
+  correctAnswer String?          @db.Text
+  rubric        String?          @db.Text
   maxScore      Float
-  assignment    Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
-  outcomeId     String?      @db.VarChar(191)
+  assignment    Assignment       @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  outcomeId     String?          @db.VarChar(191)
   outcome       LearningOutcome? @relation(fields: [outcomeId], references: [id], onDelete: Restrict)
 
   @@unique([assignmentId, position])
@@ -831,23 +834,23 @@ enum OutcomeSourceStatus {
 }
 
 model OutcomeSet {
-  id              String           @id @default(cuid()) @db.VarChar(191)
-  programId       String           @db.VarChar(191)
-  level           String           @db.VarChar(100)
-  version         Int              @default(1)
-  status          OutcomeSetStatus @default(DRAFT)
-  designerId      String           @db.VarChar(191)
-  reviewerId      String?          @db.VarChar(191)
-  reviewedAt      DateTime?
-  approvedById    String?          @db.VarChar(191)
-  approvedAt      DateTime?
+  id           String            @id @default(cuid()) @db.VarChar(191)
+  programId    String            @db.VarChar(191)
+  level        String            @db.VarChar(100)
+  version      Int               @default(1)
+  status       OutcomeSetStatus  @default(DRAFT)
+  designerId   String            @db.VarChar(191)
+  reviewerId   String?           @db.VarChar(191)
+  reviewedAt   DateTime?
+  approvedById String?           @db.VarChar(191)
+  approvedAt   DateTime?
   /// Manager's reason when a teacher-reviewed set is sent back to draft.
-  reviewNote      String?          @db.Text
-  program         Program          @relation(fields: [programId], references: [id], onDelete: Restrict)
-  outcomes        LearningOutcome[]
-  assignments     Assignment[]
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  reviewNote   String?           @db.Text
+  program      Program           @relation(fields: [programId], references: [id], onDelete: Restrict)
+  outcomes     LearningOutcome[]
+  assignments  Assignment[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
 
   @@unique([programId, level, version])
   @@index([programId, status])
@@ -855,24 +858,24 @@ model OutcomeSet {
 }
 
 model LearningOutcome {
-  id             String              @id @default(cuid()) @db.VarChar(191)
-  outcomeSetId   String              @db.VarChar(191)
-  code           String              @db.VarChar(64)
-  title          String              @db.VarChar(255)
-  statement      String              @db.Text
-  sourceTitle    String              @db.VarChar(255)
-  sourceUrl      String              @db.Text
-  sourceLocator  String              @db.VarChar(255)
-  sourceStatus   OutcomeSourceStatus @default(CANDIDATE)
-  sourceNote     String?             @db.Text
-  verifiedById   String?             @db.VarChar(191)
-  verifiedAt     DateTime?
-  required       Boolean             @default(true)
-  outcomeSet     OutcomeSet          @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
-  lessonLinks    LessonOutcome[]
-  questions      AssignmentQuestion[]
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+  id            String               @id @default(cuid()) @db.VarChar(191)
+  outcomeSetId  String               @db.VarChar(191)
+  code          String               @db.VarChar(64)
+  title         String               @db.VarChar(255)
+  statement     String               @db.Text
+  sourceTitle   String               @db.VarChar(255)
+  sourceUrl     String               @db.Text
+  sourceLocator String               @db.VarChar(255)
+  sourceStatus  OutcomeSourceStatus  @default(CANDIDATE)
+  sourceNote    String?              @db.Text
+  verifiedById  String?              @db.VarChar(191)
+  verifiedAt    DateTime?
+  required      Boolean              @default(true)
+  outcomeSet    OutcomeSet           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
+  lessonLinks   LessonOutcome[]
+  questions     AssignmentQuestion[]
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
 
   @@unique([outcomeSetId, code])
   @@map("learning_outcomes")
@@ -1072,7 +1075,6 @@ model IdempotencyRecord {
   @@map("idempotency_records")
 }
 
-
 enum NotificationDispatchStatus {
   PENDING
   PROCESSING
@@ -1091,6 +1093,7 @@ enum NotificationTargetKind {
   REGISTRATION
   CURRICULUM_UNIT
   FEEDBACK
+  CHAT_CONVERSATION
 }
 
 model Notification {
@@ -1132,6 +1135,65 @@ model NotificationDispatch {
   @@index([status, nextAttemptAt])
   @@index([status, leaseExpiresAt])
   @@map("notification_dispatches")
+}
+
+model ChatConversation {
+  id           String            @id @default(cuid()) @db.VarChar(191)
+  directKey    String            @unique @db.VarChar(191)
+  participants ChatParticipant[]
+  messages     ChatMessage[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([updatedAt, id])
+  @@map("chat_conversations")
+}
+
+model ChatParticipant {
+  conversationId String
+  userId         String
+  lastReadAt     DateTime         @default(now())
+  joinedAt       DateTime         @default(now())
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@id([conversationId, userId])
+  @@index([userId, conversationId])
+  @@map("chat_participants")
+}
+
+model ChatMessage {
+  id                   String           @id @default(cuid()) @db.VarChar(191)
+  conversationId       String           @db.VarChar(191)
+  senderId             String           @db.VarChar(191)
+  body                 String           @db.Text
+  attachmentStorageKey String?          @db.VarChar(512)
+  attachmentName       String?          @db.VarChar(255)
+  attachmentMimeType   String?          @db.VarChar(127)
+  attachmentSize       Int?
+  createdAt            DateTime         @default(now())
+  deletedAt            DateTime?
+  conversation         ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender               User             @relation("ChatMessageSender", fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@index([conversationId, createdAt, id])
+  @@index([senderId, createdAt])
+  @@map("chat_messages")
+}
+
+model PushSubscription {
+  id           String   @id @default(cuid()) @db.VarChar(191)
+  userId       String   @db.VarChar(191)
+  endpointHash String   @unique @db.Char(64)
+  endpoint     String   @db.Text
+  p256dh       String   @db.Text
+  auth         String   @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
 }
 
 /// Contact details of the single center, returned by public GET /center. One row, id "default";

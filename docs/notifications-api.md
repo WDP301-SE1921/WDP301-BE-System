@@ -2,7 +2,7 @@
 
 ## Deployment and boundaries
 
-This release supports one Node/Nest backend instance, MySQL and Socket.IO. There is no Redis or operating-system push. Notification records survive app/server restarts and remain available when a client was offline. No historical events are backfilled and no automatic retention cleanup runs.
+This release supports one Node/Nest backend instance, MySQL, Socket.IO and optional standards-based Web Push. There is no Redis. Notification records survive app/server restarts and remain available when a client was offline. No historical events are backfilled and no automatic retention cleanup runs.
 
 Apply migration `20261019001000_notifications` with `pnpm prisma:migrate:deploy` before deploying the new application; generate the Prisma client when building. This is additive: `notifications`, `notification_dispatches`, indexes and user foreign keys. Earlier required migrations must also be applied. Existing email outbox rows and email retries remain separate, including account verification/reset tokens.
 
@@ -14,12 +14,12 @@ Do not run multiple application replicas with this in-memory gateway. A future m
 
 Every endpoint requires the normal Bearer access token and returns `{ success: true, data: ... }`.
 
-| Method/path (under `/api/v1`) | Data |
-| --- | --- |
-| `GET /notifications?page=1&limit=20&unreadOnly=true&type=GRADE_PUBLISHED&studentId=...` | `{ items, page, limit, total }`; maximum limit 100, createdAt/id descending |
-| `GET /notifications/unread-count` | `{ unreadCount }` across the user's entire inbox, independent of list filters |
-| `PATCH /notifications/:id/read` | Updated notification; an already-read record keeps its original readAt |
-| `POST /notifications/read-all` | HTTP 200; `{ updatedCount, unreadCount }` |
+| Method/path (under `/api/v1`)                                                           | Data                                                                          |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `GET /notifications?page=1&limit=20&unreadOnly=true&type=GRADE_PUBLISHED&studentId=...` | `{ items, page, limit, total }`; maximum limit 100, createdAt/id descending   |
+| `GET /notifications/unread-count`                                                       | `{ unreadCount }` across the user's entire inbox, independent of list filters |
+| `PATCH /notifications/:id/read`                                                         | Updated notification; an already-read record keeps its original readAt        |
+| `POST /notifications/read-all`                                                          | HTTP 200; `{ updatedCount, unreadCount }`                                     |
 
 An item contains:
 
@@ -46,10 +46,10 @@ Connect to `io(BASE_URL + '/notifications', { path: '/socket.io', transports: ['
 
 The gateway validates signature, HS256, expiry, issuer, audience, token type (access token or realtime ticket), active account and unrevoked session. Refresh tokens are rejected. User rooms are server-controlled; there is no public join-room or send-notification event.
 
-| Server event | Payload | Client action |
-| --- | --- | --- |
-| `notification.created` | `{ notificationId }` | Debounce a refresh of inbox + unread count |
-| `notifications.read-changed` | `{}` | Refresh read state + unread count on all connected devices |
+| Server event                 | Payload              | Client action                                              |
+| ---------------------------- | -------------------- | ---------------------------------------------------------- |
+| `notification.created`       | `{ notificationId }` | Debounce a refresh of inbox + unread count                 |
+| `notifications.read-changed` | `{}`                 | Refresh read state + unread count on all connected devices |
 
 Register listeners before connecting/loading the inbox. Resync via REST on every connection/reconnect and when returning to foreground. A dispatch may be repeated after a worker crash, and an offline socket can miss events; invalidate/refetch rather than incrementing counters or appending duplicate items. Fetch requests should cancel/supersede older refreshes so an old response cannot overwrite newer read state.
 
@@ -69,28 +69,28 @@ Sockets opened with an access token close at access-token expiry. Sessions are a
 
 ## Events and audience
 
-| Types | Audience and trigger |
-| --- | --- |
-| ANNOUNCEMENT | Class announcement creation: current teacher + parents currently enrolled/placed in the class; one parent record includes all affected children |
-| ASSIGNMENT_PUBLISHED, ASSIGNMENT_REOPENED, ANSWERS_PUBLISHED | Parents of assigned recipients, one record per child; draft changes do not notify |
-| SUBMISSION_RECEIVED | Current class teacher, after a successful submission; no submitted answers in the notification |
-| GRADE_PUBLISHED | Parent of the graded recipient, only after publication; grade drafts, rubric and unpublished feedback are not copied |
-| ATTENDANCE_FINALIZED | Parent of every noncancelled participant, including present/absent/excused; existing finalization rules remain unchanged |
-| SESSIONS_GENERATED | One summary per recipient/class for the generation batch |
-| SESSION_RESCHEDULED, SESSION_CANCELLED | Teachers and eligible parents before/after the change, including active cross-class makeups |
-| TEACHER_CHANGED | Old/current/pending/new teachers and affected parents; future assignment gives its effective date; automatic activation does not duplicate the event |
-| SUBSTITUTE_ASSIGNED | Old/new session teachers + eligible parents |
-| LEAVE_REQUESTED | Active STAFF work item; excludes the parent who submitted it |
-| LEAVE_APPROVED, LEAVE_REJECTED, LEAVE_CANCELLED, LEAVE_ENDED_EARLY | Parent and involved class/session teachers |
-| MAKEUP_BOOKED, MAKEUP_RESCHEDULED, MAKEUP_CANCELLED, MAKEUP_COMPLETED, MAKEUP_MISSED | Parent and target-session teacher; a reschedule also notifies a different previous target teacher |
-| ENROLLMENT_TRANSFERRED, ENROLLMENT_ENDED | Parent and affected teachers; ending a transferred enrollment uses its last placement |
-| BILL_CREATED | Authorized target-student parent and active MANAGER work item |
-| BILL_CANCELLED, PAYMENT_CONFIRMED | Authorized target-student parent |
-| TUITION_REMINDER | Parent, when the existing manual reminder command executes; no new automatic reminder scheduler |
-| CURRICULUM_SUBMITTED | Active MANAGER review work item |
-| CURRICULUM_CHANGES_REQUESTED, CURRICULUM_APPROVED | Unit owner/designer |
-| FEEDBACK_CREATED | Lesson designer and active MANAGER |
-| FEEDBACK_RESOLVED | Feedback submitter and designer |
+| Types                                                                                | Audience and trigger                                                                                                                                 |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ANNOUNCEMENT                                                                         | Class announcement creation: current teacher + parents currently enrolled/placed in the class; one parent record includes all affected children      |
+| ASSIGNMENT_PUBLISHED, ASSIGNMENT_REOPENED, ANSWERS_PUBLISHED                         | Parents of assigned recipients, one record per child; draft changes do not notify                                                                    |
+| SUBMISSION_RECEIVED                                                                  | Current class teacher, after a successful submission; no submitted answers in the notification                                                       |
+| GRADE_PUBLISHED                                                                      | Parent of the graded recipient, only after publication; grade drafts, rubric and unpublished feedback are not copied                                 |
+| ATTENDANCE_FINALIZED                                                                 | Parent of every noncancelled participant, including present/absent/excused; existing finalization rules remain unchanged                             |
+| SESSIONS_GENERATED                                                                   | One summary per recipient/class for the generation batch                                                                                             |
+| SESSION_RESCHEDULED, SESSION_CANCELLED                                               | Teachers and eligible parents before/after the change, including active cross-class makeups                                                          |
+| TEACHER_CHANGED                                                                      | Old/current/pending/new teachers and affected parents; future assignment gives its effective date; automatic activation does not duplicate the event |
+| SUBSTITUTE_ASSIGNED                                                                  | Old/new session teachers + eligible parents                                                                                                          |
+| LEAVE_REQUESTED                                                                      | Active STAFF work item; excludes the parent who submitted it                                                                                         |
+| LEAVE_APPROVED, LEAVE_REJECTED, LEAVE_CANCELLED, LEAVE_ENDED_EARLY                   | Parent and involved class/session teachers                                                                                                           |
+| MAKEUP_BOOKED, MAKEUP_RESCHEDULED, MAKEUP_CANCELLED, MAKEUP_COMPLETED, MAKEUP_MISSED | Parent and target-session teacher; a reschedule also notifies a different previous target teacher                                                    |
+| ENROLLMENT_TRANSFERRED, ENROLLMENT_ENDED                                             | Parent and affected teachers; ending a transferred enrollment uses its last placement                                                                |
+| BILL_CREATED                                                                         | Authorized target-student parent and active MANAGER work item                                                                                        |
+| BILL_CANCELLED, PAYMENT_CONFIRMED                                                    | Authorized target-student parent                                                                                                                     |
+| TUITION_REMINDER                                                                     | Parent, when the existing manual reminder command executes; no new automatic reminder scheduler                                                      |
+| CURRICULUM_SUBMITTED                                                                 | Active MANAGER review work item                                                                                                                      |
+| CURRICULUM_CHANGES_REQUESTED, CURRICULUM_APPROVED                                    | Unit owner/designer                                                                                                                                  |
+| FEEDBACK_CREATED                                                                     | Lesson designer and active MANAGER                                                                                                                   |
+| FEEDBACK_RESOLVED                                                                    | Feedback submitter and designer                                                                                                                      |
 
 All events exclude the actor and inactive users. Recipients are resolved from domain relationships, never client-supplied user IDs. Per-student events include only that child's context. No email-token payload is transformed into an in-app notification.
 
