@@ -24,6 +24,9 @@ describe('assignment session and type rules', () => {
   const create = jest.fn();
   const findAssignment = jest.fn();
   const findEnrollments = jest.fn();
+  const findClass = jest.fn();
+  const findSet = jest.fn();
+  const countSets = jest.fn();
   let service: AssessmentService;
 
   beforeEach(() => {
@@ -37,10 +40,21 @@ describe('assignment session and type rules', () => {
       endsAt: new Date('2099-10-01'),
     });
     create.mockResolvedValue({ id: 'assignment' });
+    findClass.mockResolvedValue({ id: 'class', programId: 'program' });
+    findSet.mockResolvedValue({
+      id: 'set',
+      programId: 'program',
+      status: 'APPROVED',
+      outcomes: [{ id: 'clo-1' }, { id: 'clo-2' }],
+    });
+    countSets.mockResolvedValue(1);
+    findEnrollments.mockResolvedValue([]);
     const tx = {
       assignment: { create, findUniqueOrThrow: findAssignment },
       classSession: { findUnique: findSession },
       enrollment: { findMany: findEnrollments },
+      class: { findUniqueOrThrow: findClass },
+      outcomeSet: { findUnique: findSet, count: countSets },
     };
     service = new AssessmentService(
       {
@@ -155,5 +169,82 @@ describe('assignment session and type rules', () => {
       service.publish(teacher, 'assignment', { enrollmentIds: ['student'] }),
     ).rejects.toMatchObject({ code: 'INVALID_ASSESSMENT_SESSION' });
     expect(findEnrollments).not.toHaveBeenCalled();
+  });
+
+  describe('light CLOs (B3, Q2)', () => {
+    const two = [
+      { ...definition.questions[0], outcomeId: 'clo-1' },
+      { ...definition.questions[0], prompt: 'Q2?' },
+    ];
+
+    it('creates an assignment without a CLO set even when the program has an approved set', async () => {
+      await service.create(teacher, definition);
+      expect(create).toHaveBeenCalled();
+      expect(findSet).not.toHaveBeenCalled();
+    });
+
+    it('accepts a chosen set with only some questions mapped', async () => {
+      await service.create(teacher, { ...definition, outcomeSetId: 'set', questions: two });
+      expect(create).toHaveBeenCalled();
+    });
+
+    it('refuses a mapped CLO outside the chosen set and says why in details', async () => {
+      await expect(
+        service.create(teacher, {
+          ...definition,
+          outcomeSetId: 'set',
+          questions: [two[1], { ...definition.questions[0], outcomeId: 'clo-other' }],
+        }),
+      ).rejects.toMatchObject({
+        code: 'OUTCOME_MAPPING_INCOMPLETE',
+        statusCode: 409,
+        details: { reason: 'WRONG_SET', questionIndexes: [1], outcomeIds: ['clo-other'] },
+      });
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps refusing a set of another program or not approved, and CLOs without a set', async () => {
+      findSet.mockResolvedValue({ id: 'set', programId: 'other', status: 'APPROVED', outcomes: [] });
+      await expect(
+        service.create(teacher, { ...definition, outcomeSetId: 'set' }),
+      ).rejects.toMatchObject({ code: 'INVALID_OUTCOME_SET' });
+      findSet.mockResolvedValue({ id: 'set', programId: 'program', status: 'DRAFT', outcomes: [] });
+      await expect(
+        service.create(teacher, { ...definition, outcomeSetId: 'set' }),
+      ).rejects.toMatchObject({ code: 'INVALID_OUTCOME_SET' });
+      await expect(service.create(teacher, { ...definition, questions: two })).rejects.toMatchObject({
+        code: 'OUTCOME_SET_REQUIRED',
+      });
+    });
+
+    it('publishes a draft without a CLO set or with unmapped questions', async () => {
+      findAssignment.mockResolvedValue({
+        id: 'assignment',
+        ...definition,
+        dueAt: new Date(definition.dueAt),
+        status: 'DRAFT',
+        outcomeSetId: null,
+      });
+      // Reaching the recipients check means the CLO rules let the draft through.
+      await expect(
+        service.publish(teacher, 'assignment', { enrollmentIds: ['student'] }),
+      ).rejects.toMatchObject({ code: 'INVALID_RECIPIENTS' });
+      expect(findSet).not.toHaveBeenCalled();
+    });
+
+    it('still refuses to publish with a set that is no longer approved', async () => {
+      findAssignment.mockResolvedValue({
+        id: 'assignment',
+        ...definition,
+        dueAt: new Date(definition.dueAt),
+        status: 'DRAFT',
+        outcomeSetId: 'set',
+      });
+      findSet.mockResolvedValue({ id: 'set', programId: 'program', status: 'ARCHIVED' });
+      await expect(
+        service.publish(teacher, 'assignment', { enrollmentIds: ['student'] }),
+      ).rejects.toMatchObject({ code: 'INVALID_OUTCOME_SET' });
+      expect(findEnrollments).not.toHaveBeenCalled();
+    });
   });
 });

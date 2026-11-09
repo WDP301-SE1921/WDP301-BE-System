@@ -132,7 +132,7 @@ export class NotificationEventsService {
     const recipients =
       type === 'CURRICULUM_SUBMITTED'
         ? await this.recipients.roles(tx, ['MANAGER'])
-        : [{ userId: unit.designerId }];
+        : await this.curriculumAuthors(tx, id, unit.designerId);
     if (type === 'CURRICULUM_SUBMITTED' && unit.reviewerTeacherId && !unit.technicalReviewedAt)
       recipients.push({ userId: unit.reviewerTeacherId });
     await this.send(
@@ -146,6 +146,24 @@ export class NotificationEventsService {
       recipients,
       undefined,
       key,
+    );
+  }
+  /**
+   * Any curriculum designer may submit a shared draft (Q6), so review results go to the author
+   * and to whoever submitted it last, once each.
+   */
+  private async curriculumAuthors(
+    tx: Prisma.TransactionClient,
+    unitId: string,
+    designerId: string,
+  ): Promise<NotificationRecipient[]> {
+    const submitted = await tx.auditLog.findFirst({
+      where: { entityType: 'CurriculumUnit', entityId: unitId, action: 'CURRICULUM_UNIT_SUBMITTED' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { actorUserId: true },
+    });
+    return [...new Set([designerId, submitted?.actorUserId].filter((id): id is string => !!id))].map(
+      (userId) => ({ userId }),
     );
   }
   async workflow(

@@ -194,14 +194,22 @@ Các route mới dự kiến (chưa tồn tại):
 
 Thông báo validation dự kiến: `OUTCOME_SET_NOT_APPROVED`, `OUTCOME_SCOPE_MISMATCH`, `REQUIRED_OUTCOME_UNCOVERED`, `CRITERION_SCORE_MISMATCH`, `PUBLIC_RUBRIC_REQUIRED`. Thiếu minh chứng là trạng thái học tập, không phải lỗi HTTP khi xem báo cáo.
 
-**Gắn CLO vào bài (`PATCH /academic/lessons/:id/outcomes`, cập nhật 09/11/2026).** Body `{ outcomeIds }` là danh sách CLO muốn bài có; chỉ người soạn bài được gọi.
+**Gắn CLO vào bài (`PATCH /academic/lessons/:id/outcomes`, cập nhật 09/11/2026).** Body `{ outcomeIds }` là danh sách CLO muốn bài có; mọi Thiết kế GT được gọi (từ B2, 09/11/2026), không chỉ người soạn bài.
 
 - Bài nháp của giáo trình `DRAFT` hoặc `PENDING_REVIEW` (và bài nháp không thuộc giáo trình): gắn hoặc bỏ CLO của mọi bộ cùng khóa, kể cả bộ đã duyệt. Giáo trình kỳ mới dùng đường này để gắn lại vào bộ đang dùng.
-- Bài của giáo trình đang áp dụng (`APPROVED`, gồm cả bài kiểm tra tháng còn `DRAFT`): chỉ thêm hoặc bỏ CLO của **bộ `DRAFT`**. Nhờ vậy CLO thêm sau khi giáo trình đã áp dụng vẫn gắn được bài và bộ CLO duyệt được. Liên kết tới CLO của bộ `TECHNICALLY_APPROVED` hoặc `APPROVED` luôn được giữ, kể cả khi request không gửi (Thiết kế GT chỉ thấy bộ của mình). Thêm một CLO của bộ đó trả 409 `OUTCOME_SET_LOCKED`, `details.outcomeIds` là các CLO bị chặn. Bộ bị Quản lý trả về nháp (`request-changes`) thì sửa lại được.
+- Bài của giáo trình đang áp dụng (`APPROVED`, gồm cả bài kiểm tra tháng còn `DRAFT`): chỉ thêm hoặc bỏ CLO của **bộ `DRAFT`**. Nhờ vậy CLO thêm sau khi giáo trình đã áp dụng vẫn gắn được bài và bộ CLO duyệt được. Liên kết tới CLO của bộ `TECHNICALLY_APPROVED` hoặc `APPROVED` luôn được giữ, kể cả khi request không gửi (để màn hình cũ không lặng lẽ gỡ liên kết đã công bố). Thêm một CLO của bộ đó trả 409 `OUTCOME_SET_LOCKED`, `details.outcomeIds` là các CLO bị chặn. Bộ bị Quản lý trả về nháp (`request-changes`) thì sửa lại được.
 - Bài thuộc giáo trình `ARCHIVED`, hoặc bài `APPROVED` không thuộc giáo trình đang áp dụng: 409 `LESSON_LOCKED`.
 - Response `{ lessonId, outcomeIds }`: `outcomeIds` là các liên kết sau khi ghi, gồm cả liên kết được giữ. Đổi thứ tự `outcomeIds` không tính là thay đổi.
 - Request khoá dòng bài, rồi khoá theo thứ tự id mọi bộ CLO có liên kết thêm hoặc bớt, kể cả khi bài còn nháp. `technical-approve` khoá dòng bộ trước khi đọc liên kết, nên giáo viên không duyệt bộ dựa trên liên kết đang bị gỡ.
 - Xóa bài nháp, xóa giáo trình nháp và nhập CSV kiểu `REPLACE` xóa luôn liên kết CLO của các bài bị xóa trong cùng transaction (trước đây trả 400 `INVALID_REFERENCE` vì khóa ngoại). Nhập `REPLACE` gỡ mọi liên kết mục tiêu của các bài bị thay và không chép sang bài mới theo `sequence` (nội dung mới có thể khác hẳn); cần gắn lại.
+
+**CLO bản nhẹ, bản nháp dùng chung, người duyệt theo môn (B2, B3, B4, 09/11/2026).** Chi tiết contract ở `CHANGELOG_UPDATES.md` mục 1.7–1.9.
+
+- Mỗi CLO cần mã, tên, mô tả và cờ `required`. Ba trường nguồn (`sourceTitle`, `sourceUrl`, `sourceLocator`) tùy chọn và lưu `NULL` khi trống, không lưu chuỗi rỗng. Gửi chuỗi rỗng thì xóa nguồn; không gửi thì giữ giá trị cũ khi sửa.
+- Bộ CLO soạn được trước giáo trình. Mọi Thiết kế GT đọc, sửa, xóa được mọi bộ nháp. Sửa cùng một CLO được chặn bằng `revision` của CLO (`expectedRevision`, 409 `REVISION_CONFLICT`); sửa, xóa và xác minh đều khóa dòng bộ trước khi kiểm `DRAFT`.
+- `technical-approve`: bộ phải có ít nhất một CLO và mỗi CLO có ít nhất một bài, không còn đòi xác minh nguồn. Khi duyệt, CLO chưa `VERIFIED` thành `VERIFIED` với giáo viên duyệt. CLO đã được giáo viên khác xác minh giữ nguyên người đó. `VERIFIED` của một CLO không có nguồn nghĩa là giáo viên đã xác nhận nội dung. `verify-source` là bước tùy chọn.
+- Ai duyệt bộ CLO: giáo viên `ACTIVE` dạy lớp đang hoạt động của khóa (PROGRAM) hoặc của khóa cùng môn (SUBJECT), hoặc người được chọn duyệt một giáo trình của khóa. Giáo trình đó phải đang `PENDING_REVIEW`, hoặc `APPROVED` có `technicalReviewedAt`, hoặc `ARCHIVED` có `technicalReviewedAt` và `approvedAt`. Không mở cho mọi giáo viên.
+- Bài tập: chọn bộ CLO và gắn CLO cho câu là tùy chọn. Bộ đã chọn phải `APPROVED` và đúng khóa. CLO gắn cho câu phải thuộc bộ đã chọn (409 `OUTCOME_MAPPING_INCOMPLETE`, `details.reason: "WRONG_SET"`).
 
 ## 10. Phạm vi triển khai và nghiệm thu
 

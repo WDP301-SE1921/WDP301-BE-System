@@ -89,6 +89,13 @@ Nếu một CLO không tìm được nguồn tương ứng, ghi `sourceType=INTE
 
 **Bài đã phát hành trước triển khai:** giữ luồng nộp/chấm cũ và đánh dấu `LEGACY_UNMAPPED`; không suy CLO từ tổng điểm cũ. **Bài mới và bài nháp cũ:** bắt buộc hoàn thiện CLO trước khi publish, theo quyết định phạm vi toàn hệ thống.
 
+**Cập nhật 09/11/2026 (Q2 "CLO bản nhẹ", B2, B3, B4): thay một phần luồng trên.**
+
+- Bước 2: nguồn của CLO không bắt buộc (`sourceTitle`, `sourceUrl`, `sourceLocator` có thể `NULL`). Bộ CLO soạn được trước giáo trình. Mọi `CURRICULUM_DESIGNER` sửa được mọi bộ nháp; sửa cùng CLO bị chặn bằng `revision`.
+- Bước 4: giáo viên duyệt bộ (`technical-approve`) mà không phải xác minh từng nguồn. Hệ thống vẫn đòi mỗi CLO có ít nhất một bài, và đánh dấu `VERIFIED` cho các CLO chưa được ai xác minh. Người được duyệt: giáo viên dạy lớp của khóa hoặc của khóa cùng môn, hoặc giáo viên được chọn duyệt giáo trình của khóa.
+- Bước 6: chọn bộ CLO và gắn CLO cho từng câu là tùy chọn, kể cả khi khóa đã có bộ được duyệt. Đã chọn bộ thì bộ phải được duyệt và đúng khóa, và CLO gắn cho câu phải thuộc bộ đó. Câu "bài nháp thiếu CLO bị chặn" không còn đúng.
+- Mobile chỉ đọc mã, tên, mô tả và cờ bắt buộc, nên không đổi.
+
 ## 6. Trình tự implementation cho kỹ sư
 
 1. **Xác minh nguồn học thuật.** Thu bản áp dụng của chương trình Toán và Khoa học tự nhiên, kiểm tra sửa đổi, ghi số trang/mục cho 16 chương trình. Mỗi CLO thật có hồ sơ nguồn ở mục 3; giáo viên xác nhận mapping. Chưa hoàn tất bước này thì chỉ có thể tạo draft nội bộ.

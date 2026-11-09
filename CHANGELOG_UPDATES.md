@@ -55,6 +55,24 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - Mã lỗi giữ nguyên (`CSV_INVALID`, `ASSIGNMENT_IMPORT_INVALID_CSV`, `ASSIGNMENT_IMPORT_INVALID_QUESTIONS`), thêm `details: { code, rows: [{ code, rowNumber }], rowErrorCount }` (tối đa 20 dòng). File không phải UTF-8 có `details.code: 'CSV_NOT_UTF8'`. Câu hỏi bài tập sai báo "Dòng R (câu N): …" cho mọi câu sai; nhập DOCX/PDF bằng AI không đổi.
 - Web chưa phải sửa; màn nhập CSV sẽ đọc `details` ở W4. Mobile không dùng.
 
+### 1.7. Mọi Thiết kế GT sửa được bản nháp; CLO không cần giáo trình (B2, 09/11)
+- `CURRICULUM_DESIGNER` đọc, sửa, gửi duyệt, làm kỳ mới mọi giáo trình; đọc, sửa, xóa mọi bộ CLO và CLO; gắn CLO cho bài do người khác soạn. Danh sách giáo trình, bộ CLO, bài (`GET /academic/lessons`) và phản hồi giáo trình không còn lọc theo người soạn; mọi Thiết kế GT xử lý được phản hồi. TEACHER vẫn chỉ thấy phản hồi của mình. Trước: 403 `FORBIDDEN`; sau: 200.
+- `POST /academic/outcome-sets` không còn đòi đã có giáo trình: chỉ kiểm khóa có (404 `PROGRAM_NOT_FOUND`), đang hoạt động (409 `PROGRAM_INACTIVE`), môn đang hoạt động (409 `SUBJECT_INACTIVE`).
+- Chống ghi đè CLO: cột mới `learning_outcomes.revision` (mặc định 1, tăng ở mỗi lần sửa, xác minh, duyệt). `LearningOutcomeWriteDto` nhận `expectedRevision` tùy chọn; sai thì 409 `REVISION_CONFLICT`. Sửa, xóa CLO, xóa bộ và xác minh nguồn khóa dòng bộ CLO trước khi kiểm `DRAFT`, như `technical-approve`. `technical-approve` và xóa bộ đọc trạng thái bộ, danh sách CLO và liên kết bài bằng câu có khóa (`FOR UPDATE`, thứ tự bộ → CLO → liên kết), vì trên TiDB câu đọc thường dùng snapshot lấy trước lúc chờ khóa và có thể bỏ sót CLO vừa thêm.
+- Audit mới: `OUTCOME_SET_CREATED`, `OUTCOME_SET_DELETED`, `OUTCOME_CREATED`, `OUTCOME_UPDATED`, `OUTCOME_DELETED` (actor là người thao tác). Kết quả duyệt giáo trình báo cho người tạo và người gửi duyệt gần nhất (mỗi người một lần).
+
+### 1.8. Người duyệt nội dung chọn theo môn (B4, 09/11)
+- `GET /academic/curriculum-units/:id/reviewers`: mỗi item thêm `reason: "PROGRAM" | "SUBJECT" | "ANY"`, xếp PROGRAM rồi SUBJECT (trong nhóm theo tên, email, id). PROGRAM: đang dạy lớp đang hoạt động của khóa. SUBJECT: dạy lớp của khóa khác cùng môn (cùng `subjectId`, hoặc cùng tên môn đã chuẩn hóa khi thiếu), không lặp người đã ở PROGRAM. ANY: mọi giáo viên `ACTIVE`, chỉ khi hai nhóm trên rỗng. `search` lọc sau khi đã chia nhóm.
+- Gửi duyệt áp cùng luật; sai vẫn 400 `INVALID_CURRICULUM_REVIEWER`. Lúc giáo viên duyệt chỉ kiểm đúng người được chọn và còn `ACTIVE` (không thì 403 `FORBIDDEN`), không tính lại nhóm.
+- Giáo viên đọc, xác minh, duyệt bộ CLO của khóa khi thuộc PROGRAM, SUBJECT, hoặc là người được chọn duyệt một giáo trình của khóa đang `PENDING_REVIEW`, `APPROVED` có `technicalReviewedAt`, hay `ARCHIVED` có cả `technicalReviewedAt` lẫn `approvedAt`. Nhóm ANY không mở quyền vào bộ CLO: khóa không có giáo viên cùng khóa hay cùng môn thì bộ CLO chờ tới khi giáo trình được gửi duyệt.
+
+### 1.9. CLO bản nhẹ (B3, 09/11)
+- Migration `20261109000000_clo_light_and_revision`: `sourceTitle`, `sourceUrl`, `sourceLocator` cho phép NULL (chỉ nới ràng buộc, không đổi dòng cũ) và thêm `revision`. Response `LearningOutcome`: ba trường nguồn thành `string | null`, thêm `revision`. Đường lùi: muốn quay về NOT NULL phải chạy `UPDATE learning_outcomes SET sourceTitle = '' WHERE sourceTitle IS NULL` (tương tự cho hai cột còn lại) trước khi `MODIFY ... NOT NULL`.
+- `LearningOutcomeWriteDto`: ba trường nguồn và `sourceNote` tùy chọn. Chuỗi rỗng hay toàn khoảng trắng thành `null`; không gửi thì giữ giá trị cũ khi sửa. Có giá trị thì vẫn kiểm độ dài; `sourceUrl` phải là URL `http`/`https` (mới). Gửi giá trị không phải chuỗi: 400.
+- `technical-approve` không còn đòi giáo viên xác minh từng CLO; vẫn đòi bộ có CLO và mỗi CLO có ít nhất một bài, sai thì 409 `OUTCOME_SET_INCOMPLETE` kèm `details: { outcomeIds, codes }` (`codes` là mã CLO, ví dụ `MATH-7-04`). Khi duyệt, CLO chưa `VERIFIED` thành `VERIFIED` với `verifiedById` là giáo viên duyệt; CLO đã được giáo viên khác xác minh giữ nguyên người đó. `verify-source` thành bước tùy chọn và dùng được cả khi CLO không có nguồn.
+- Bài tập: chọn bộ CLO và gắn CLO cho từng câu thành tùy chọn, kể cả khi khóa đã có bộ được duyệt. Bỏ `OUTCOME_SET_REQUIRED` khi công bố và `OUTCOME_MAPPING_INCOMPLETE` khi câu chưa gắn. Vẫn giữ: bộ đã chọn phải `APPROVED` và đúng khóa (`INVALID_OUTCOME_SET`); gắn CLO mà không chọn bộ (`OUTCOME_SET_REQUIRED`); câu gắn CLO không thuộc bộ: 409 `OUTCOME_MAPPING_INCOMPLETE` kèm `details: { reason: "WRONG_SET", questionIndexes, outcomeIds }`.
+- Mobile không đổi: các route phụ huynh không trả ba trường nguồn; bài tập không chọn bộ trả `outcomeSetId: null`, `learningTargets: []`. AI chấm bài đã bỏ qua câu không có CLO.
+
 ---
 
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)

@@ -863,14 +863,16 @@ model LearningOutcome {
   code          String               @db.VarChar(64)
   title         String               @db.VarChar(255)
   statement     String               @db.Text
-  sourceTitle   String               @db.VarChar(255)
-  sourceUrl     String               @db.Text
-  sourceLocator String               @db.VarChar(255)
+  sourceTitle   String?              @db.VarChar(255)
+  sourceUrl     String?              @db.Text
+  sourceLocator String?              @db.VarChar(255)
   sourceStatus  OutcomeSourceStatus  @default(CANDIDATE)
   sourceNote    String?              @db.Text
   verifiedById  String?              @db.VarChar(191)
   verifiedAt    DateTime?
   required      Boolean              @default(true)
+  /// Bumped on every write so two designers editing one CLO get REVISION_CONFLICT.
+  revision      Int                  @default(1)
   outcomeSet    OutcomeSet           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
   lessonLinks   LessonOutcome[]
   questions     AssignmentQuestion[]

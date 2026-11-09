@@ -6,6 +6,7 @@ import { dateTimeRange } from '../../common/list-query';
 import { AssignmentQueryDto, SubmissionQueryDto, StudentGradeQueryDto } from './academic-list.dto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherAt, assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicAccessService, assertRule, inTerm, roles } from './academic-access.service';
@@ -189,12 +190,24 @@ export class AssessmentService {
       'INVALID_OUTCOME_SET',
       'Use an approved outcome set for this program',
     );
+    // Light CLOs (Q2): mapping a question is optional, but a mapped CLO must be in the set.
     const allowed = new Set(set.outcomes.map((outcome) => outcome.id));
-    assertRule(
-      input.questions.every((question) => question.outcomeId && allowed.has(question.outcomeId)),
-      'OUTCOME_MAPPING_INCOMPLETE',
-      'Map every question to a CLO in the selected set',
+    const wrong = input.questions.flatMap((question, index) =>
+      question.outcomeId && !allowed.has(question.outcomeId)
+        ? [{ index, outcomeId: question.outcomeId }]
+        : [],
     );
+    if (wrong.length)
+      throw new AppError(
+        'OUTCOME_MAPPING_INCOMPLETE',
+        'Mapped CLOs must belong to the selected set',
+        HttpStatus.CONFLICT,
+        {
+          reason: 'WRONG_SET',
+          questionIndexes: wrong.map((item) => item.index),
+          outcomeIds: wrong.map((item) => item.outcomeId),
+        },
+      );
   }
 
   async list(user: AuthenticatedUser, page: AssignmentQueryDto): Promise<unknown> {
@@ -545,22 +558,15 @@ export class AssessmentService {
         'Only an unexpired draft can be published',
       );
       await this.validateSession(user, assignment, tx);
-      const classProgram = await tx.class.findUniqueOrThrow({ where: { id: assignment.classId } });
-      const approvedSets = await tx.outcomeSet.count({
-        where: { programId: classProgram.programId, status: 'APPROVED' },
-      });
-      if (approvedSets) {
-        assertRule(assignment.outcomeSetId, 'OUTCOME_SET_REQUIRED', 'Choose an approved CLO set before publishing');
+      // Light CLOs (Q2): a CLO set is optional; a chosen set must still be approved for the program.
+      if (assignment.outcomeSetId) {
+        const classProgram = await tx.class.findUniqueOrThrow({ where: { id: assignment.classId } });
         const set = await tx.outcomeSet.findUnique({ where: { id: assignment.outcomeSetId } });
         assertRule(
           set && set.status === 'APPROVED' && set.programId === classProgram.programId,
           'INVALID_OUTCOME_SET',
           'Assignment CLO set is no longer approved for this program',
         );
-        const unmapped = await tx.assignmentQuestion.count({
-          where: { assignmentId: id, outcomeId: null },
-        });
-        assertRule(unmapped === 0, 'OUTCOME_MAPPING_INCOMPLETE', 'Map every question to a CLO');
       }
       const enrollments = await tx.enrollment.findMany({
         where: { id: { in: input.enrollmentIds } },

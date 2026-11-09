@@ -16,13 +16,15 @@ Luồng này bổ sung cho đăng ký học tại trung tâm. API dùng prefix `
 | --- | --- | --- |
 | `POST /academic/curriculum-units` | CURRICULUM_DESIGNER | `{ "programId": "...", "title": "Toán 8 - học phần 1", "fromDate": "2027-01-04", "toDate": "2027-01-31" }`; trả học phần `DRAFT` |
 | `GET /academic/curriculum-units?programId=...` | MANAGER, CURRICULUM_DESIGNER, TEACHER | Liệt kê; giáo viên chỉ thấy học phần đã duyệt thuộc môn/khối lớp được phân công |
-| `GET /academic/curriculum-units/:id` | Như trên | Chi tiết và các bài; người soạn chỉ xem học phần của mình |
+| `GET /academic/curriculum-units/:id` | Như trên | Chi tiết và các bài; mọi Thiết kế GT xem và sửa được mọi bản nháp (Q6, chống ghi đè bằng `expectedRevision`) |
 | `PATCH /academic/curriculum-units/:id` | CURRICULUM_DESIGNER | Sửa `title`, `fromDate`, `toDate` khi còn DRAFT |
 | `POST /academic/curriculum-units/:id/lessons` | CURRICULUM_DESIGNER | `{ "sequence": 1, "title": "Bài 1", "content": "..." }` |
 | `PATCH /academic/curriculum-units/:id/lessons/:lessonId` | CURRICULUM_DESIGNER | Sửa bài học DRAFT với cùng các trường |
 | `POST /academic/curriculum-units/:id/monthly-tests` | CURRICULUM_DESIGNER | `{ "monthKey": "2027-01", "title": "Kiểm tra tháng 1", "content": "..." }`; tạo mới hoặc cập nhật tháng đó |
 | `POST /academic/curriculum-units/:id/approve` | MANAGER | Kiểm tra đủ bài và chuyển toàn bộ học phần/bài sang APPROVED |
-| `POST /academic/curriculum-units/:id/revisions` | CURRICULUM_DESIGNER | Sao chép học phần đã duyệt thành phiên bản DRAFT mới |
+| `POST /academic/curriculum-units/:id/revisions` | CURRICULUM_DESIGNER | Sao chép học phần đã duyệt thành phiên bản DRAFT mới; Thiết kế GT nào cũng làm được |
+| `GET /academic/curriculum-units/:id/reviewers` | MANAGER, CURRICULUM_DESIGNER | Giáo viên chọn được làm người duyệt nội dung, mỗi item `{ id, email, displayName, reason }`. `reason`: `PROGRAM` (dạy lớp của khóa), `SUBJECT` (dạy lớp khóa khác cùng môn), `ANY` (mọi giáo viên ACTIVE, chỉ khi hai nhóm kia rỗng). Xếp PROGRAM rồi SUBJECT |
+| `POST /academic/curriculum-units/:id/submit` | CURRICULUM_DESIGNER | `{ "reviewerTeacherId": "..." }`; giáo viên phải nằm trong danh sách `reviewers`, sai thì 400 `INVALID_CURRICULUM_REVIEWER`. Lúc duyệt, giáo viên chỉ cần đúng người được chọn và còn ACTIVE (không thì 403) |
 
 Giáo trình được chia sẻ theo **khối và tên môn đã chuẩn hóa** (trim, gộp khoảng trắng, chữ thường, bỏ dấu). Vì thế hai `Program` khác ID nhưng đều là Toán khối 8 dùng chung học phần. Bài học cũ không có `unitId` vẫn được giữ và tiếp tục dùng với API học vụ cũ. Mỗi học phần mới giới hạn tối đa 366 ngày; các ngày gửi dạng `YYYY-MM-DD`.
 

@@ -174,3 +174,85 @@ describe('legacy lesson endpoints respect the complete curriculum workflow', () 
     expect(createSession).not.toHaveBeenCalled();
   });
 });
+
+describe('shared lessons and feedback for every curriculum designer (B2, C17)', () => {
+  const other = { id: 'designer-2', role: 'CURRICULUM_DESIGNER' } as AuthenticatedUser;
+  const teacher = { id: 'teacher', role: 'TEACHER' } as AuthenticatedUser;
+
+  interface CatalogFixture {
+    db: {
+      lesson: Record<'findMany' | 'count', jest.Mock>;
+      curriculumFeedback: Record<'findMany' | 'count' | 'findUniqueOrThrow' | 'update', jest.Mock>;
+    };
+    send: jest.Mock;
+    service: CatalogService;
+  }
+
+  function catalog(): CatalogFixture {
+    const db = {
+      lesson: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) },
+      curriculumFeedback: {
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'feedback',
+          teacherId: 'teacher',
+          lessonId: 'lesson',
+          lesson: { designerId: designer.id },
+        }),
+        update: jest.fn().mockResolvedValue({
+          status: 'RESOLVED',
+          response: 'Đã sửa',
+          resolutionLessonId: null,
+          updatedAt: new Date('2026-11-09T00:00:00Z'),
+        }),
+      },
+    };
+    const send = jest.fn();
+    const service = new CatalogService(
+      {
+        db,
+        transaction: (work: (tx: unknown) => Promise<unknown>): Promise<unknown> => work(db),
+      } as unknown as AcademicRepository,
+      {} as AcademicAccessService,
+      { send } as unknown as NotificationEventsService,
+    );
+    return { db, send, service };
+  }
+
+  function whereOf(mock: jest.Mock): unknown {
+    return (mock.mock.calls[0] as [{ where: unknown }])[0].where;
+  }
+
+  it('lists every lesson for any designer, as for the manager', async () => {
+    const { db, service } = catalog();
+    await service.lessons(other, { page: 1, limit: 20 });
+    expect(whereOf(db.lesson.findMany)).toEqual({ AND: [{}, {}] });
+  });
+
+  it('lists every feedback for any designer but only their own for a teacher', async () => {
+    const { db, service } = catalog();
+    await service.listFeedback(other, { page: 1, limit: 20 });
+    expect((whereOf(db.curriculumFeedback.findMany) as { AND: unknown[] }).AND[0]).toEqual({});
+    db.curriculumFeedback.findMany.mockClear();
+    await service.listFeedback(teacher, { page: 1, limit: 20 });
+    expect((whereOf(db.curriculumFeedback.findMany) as { AND: unknown[] }).AND[0]).toEqual({
+      teacherId: 'teacher',
+    });
+  });
+
+  it('lets another designer resolve feedback on a lesson they did not write', async () => {
+    const { db, send, service } = catalog();
+    await service.resolveFeedback(other, 'feedback', { status: 'RESOLVED', response: 'Đã sửa' });
+    expect(db.curriculumFeedback.update).toHaveBeenCalled();
+    expect(send).toHaveBeenCalled();
+  });
+
+  it('still refuses a teacher resolving feedback', async () => {
+    const { db, service } = catalog();
+    await expect(
+      service.resolveFeedback(teacher, 'feedback', { status: 'RESOLVED', response: 'x' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
+    expect(db.curriculumFeedback.update).not.toHaveBeenCalled();
+  });
+});

@@ -27,6 +27,7 @@ interface ReviewFixture {
       jest.Mock
     >;
     class: Record<'count' | 'findMany', jest.Mock>;
+    program: { findMany: jest.Mock };
     user: Record<'findFirst' | 'findMany', jest.Mock>;
     lesson: Record<'updateMany' | 'createMany', jest.Mock>;
     lessonOutcome: Record<'findMany' | 'createMany', jest.Mock>;
@@ -72,6 +73,13 @@ function setup(overrides: Record<string, unknown> = {}): ReviewFixture {
       create: jest.fn().mockResolvedValue({ id: 'future-unit' }),
     },
     class: { count: jest.fn().mockResolvedValue(1), findMany: jest.fn().mockResolvedValue([]) },
+    program: {
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'program', subject: 'Toán', subjectId: 'math' },
+        { id: 'program-9', subject: 'Toán', subjectId: 'math' },
+        { id: 'physics', subject: 'Vật lý', subjectId: 'phys' },
+      ]),
+    },
     user: {
       findFirst: jest.fn().mockResolvedValue({ id: teacher.id, role: 'TEACHER', status: 'ACTIVE' }),
       findMany: jest.fn().mockResolvedValue([]),
@@ -120,18 +128,26 @@ describe('curriculum teacher review and manager confirmation', () => {
     expect(db.curriculumUnit.update).not.toHaveBeenCalled();
   });
 
-  it.each(['inactive teacher', 'teacher no longer assigned'])(
-    'blocks %s from reviewing',
-    async (reason) => {
-      const { service, db } = setup();
-      if (reason === 'inactive teacher') db.user.findFirst.mockResolvedValue(null);
-      else db.class.count.mockResolvedValue(0);
-      await expect(
-        service.technicalReview(teacher, 'unit', { approved: true, expectedRevision: 5 }),
-      ).rejects.toMatchObject({ code: 'INVALID_CURRICULUM_REVIEWER' });
-      expect(db.curriculumUnit.update).not.toHaveBeenCalled();
-    },
-  );
+  it('blocks the chosen teacher from reviewing once their account is locked', async () => {
+    const { service, db } = setup();
+    db.user.findFirst.mockResolvedValue(null);
+    await expect(
+      service.technicalReview(teacher, 'unit', { approved: true, expectedRevision: 5 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
+    expect(db.curriculumUnit.update).not.toHaveBeenCalled();
+  });
+
+  it('lets the chosen teacher review after the program got another teacher (B4-5)', async () => {
+    const { service, db } = setup();
+    // The program now has its own teacher, so the ANY group that chose this reviewer is gone.
+    db.class.findMany.mockResolvedValue([
+      { programId: 'program', teacherId: 'newcomer', pendingTeacherId: null, pendingTeacherFrom: null },
+    ]);
+    await service.technicalReview(teacher, 'unit', { approved: true, expectedRevision: 5 });
+    expect(db.curriculumUnit.update).toHaveBeenCalledWith(
+      containing({ data: containing({ status: 'PENDING_REVIEW' }) }),
+    );
+  });
 
   it('requires a reason when returning a draft and preserves teacher feedback', async () => {
     const { service, db } = setup();
@@ -217,10 +233,14 @@ describe('curriculum teacher review and manager confirmation', () => {
 
   it('resubmission validates the responsible teacher and clears stale approval metadata', async () => {
     const { service, db } = setup({ status: 'DRAFT', technicalReviewedAt: new Date() });
-    db.class.count.mockResolvedValueOnce(0);
+    // Another teacher runs a class of the program, so the chosen teacher is outside every group.
+    db.class.findMany.mockResolvedValueOnce([
+      { programId: 'program', teacherId: 'owner', pendingTeacherId: null, pendingTeacherFrom: null },
+    ]);
+    db.user.findMany.mockResolvedValueOnce([{ id: 'owner' }]);
     await expect(
       service.submitUnit(designer, 'unit', { reviewerTeacherId: teacher.id }),
-    ).rejects.toMatchObject({ code: 'INVALID_CURRICULUM_REVIEWER' });
+    ).rejects.toMatchObject({ code: 'INVALID_CURRICULUM_REVIEWER', statusCode: 400 });
     expect(db.curriculumUnit.update).not.toHaveBeenCalled();
     await service.submitUnit(designer, 'unit', { reviewerTeacherId: teacher.id });
     expect(db.curriculumUnit.update).toHaveBeenCalledWith(
@@ -258,20 +278,159 @@ describe('curriculum teacher review and manager confirmation', () => {
   it('lists current teacher candidates without exposing account secrets', async () => {
     const { service, db } = setup({ status: 'DRAFT' });
     db.class.findMany.mockResolvedValue([
-      { teacherId: 'old', pendingTeacherId: 'current', pendingTeacherFrom: new Date('2020-01-01') },
       {
+        programId: 'program',
+        teacherId: 'old',
+        pendingTeacherId: 'current',
+        pendingTeacherFrom: new Date('2020-01-01'),
+      },
+      {
+        programId: 'program',
         teacherId: 'future-old',
         pendingTeacherId: 'future',
         pendingTeacherFrom: new Date('2099-01-01'),
       },
     ]);
-    await service.reviewers(designer, 'unit');
-    expect(db.user.findMany).toHaveBeenCalledWith(
+    db.user.findMany
+      .mockResolvedValueOnce([{ id: 'current' }, { id: 'future-old' }])
+      .mockResolvedValueOnce([
+        { id: 'current', email: 'c@x', displayName: 'C' },
+        { id: 'future-old', email: 'f@x', displayName: 'F' },
+      ]);
+    await expect(service.reviewers(designer, 'unit')).resolves.toEqual([
+      { id: 'current', email: 'c@x', displayName: 'C', reason: 'PROGRAM' },
+      { id: 'future-old', email: 'f@x', displayName: 'F', reason: 'PROGRAM' },
+    ]);
+    expect(db.user.findMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: { id: { in: ['current', 'future-old'] }, role: 'TEACHER', status: 'ACTIVE' },
+        where: { role: 'TEACHER', status: 'ACTIVE', id: { in: ['current', 'future-old'] } },
         select: { id: true, email: true, displayName: true },
       }),
     );
+  });
+
+  describe('reviewer groups (B4)', () => {
+    const classOf = (
+      programId: string,
+      teacherId: string,
+    ): { programId: string; teacherId: string; pendingTeacherId: null; pendingTeacherFrom: null } => ({
+      programId,
+      teacherId,
+      pendingTeacherId: null,
+      pendingTeacherFrom: null,
+    });
+
+    it('ranks teachers of the program before teachers of the same subject in other grades', async () => {
+      const { service, db } = setup({ status: 'DRAFT' });
+      db.class.findMany.mockResolvedValue([
+        classOf('program-9', 'subject-teacher'),
+        classOf('program', 'program-teacher'),
+        classOf('program-9', 'program-teacher'),
+      ]);
+      db.user.findMany
+        .mockResolvedValueOnce([{ id: 'subject-teacher' }, { id: 'program-teacher' }])
+        // Sorted by name, the subject teacher comes first; the group order must still win.
+        .mockResolvedValueOnce([
+          { id: 'subject-teacher', email: 'a@x', displayName: 'An' },
+          { id: 'program-teacher', email: 'b@x', displayName: 'Bình' },
+        ]);
+      const result = (await service.reviewers(designer, 'unit', {
+        page: 1,
+        limit: 20,
+        paginated: true,
+      })) as { items: Array<{ id: string; reason: string }>; total: number };
+      expect(result.items.map((item) => [item.id, item.reason])).toEqual([
+        ['program-teacher', 'PROGRAM'],
+        ['subject-teacher', 'SUBJECT'],
+      ]);
+      expect(result.total).toBe(2);
+      // Only programs of the same subject are searched for classes.
+      expect(db.class.findMany).toHaveBeenCalledWith(
+        containing({ where: { programId: { in: ['program', 'program-9'] }, isActive: true } }),
+      );
+    });
+
+    it('accepts a teacher of the same subject when the program has no class yet', async () => {
+      const { service, db } = setup({ status: 'DRAFT' });
+      db.class.findMany.mockResolvedValue([classOf('program-9', teacher.id)]);
+      db.user.findMany.mockResolvedValue([{ id: teacher.id }]);
+      await service.submitUnit(designer, 'unit', { reviewerTeacherId: teacher.id });
+      expect(db.curriculumUnit.update).toHaveBeenCalledWith(
+        containing({ data: containing({ status: 'PENDING_REVIEW', reviewerTeacherId: teacher.id }) }),
+      );
+    });
+
+    it('falls back to every active teacher only when no teacher teaches the subject', async () => {
+      const { service, db } = setup({ status: 'DRAFT' });
+      db.class.findMany.mockResolvedValue([]);
+      db.user.findMany.mockResolvedValue([{ id: 'anyone', email: 'z@x', displayName: 'Z' }]);
+      await expect(service.reviewers(designer, 'unit', { page: 1, limit: 20, search: 'Z' })).resolves.toEqual([
+        { id: 'anyone', email: 'z@x', displayName: 'Z', reason: 'ANY' },
+      ]);
+      expect(db.user.findMany).toHaveBeenLastCalledWith(
+        containing({
+          where: {
+            role: 'TEACHER',
+            status: 'ACTIVE',
+            OR: [{ displayName: { contains: 'Z' } }, { email: { contains: 'Z' } }],
+          },
+          take: 20,
+          skip: 0,
+        }),
+      );
+      await service.submitUnit(designer, 'unit', { reviewerTeacherId: teacher.id });
+      expect(db.curriculumUnit.update).toHaveBeenCalled();
+    });
+
+    it('never accepts an inactive teacher, even from ANY', async () => {
+      const { service, db } = setup({ status: 'DRAFT' });
+      db.user.findFirst.mockResolvedValue(null);
+      await expect(
+        service.submitUnit(designer, 'unit', { reviewerTeacherId: 'locked' }),
+      ).rejects.toMatchObject({ code: 'INVALID_CURRICULUM_REVIEWER' });
+    });
+
+    it('does not let a search switch the list to ANY', async () => {
+      const { service, db } = setup({ status: 'DRAFT' });
+      db.class.findMany.mockResolvedValue([classOf('program', 'program-teacher')]);
+      db.user.findMany.mockResolvedValueOnce([{ id: 'program-teacher' }]).mockResolvedValueOnce([]);
+      await expect(
+        service.reviewers(designer, 'unit', { page: 1, limit: 20, search: 'nobody' }),
+      ).resolves.toEqual([]);
+    });
+  });
+
+  describe('shared drafts (B2, Q6)', () => {
+    const other = { id: 'designer-2', role: 'CURRICULUM_DESIGNER' } as AuthenticatedUser;
+
+    it('lets another designer read, edit and submit the draft, auditing that designer', async () => {
+      const { service, db } = setup({ status: 'DRAFT' });
+      await expect(service.unit(other, 'unit')).resolves.toMatchObject({ id: 'unit' });
+      await service.updateUnit(other, 'unit', { title: 'Toán 8 mới', expectedRevision: 5 });
+      await service.submitUnit(other, 'unit', { reviewerTeacherId: teacher.id });
+      expect(db.auditLog.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({ actorUserId: other.id, action: 'CURRICULUM_UNIT_SUBMITTED' }),
+        }),
+      );
+    });
+
+    it('still refuses a stale revision and a teacher', async () => {
+      const { service } = setup({ status: 'DRAFT' });
+      await expect(
+        service.updateUnit(other, 'unit', { title: 'X', expectedRevision: 4 }),
+      ).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+      await expect(
+        service.updateUnit(teacher, 'unit', { title: 'X', expectedRevision: 5 }),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
+    });
+
+    it('lists every curriculum for any designer', async () => {
+      const { service, db } = setup();
+      await service.listUnits(other, {});
+      const [query] = db.curriculumUnit.findMany.mock.calls[0] as [{ where: Record<string, unknown> }];
+      expect(query.where).not.toHaveProperty('designerId');
+    });
   });
 });
 

@@ -1,13 +1,13 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { assignedTeacherAt } from '../registration-flow/class-teacher';
+import { mayReviewProgramOutcomes } from '../curriculum-scheduling/reviewer-eligibility';
 import { assertRule, roles } from './academic-access.service';
 import { AcademicRepository } from './academic.repository';
 import { LearningOutcomeWriteDto } from './academic.dto';
 import { OutcomeSetQueryDto } from './academic-list.dto';
 import { pageResult } from '../../common/pagination';
 import { AppError } from '../../common/errors/app.error';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class OutcomeService {
@@ -24,7 +24,6 @@ export class OutcomeService {
     const where: Prisma.OutcomeSetWhereInput = {
       programId,
       ...(user.role === 'PARENT' ? { status: 'APPROVED' } : {}),
-      ...(user.role === 'CURRICULUM_DESIGNER' ? { designerId: user.id } : {}),
       AND: [
         {
           ...(query.status ? { status: query.status } : {}),
@@ -130,18 +129,6 @@ export class OutcomeService {
     if (user.role === 'TEACHER' && set.status !== 'APPROVED') {
       await this.assertProgramTeacher(user, set.programId);
     }
-    if (
-      user.role === 'CURRICULUM_DESIGNER' &&
-      set.status !== 'APPROVED' &&
-      set.designerId !== user.id
-    ) {
-      assertRule(
-        false,
-        'FORBIDDEN',
-        'Designer is not assigned to this outcome set',
-        HttpStatus.FORBIDDEN,
-      );
-    }
     return set;
   }
 
@@ -192,18 +179,6 @@ export class OutcomeService {
     if (user.role === 'TEACHER' && set.status !== 'APPROVED') {
       await this.assertProgramTeacher(user, set.programId);
     }
-    if (
-      user.role === 'CURRICULUM_DESIGNER' &&
-      set.status !== 'APPROVED' &&
-      set.designerId !== user.id
-    ) {
-      assertRule(
-        false,
-        'FORBIDDEN',
-        'Designer is not assigned to this outcome set',
-        HttpStatus.FORBIDDEN,
-      );
-    }
     return outcome;
   }
 
@@ -214,7 +189,7 @@ export class OutcomeService {
     copyFromId?: string,
   ): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
-    await this.assertProgramDesigner(user, programId);
+    await this.assertWritableProgram(programId);
     return this.repo.transaction(async (tx) => {
       const source = copyFromId
         ? await tx.outcomeSet.findUnique({
@@ -266,6 +241,15 @@ export class OutcomeService {
             })),
           });
       }
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'OUTCOME_SET_CREATED',
+          entityType: 'OutcomeSet',
+          entityId: created.id,
+          afterData: { programId, level: created.level, version: created.version, copyFromId: copyFromId ?? null },
+        },
+      });
       return created;
     });
   }
@@ -273,24 +257,10 @@ export class OutcomeService {
   async deleteSet(user: AuthenticatedUser, setId: string): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER', 'MANAGER');
     return this.repo.transaction(async (tx) => {
-      const set = await tx.outcomeSet.findUnique({
-        where: { id: setId },
-        include: { outcomes: { select: { id: true } } },
-      });
-      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
-      if (user.role === 'CURRICULUM_DESIGNER') {
-        assertRule(
-          set.designerId === user.id,
-          'FORBIDDEN',
-          'Only the set designer can delete it',
-          HttpStatus.FORBIDDEN,
-        );
-      }
-      assertRule(
-        set.status === 'DRAFT',
-        'OUTCOME_SET_LOCKED',
-        'Only draft outcome sets can be deleted',
-      );
+      // Locked reads: a concurrent technical approval or CLO write is seen, not an old snapshot.
+      const set = await this.lockSet(tx, setId);
+      assertRule(set.status === 'DRAFT', 'OUTCOME_SET_LOCKED', 'Only draft outcome sets can be deleted');
+      const outcomes = await this.lockSetOutcomes(tx, setId);
       const assignmentCount = await tx.assignment.count({ where: { outcomeSetId: setId } });
       assertRule(
         assignmentCount === 0,
@@ -298,7 +268,7 @@ export class OutcomeService {
         'Cannot delete an outcome set used in assignments',
         HttpStatus.CONFLICT,
       );
-      const outcomeIds = set.outcomes.map((o) => o.id);
+      const outcomeIds = outcomes.map((o) => o.id);
       if (outcomeIds.length > 0) {
         const questionCount = await tx.assignmentQuestion.count({
           where: { outcomeId: { in: outcomeIds } },
@@ -313,6 +283,15 @@ export class OutcomeService {
         await tx.learningOutcome.deleteMany({ where: { outcomeSetId: setId } });
       }
       await tx.outcomeSet.delete({ where: { id: setId } });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'OUTCOME_SET_DELETED',
+          entityType: 'OutcomeSet',
+          entityId: setId,
+          afterData: { programId: set.programId, level: set.level, version: set.version },
+        },
+      });
       return { id: setId, deleted: true };
     });
   }
@@ -350,39 +329,47 @@ export class OutcomeService {
     input: LearningOutcomeWriteDto,
     outcomeId?: string,
   ): Promise<unknown> {
+    // Any curriculum designer edits a draft set (Q6); the CLO revision stops overwrites.
     roles(user, 'CURRICULUM_DESIGNER');
     return this.repo.transaction(async (tx) => {
-      const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
-      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
-      assertRule(
-        set.designerId === user.id,
-        'FORBIDDEN',
-        'Only the set designer can edit it',
-        HttpStatus.FORBIDDEN,
-      );
-      assertRule(set.status === 'DRAFT', 'OUTCOME_SET_LOCKED', 'Only a draft set can be edited');
+      await this.lockDraftSet(tx, setId, 'Only a draft set can be edited');
       const data = {
         code: input.code.trim(),
         title: input.title.trim(),
         statement: input.statement.trim(),
-        sourceTitle: input.sourceTitle.trim(),
-        sourceUrl: input.sourceUrl.trim(),
-        sourceLocator: input.sourceLocator.trim(),
-        sourceNote: input.sourceNote?.trim() ?? null,
+        // Omitted keeps the stored value on update; null or blank clears it.
+        sourceTitle: cleanOptional(input.sourceTitle),
+        sourceUrl: cleanOptional(input.sourceUrl),
+        sourceLocator: cleanOptional(input.sourceLocator),
+        sourceNote: cleanOptional(input.sourceNote),
         required: input.required ?? true,
         sourceStatus: 'CANDIDATE' as const,
         verifiedById: null,
         verifiedAt: null,
       };
-      if (!outcomeId) return tx.learningOutcome.create({ data: { ...data, outcomeSetId: set.id } });
-      const existing = await tx.learningOutcome.findUnique({ where: { id: outcomeId } });
+      if (!outcomeId) {
+        const created = await tx.learningOutcome.create({ data: { ...data, outcomeSetId: setId } });
+        await this.auditOutcome(tx, user, 'OUTCOME_CREATED', created.id, setId);
+        return created;
+      }
+      const existing = await this.lockOutcome(tx, outcomeId);
       assertRule(
-        existing?.outcomeSetId === set.id,
+        existing?.outcomeSetId === setId,
         'OUTCOME_NOT_FOUND',
         'Outcome does not belong to this set',
         HttpStatus.NOT_FOUND,
       );
-      return tx.learningOutcome.update({ where: { id: outcomeId }, data });
+      assertRule(
+        input.expectedRevision === undefined || existing.revision === input.expectedRevision,
+        'REVISION_CONFLICT',
+        'Outcome changed; reload it',
+      );
+      const updated = await tx.learningOutcome.update({
+        where: { id: outcomeId },
+        data: { ...data, revision: { increment: 1 } },
+      });
+      await this.auditOutcome(tx, user, 'OUTCOME_UPDATED', outcomeId, setId);
+      return updated;
     });
   }
 
@@ -393,22 +380,10 @@ export class OutcomeService {
   ): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     return this.repo.transaction(async (tx) => {
-      const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
-      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
-      assertRule(
-        set.designerId === user.id,
-        'FORBIDDEN',
-        'Only the set designer can edit it',
-        HttpStatus.FORBIDDEN,
-      );
-      assertRule(
-        set.status === 'DRAFT',
-        'OUTCOME_SET_LOCKED',
-        'Only draft outcomes can be deleted',
-      );
+      await this.lockDraftSet(tx, setId, 'Only draft outcomes can be deleted');
       const outcome = await tx.learningOutcome.findUnique({ where: { id: outcomeId } });
       assertRule(
-        outcome?.outcomeSetId === set.id,
+        outcome?.outcomeSetId === setId,
         'OUTCOME_NOT_FOUND',
         'Outcome does not belong to this set',
         HttpStatus.NOT_FOUND,
@@ -422,6 +397,7 @@ export class OutcomeService {
       );
       await tx.lessonOutcome.deleteMany({ where: { outcomeId } });
       await tx.learningOutcome.delete({ where: { id: outcomeId } });
+      await this.auditOutcome(tx, user, 'OUTCOME_DELETED', outcomeId, setId);
       return { id: outcomeId, outcomeSetId: setId, deleted: true };
     });
   }
@@ -435,8 +411,8 @@ export class OutcomeService {
   /**
    * Replaces the CLO links of a lesson and returns the links it has afterwards.
    * Lessons of the applied curriculum only change links to CLOs of draft sets: a link to a
-   * reviewed or approved set is kept even when the request omits it, because a designer
-   * only sees the sets they wrote.
+   * reviewed or approved set is kept even when the request omits it, so a stale screen
+   * cannot silently drop a published mapping. Any curriculum designer may remap (Q6).
    */
   async setLessonOutcomes(
     user: AuthenticatedUser,
@@ -452,12 +428,6 @@ export class OutcomeService {
         include: { unit: { select: { status: true } } },
       });
       assertRule(lesson, 'LESSON_NOT_FOUND', 'Lesson not found', HttpStatus.NOT_FOUND);
-      assertRule(
-        lesson.designerId === user.id,
-        'FORBIDDEN',
-        'Only the lesson designer can edit it',
-        HttpStatus.FORBIDDEN,
-      );
       const unitStatus = lesson.unit?.status ?? null;
       assertRule(
         unitStatus !== 'ARCHIVED',
@@ -565,11 +535,8 @@ export class OutcomeService {
       });
       assertRule(outcome, 'OUTCOME_NOT_FOUND', 'Outcome not found', HttpStatus.NOT_FOUND);
       await this.assertProgramTeacher(user, outcome.outcomeSet.programId);
-      assertRule(
-        outcome.outcomeSet.status === 'DRAFT',
-        'OUTCOME_SET_LOCKED',
-        'Only draft outcomes can be reviewed',
-      );
+      // Optional step: a CLO without a source may still be verified, which confirms its content.
+      await this.lockDraftSet(tx, outcome.outcomeSetId, 'Only draft outcomes can be reviewed');
       return tx.learningOutcome.update({
         where: { id: outcomeId },
         data: {
@@ -578,6 +545,7 @@ export class OutcomeService {
           sourceStatus: 'VERIFIED',
           verifiedById: user.id,
           verifiedAt: new Date(),
+          revision: { increment: 1 },
         },
       });
     });
@@ -586,30 +554,49 @@ export class OutcomeService {
   async technicalApprove(user: AuthenticatedUser, setId: string): Promise<unknown> {
     roles(user, 'TEACHER');
     return this.repo.transaction(async (tx) => {
-      // Every lesson remap that changes this set's links locks the same row first,
-      // so the links read below cannot change before the status update.
-      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
-      const set = await tx.outcomeSet.findUnique({
-        where: { id: setId },
-        include: { outcomes: { include: { lessonLinks: true } } },
-      });
-      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
+      // Every CLO write and lesson remap of this set locks the same row first. All reads below
+      // are locking reads: on TiDB a plain read uses the snapshot taken before the lock wait,
+      // so it could miss a CLO or a link removal committed while this approval waited.
+      const set = await this.lockSet(tx, setId);
       await this.assertProgramTeacher(user, set.programId);
       assertRule(set.status === 'DRAFT', 'OUTCOME_SET_LOCKED', 'Only draft sets can be reviewed');
-      assertRule(
-        set.outcomes.length > 0 &&
-          set.outcomes.every(
-            (outcome) =>
-              outcome.sourceStatus === 'VERIFIED' &&
-              outcome.verifiedById === user.id &&
-              outcome.lessonLinks.length > 0,
-          ),
-        'OUTCOME_SET_INCOMPLETE',
-        'Every outcome needs a verified source and at least one linked lesson',
+      const outcomes = await this.lockSetOutcomes(tx, setId);
+      const linked = new Set(
+        outcomes.length
+          ? (
+              await tx.$queryRaw<Array<{ outcomeId: string }>>`
+                SELECT outcomeId FROM lesson_outcomes
+                WHERE outcomeId IN (${Prisma.join(outcomes.map((outcome) => outcome.id))})
+                FOR UPDATE`
+            ).map((row) => row.outcomeId)
+          : [],
       );
+      // Light CLOs (Q2): sources are optional, but every CLO must be taught by a lesson.
+      const unlinked = outcomes.filter((outcome) => !linked.has(outcome.id));
+      if (!outcomes.length || unlinked.length)
+        throw new AppError(
+          'OUTCOME_SET_INCOMPLETE',
+          'The set needs at least one outcome and every outcome needs a linked lesson',
+          HttpStatus.CONFLICT,
+          {
+            outcomeIds: unlinked.map((outcome) => outcome.id),
+            codes: unlinked.map((outcome) => outcome.code),
+          },
+        );
+      const now = new Date();
+      // Approving the set verifies its CLOs; earlier verifications keep the teacher who did them.
+      await tx.learningOutcome.updateMany({
+        where: { outcomeSetId: setId, sourceStatus: { not: 'VERIFIED' } },
+        data: {
+          sourceStatus: 'VERIFIED',
+          verifiedById: user.id,
+          verifiedAt: now,
+          revision: { increment: 1 },
+        },
+      });
       return tx.outcomeSet.update({
         where: { id: setId },
-        data: { status: 'TECHNICALLY_APPROVED', reviewerId: user.id, reviewedAt: new Date() },
+        data: { status: 'TECHNICALLY_APPROVED', reviewerId: user.id, reviewedAt: now },
       });
     });
   }
@@ -649,25 +636,93 @@ export class OutcomeService {
     );
   }
 
+  /** Teachers of the program or subject, or the teacher chosen for one of its curricula (Q3). */
   private async assertProgramTeacher(user: AuthenticatedUser, programId: string): Promise<void> {
-    const classes = await this.repo.db.class.findMany({ where: { programId } });
     assertRule(
-      classes.some((item) => assignedTeacherAt(item, new Date()) === user.id),
+      await mayReviewProgramOutcomes(this.repo.db, user.id, programId, new Date()),
       'FORBIDDEN',
-      'Teacher is not assigned to this program',
+      'Teacher may not review this program',
       HttpStatus.FORBIDDEN,
     );
   }
 
-  private async assertProgramDesigner(user: AuthenticatedUser, programId: string): Promise<void> {
-    const count = await this.repo.db.curriculumUnit.count({
-      where: { programId, designerId: user.id },
+  /** CLO sets no longer wait for a curriculum (Q2): the program only has to be in use. */
+  private async assertWritableProgram(programId: string): Promise<void> {
+    const program = await this.repo.db.program.findUnique({
+      where: { id: programId },
+      include: { subjectRecord: { select: { isActive: true } } },
     });
+    assertRule(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    assertRule(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
     assertRule(
-      count > 0,
-      'FORBIDDEN',
-      'Designer is not assigned to this program',
-      HttpStatus.FORBIDDEN,
+      !program.subjectId || program.subjectRecord?.isActive,
+      'SUBJECT_INACTIVE',
+      'Subject is inactive',
     );
   }
+
+  /**
+   * Locks the set row that technical approval also locks, so an edit never lands in a set that
+   * is being approved. The locking read returns the committed status, not an older snapshot.
+   */
+  private async lockDraftSet(
+    tx: Prisma.TransactionClient,
+    setId: string,
+    lockedMessage: string,
+  ): Promise<void> {
+    const status = (await this.lockOutcomeSetStatuses(tx, [setId])).get(setId);
+    assertRule(status, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
+    assertRule(status === 'DRAFT', 'OUTCOME_SET_LOCKED', lockedMessage);
+  }
+
+  private async lockSet(
+    tx: Prisma.TransactionClient,
+    setId: string,
+  ): Promise<{ status: string; programId: string; level: string; version: number }> {
+    const rows = await tx.$queryRaw<
+      Array<{ status: string; programId: string; level: string; version: number | bigint }>
+    >`SELECT status, programId, level, version FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
+    const row = rows[0];
+    assertRule(row, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
+    return { ...row, version: Number(row.version) };
+  }
+
+  private async lockSetOutcomes(
+    tx: Prisma.TransactionClient,
+    setId: string,
+  ): Promise<Array<{ id: string; code: string }>> {
+    return tx.$queryRaw<Array<{ id: string; code: string }>>`
+      SELECT id, code FROM learning_outcomes WHERE outcomeSetId = ${setId} ORDER BY code FOR UPDATE`;
+  }
+
+  private async lockOutcome(
+    tx: Prisma.TransactionClient,
+    outcomeId: string,
+  ): Promise<{ outcomeSetId: string; revision: number } | undefined> {
+    const rows = await tx.$queryRaw<Array<{ outcomeSetId: string; revision: number | bigint }>>`
+      SELECT outcomeSetId, revision FROM learning_outcomes WHERE id = ${outcomeId} FOR UPDATE`;
+    return rows[0] && { outcomeSetId: rows[0].outcomeSetId, revision: Number(rows[0].revision) };
+  }
+
+  private async auditOutcome(
+    tx: Prisma.TransactionClient,
+    user: AuthenticatedUser,
+    action: 'OUTCOME_CREATED' | 'OUTCOME_UPDATED' | 'OUTCOME_DELETED',
+    outcomeId: string,
+    setId: string,
+  ): Promise<void> {
+    await tx.auditLog.create({
+      data: {
+        actorUserId: user.id,
+        action,
+        entityType: 'LearningOutcome',
+        entityId: outcomeId,
+        afterData: { outcomeSetId: setId },
+      },
+    });
+  }
+}
+
+function cleanOptional(value: string | null | undefined): string | null | undefined {
+  return value === undefined ? undefined : value?.trim() || null;
 }

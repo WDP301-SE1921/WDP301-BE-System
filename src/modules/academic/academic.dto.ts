@@ -12,6 +12,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUrl,
   Max,
   MaxLength,
   Min,
@@ -284,11 +285,47 @@ export class LearningOutcomeWriteDto {
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(64) code!: string;
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MinLength(12) @MaxLength(5000) statement!: string;
-  @ApiProperty() @IsString() @MinLength(5) @MaxLength(255) sourceTitle!: string;
-  @ApiProperty() @IsString() @MinLength(12) @MaxLength(2000) sourceUrl!: string;
-  @ApiProperty() @IsString() @MinLength(12) @MaxLength(255) sourceLocator!: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(5000) sourceNote?: string;
+  // Sources are optional (light CLOs). Omitted keeps the stored value on update; null or a
+  // blank string clears it, so the database never stores an empty string.
+  @ApiPropertyOptional({ nullable: true })
+  @Transform(blankToNull)
+  @IsOptional()
+  @IsString()
+  @MinLength(5)
+  @MaxLength(255)
+  sourceTitle?: string | null;
+  @ApiPropertyOptional({ nullable: true })
+  @Transform(blankToNull)
+  @IsOptional()
+  @IsString()
+  @MinLength(12)
+  @MaxLength(2000)
+  @IsUrl({ require_protocol: true, protocols: ['http', 'https'] })
+  sourceUrl?: string | null;
+  @ApiPropertyOptional({ nullable: true })
+  @Transform(blankToNull)
+  @IsOptional()
+  @IsString()
+  @MinLength(12)
+  @MaxLength(255)
+  sourceLocator?: string | null;
+  @ApiPropertyOptional({ nullable: true })
+  @Transform(blankToNull)
+  @IsOptional()
+  @IsString()
+  @MaxLength(5000)
+  sourceNote?: string | null;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() required?: boolean;
+  @ApiPropertyOptional({ description: 'Revision the client edited; a stale value returns REVISION_CONFLICT.' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expectedRevision?: number;
+}
+
+/** Trims strings and turns blanks into null; other values reach the validators unchanged. */
+function blankToNull({ value }: { value: unknown }): unknown {
+  return typeof value === 'string' ? value.trim() || null : value;
 }
 
 export class LessonOutcomeWriteDto {

@@ -350,6 +350,8 @@ Buổi đã sinh giữ lesson ID cũ; duyệt phiên bản mới không tự tha
 
 Gắn CLO (cập nhật 09/11/2026): bài của giáo trình đang áp dụng vẫn thêm hoặc bỏ được CLO của bộ CLO nháp, nên CLO thêm sau khi áp dụng giáo trình không còn kẹt; liên kết tới bộ đã duyệt chuyên môn hoặc đã duyệt được giữ nguyên. Bài của giáo trình đã lưu trữ thì không đổi được. Xóa bài, xóa giáo trình nháp và nhập CSV `REPLACE` xóa luôn liên kết CLO của bài bị xóa. Chi tiết ở `docs/learning-outcomes-design.md`, đoạn "Gắn CLO vào bài".
 
+CLO bản nhẹ và bản nháp dùng chung (B2, B3, B4, 09/11/2026): mọi Thiết kế GT sửa được mọi giáo trình nháp, bộ CLO, CLO và xử lý được mọi phản hồi giáo trình; sửa cùng CLO bị chặn bằng `revision`. Nguồn của CLO tùy chọn. Giáo viên duyệt bộ không phải xác minh từng nguồn, vẫn cần mỗi CLO có bài. Bài tập không bắt buộc chọn bộ CLO hay gắn CLO cho câu. Người duyệt giáo trình chọn theo khóa, rồi theo môn, rồi mọi giáo viên đang hoạt động khi không có ai cùng môn; người duyệt bộ CLO không mở cho mọi giáo viên. Chi tiết ở `CHANGELOG_UPDATES.md` mục 1.7–1.9.
+
 Các lỗi tiêu biểu: UNIT_LOCKED, PREVIEW_STALE, REVISION_CONFLICT, INSUFFICIENT_LESSONS, LESSON_SEQUENCE_GAP, MISSING_MONTHLY_TEST, LESSON_LOCKED, OUTCOME_SET_LOCKED.
 
 ### 7.4. Feedback Teacher–Designer — đã có luồng chính

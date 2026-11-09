@@ -116,12 +116,11 @@ export class CatalogService {
 
   async lessons(user: AuthenticatedUser, page: LessonQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
+    // Curriculum designers share every draft (Q6), so they list every lesson like the manager.
     const where: Prisma.LessonWhereInput =
-      user.role === 'MANAGER'
+      user.role === 'MANAGER' || user.role === 'CURRICULUM_DESIGNER'
         ? {}
-        : user.role === 'CURRICULUM_DESIGNER'
-          ? { designerId: user.id }
-          : {
+        : {
               status: 'APPROVED',
               sessions: {
                 some: {
@@ -387,12 +386,9 @@ export class CatalogService {
 
   async listFeedback(user: AuthenticatedUser, page: FeedbackQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
+    // Any curriculum designer handles feedback, so it never waits for an absent author (Q6).
     const scope: Prisma.CurriculumFeedbackWhereInput =
-        user.role === 'MANAGER'
-          ? {}
-          : user.role === 'TEACHER'
-            ? { teacherId: user.id }
-            : { lesson: { designerId: user.id } };
+      user.role === 'TEACHER' ? { teacherId: user.id } : {};
     const where: Prisma.CurriculumFeedbackWhereInput = { AND: [scope, {
       ...(page.lessonId ? { lessonId: page.lessonId } : {}),
       ...(page.teacherId ? { teacherId: page.teacherId } : {}),
@@ -414,15 +410,11 @@ export class CatalogService {
     input: ResolveFeedbackDto,
   ): Promise<unknown> {
     roles(user, 'MANAGER', 'CURRICULUM_DESIGNER');
+    // Any curriculum designer may resolve feedback (Q6); roles() above keeps teachers out.
     const feedback = await this.repo.db.curriculumFeedback.findUniqueOrThrow({
       where: { id },
       include: { lesson: true },
     });
-    assertRule(
-      user.role === 'MANAGER' || feedback.lesson.designerId === user.id,
-      'FORBIDDEN',
-      'Feedback is assigned to another designer',
-    );
     if (input.resolutionLessonId) {
       const revision = await this.repo.db.lesson.findUniqueOrThrow({
         where: { id: input.resolutionLessonId },

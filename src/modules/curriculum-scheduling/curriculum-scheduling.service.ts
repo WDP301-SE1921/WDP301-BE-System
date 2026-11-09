@@ -28,6 +28,7 @@ import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '.
 import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
 import { parseCurriculumCsv } from './curriculum-csv';
 import { CsvFileError } from '../../common/csv/read-csv';
+import { reviewerReason, reviewerTiers, subjectKey } from './reviewer-eligibility';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
 import {
   archiveSupersededCurricula,
@@ -223,8 +224,8 @@ export class CurriculumSchedulingService {
       : null;
     if (filter.programId)
       this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    // Every curriculum designer lists every curriculum (Q6): drafts are shared, not owned.
     const where: Prisma.CurriculumUnitWhereInput = {
-      ...(user.role === 'CURRICULUM_DESIGNER' ? { designerId: user.id } : {}),
       ...(filter.status ? { status: filter.status } : {}),
       ...(user.role === 'TEACHER'
         ? {
@@ -737,24 +738,53 @@ export class CurriculumSchedulingService {
     this.requireRole(user, 'MANAGER', 'CURRICULUM_DESIGNER');
     const unit = await this.loadUnit(id);
     await this.canReadUnit(user, unit);
-    const now = new Date();
-    const classes = await this.db.class.findMany({
-      where: { programId: unit.programId, isActive: true },
-      select: { teacherId: true, pendingTeacherId: true, pendingTeacherFrom: true },
-    });
-    const teacherIds = [...new Set(classes.map((row) => assignedTeacherAt(row, now)))].filter(
-      (teacherId): teacherId is string => !!teacherId,
-    );
+    // Groups come from the unfiltered candidates, so a search never switches the list to ANY.
+    const tiers = await reviewerTiers(this.db, unit.programId, new Date());
     const where: Prisma.UserWhereInput = {
-      id: { in: teacherIds }, role: 'TEACHER', status: 'ACTIVE',
-      ...(query.search ? { OR: [{ displayName: { contains: query.search } }, { email: { contains: query.search } }] } : {}),
+      role: 'TEACHER',
+      status: 'ACTIVE',
+      ...(query.search
+        ? { OR: [{ displayName: { contains: query.search } }, { email: { contains: query.search } }] }
+        : {}),
     };
-    return pageResult(query, this.db.user.findMany({
-      where,
-      select: { id: true, email: true, displayName: true },
-      orderBy: [{ displayName: 'asc' }, { email: 'asc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.user.count({ where }));
+    const select = { id: true, email: true, displayName: true } as const;
+    const orderBy: Prisma.UserOrderByWithRelationInput[] = [
+      { displayName: 'asc' },
+      { email: 'asc' },
+      { id: 'asc' },
+    ];
+    if (!tiers.program.size && !tiers.subject.size)
+      return pageResult(
+        query,
+        this.db.user
+          .findMany({
+            where,
+            select,
+            orderBy,
+            take: query.limit,
+            skip: (query.page - 1) * query.limit,
+          })
+          .then((rows) => rows.map((row) => ({ ...row, reason: 'ANY' as const }))),
+        () => this.db.user.count({ where }),
+      );
+    // A center has few teachers, so both groups are ranked in memory: PROGRAM first, then SUBJECT.
+    const rows = await this.db.user.findMany({
+      where: { ...where, id: { in: [...tiers.program, ...tiers.subject] } },
+      select,
+      orderBy,
+    });
+    const ranked = [
+      ...rows
+        .filter((row) => tiers.program.has(row.id))
+        .map((row) => ({ ...row, reason: 'PROGRAM' as const })),
+      ...rows
+        .filter((row) => tiers.subject.has(row.id))
+        .map((row) => ({ ...row, reason: 'SUBJECT' as const })),
+    ];
+    const skip = (query.page - 1) * query.limit;
+    return pageResult(query, Promise.resolve(ranked.slice(skip, skip + query.limit)), () =>
+      Promise.resolve(ranked.length),
+    );
   }
 
   async technicalReview(
@@ -779,7 +809,13 @@ export class CurriculumSchedulingService {
         'Curriculum is not awaiting a teacher review',
       );
       this.checkRevision(unit, input.expectedRevision);
-      await this.assertResponsibleReviewer(tx, user.id, unit.programId);
+      // Eligibility was checked at submission. Re-checking the groups here would lock out a
+      // teacher chosen from ANY as soon as the program gets its own teacher.
+      const reviewer = await tx.user.findFirst({
+        where: { id: user.id, role: 'TEACHER', status: 'ACTIVE' },
+        select: { id: true },
+      });
+      this.assert(reviewer, 'FORBIDDEN', 'Reviewer account is not active', HttpStatus.FORBIDDEN);
       await this.assertFutureRevisionPeriod(tx, unit, dateOnly(unit.fromDate));
       const note = input.note?.trim() || null;
       this.assert(
@@ -1040,12 +1076,6 @@ export class CurriculumSchedulingService {
       await tx.$queryRaw`SELECT id FROM curriculum_units WHERE id = ${id} FOR UPDATE`;
       const unit = await tx.curriculumUnit.findUnique({ where: { id }, include: unitInclude });
       this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
-      this.assert(
-        unit.designerId === user.id,
-        'FORBIDDEN',
-        'Unit belongs to another designer',
-        HttpStatus.FORBIDDEN,
-      );
       this.assert(
         unit.status === 'APPROVED' || (unit.status === 'ARCHIVED' && !!unit.approvedAt),
         'UNIT_NOT_APPROVED',
@@ -2114,14 +2144,8 @@ export class CurriculumSchedulingService {
   }
 
   private async canReadUnit(user: AuthenticatedUser, unit: UnitWithLessons): Promise<void> {
+    // Every curriculum designer reads every curriculum (Q6).
     this.requireRole(user, 'MANAGER', 'CURRICULUM_DESIGNER', 'TEACHER');
-    if (user.role === 'CURRICULUM_DESIGNER')
-      this.assert(
-        unit.designerId === user.id,
-        'FORBIDDEN',
-        'Unit belongs to another designer',
-        HttpStatus.FORBIDDEN,
-      );
     if (user.role === 'TEACHER') {
       if (unit.status === 'PENDING_REVIEW' && unit.reviewerTeacherId === user.id) return;
       this.assert(
@@ -2148,20 +2172,11 @@ export class CurriculumSchedulingService {
     teacherId: string,
     programId: string,
   ): Promise<void> {
-    const [teacher, classCount] = await Promise.all([
-      tx.user.findFirst({ where: { id: teacherId, role: 'TEACHER', status: 'ACTIVE' } }),
-      tx.class.count({
-        where: {
-          ...assignedTeacherWhere(teacherId, new Date()),
-          programId,
-          isActive: true,
-        },
-      }),
-    ]);
+    // Same rule as the reviewer list: PROGRAM, then SUBJECT, then ANY when both are empty.
     this.assert(
-      teacher && classCount > 0,
+      await reviewerReason(tx, teacherId, programId, new Date()),
       'INVALID_CURRICULUM_REVIEWER',
-      'Choose an active teacher responsible for a class in this curriculum program',
+      'Choose a teacher from the reviewer list',
       HttpStatus.BAD_REQUEST,
     );
   }
@@ -2182,13 +2197,8 @@ export class CurriculumSchedulingService {
   }
 
   private assertEditable(user: AuthenticatedUser, unit: UnitWithLessons): void {
+    // Any curriculum designer edits a draft (Q6); revision checks stop concurrent overwrites.
     this.requireRole(user, 'CURRICULUM_DESIGNER');
-    this.assert(
-      unit.designerId === user.id,
-      'FORBIDDEN',
-      'Unit belongs to another designer',
-      HttpStatus.FORBIDDEN,
-    );
     this.assert(unit.status === 'DRAFT', 'UNIT_LOCKED', 'Approved unit cannot be edited');
   }
 
@@ -2252,17 +2262,6 @@ function localDate(value: string): Date {
 
 function dateOnly(value: Date): string {
   return value.toISOString().slice(0, 10);
-}
-
-function subjectKey(subject: string): string {
-  return subject
-    .trim()
-    .replace(/\s+/g, ' ')
-    .normalize('NFD')
-    .toLocaleLowerCase('vi')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/đ/g, 'd')
-    .normalize('NFKC');
 }
 
 function vietnamToday(): string {

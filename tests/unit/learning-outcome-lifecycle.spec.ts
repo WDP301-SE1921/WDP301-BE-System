@@ -160,7 +160,10 @@ describe('CLO set review loop', () => {
     const createdOutcomes: Array<Record<string, unknown>> = [];
     const createLinks = jest.fn();
     const db = {
-      curriculumUnit: { count: jest.fn().mockResolvedValue(1) },
+      program: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'program-1', isActive: true, subjectId: null }),
+      },
+      auditLog: { create: jest.fn() },
       outcomeSet: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'set-1',
