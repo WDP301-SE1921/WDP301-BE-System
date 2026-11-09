@@ -683,12 +683,30 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           },
         },
     };
-    return pageResult(query, this.db.user.findMany({
-      where,
-      select: { id: true, email: true, displayName: true },
-      orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.user.count({ where }));
+    // `subjects`: the subjects of the active classes each teacher already runs, so the manager can
+    // prefer a teacher of the same subject. Filtering and order stay as they were.
+    const teachers = this.db.user
+      .findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          teachingClasses: {
+            where: { isActive: true },
+            select: { program: { select: { subject: true } } },
+          },
+        },
+        orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
+        take: query.limit, skip: (query.page - 1) * query.limit,
+      })
+      .then((rows) =>
+        rows.map(({ teachingClasses, ...teacher }) => ({
+          ...teacher,
+          subjects: [...new Set(teachingClasses.map((item) => item.program.subject))],
+        })),
+      );
+    return pageResult(query, teachers, () => this.db.user.count({ where }));
   }
 
   async substitute(
@@ -843,6 +861,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         program: true,
         room: true,
         weeklySchedules: true,
+        // Tên giáo viên cho bảng so sánh khi chuyển lớp (chỉ đọc).
+        teacher: { select: { id: true, displayName: true } },
         _count: { select: { enrollments: true } },
       },
       orderBy: [{ isOpen: 'desc' }, { name: 'asc' }, { id: 'asc' }],

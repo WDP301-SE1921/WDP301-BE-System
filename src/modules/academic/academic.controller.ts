@@ -68,6 +68,7 @@ import {
   MakeupDto,
   ProgramDto,
   RecipientsDto,
+  OptionalReasonDto,
   ReactivateStudentDto,
   RescheduleMakeupDto,
   ReminderDto,
@@ -493,8 +494,9 @@ export class AcademicController {
   @Post('enrollments/:id/end') end(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Body() input: OptionalReasonDto,
   ): Promise<unknown> {
-    return this.workflows.endEnrollment(user, id);
+    return this.workflows.endEnrollment(user, id, input);
   }
   @Get('students/:id/grades')
   @ApiOperation({
@@ -510,8 +512,9 @@ export class AcademicController {
   @Post('students/:id/end-study') endStudent(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Body() input: OptionalReasonDto,
   ): Promise<unknown> {
-    return this.workflows.endStudent(user, id);
+    return this.workflows.endStudent(user, id, input);
   }
   @Post('students/:id/reactivate')
   @ApiOperation({ summary: 'Staff: reactivate an inactive student profile for a new registration' })

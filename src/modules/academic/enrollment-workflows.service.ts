@@ -32,10 +32,16 @@ import {
   LeaveFilterDto,
   MakeupDto,
   MakeupSourceFilterDto,
+  OptionalReasonDto,
   ReactivateStudentDto,
   RescheduleMakeupDto,
   TransferDto,
 } from './academic.dto';
+
+/** Adds the optional staff reason to an audit payload without changing its shape when absent. */
+function withReason<T extends object>(data: T, reason?: string): T & { reason?: string } {
+  return reason ? { ...data, reason } : data;
+}
 
 @Injectable()
 export class EnrollmentWorkflowsService {
@@ -1321,7 +1327,11 @@ export class EnrollmentWorkflowsService {
     });
   }
 
-  async endEnrollment(user: AuthenticatedUser, id: string): Promise<unknown> {
+  async endEnrollment(
+    user: AuthenticatedUser,
+    id: string,
+    input: OptionalReasonDto = {},
+  ): Promise<unknown> {
     roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const { enrollment, impact } = await this.endOne(tx, id);
@@ -1331,7 +1341,7 @@ export class EnrollmentWorkflowsService {
           action: 'ENROLLMENT_END',
           entityType: 'Enrollment',
           entityId: id,
-          afterData: impact,
+          afterData: withReason(impact, input.reason),
         },
       });
       await this.queueFamilyEmail(tx, user.id, id, 'ENROLLMENT_ENDED', id, 'Ghi danh đã kết thúc.');
@@ -1339,7 +1349,11 @@ export class EnrollmentWorkflowsService {
     });
   }
 
-  async endStudent(user: AuthenticatedUser, studentId: string): Promise<unknown> {
+  async endStudent(
+    user: AuthenticatedUser,
+    studentId: string,
+    input: OptionalReasonDto = {},
+  ): Promise<unknown> {
     roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
       const enrollments = await tx.enrollment.findMany({
@@ -1376,7 +1390,7 @@ export class EnrollmentWorkflowsService {
           action: 'STUDENT_END_STUDY',
           entityType: 'StudentProfile',
           entityId: studentId,
-          afterData: impact,
+          afterData: withReason(impact, input.reason),
         },
       });
       return { ...student, impact };

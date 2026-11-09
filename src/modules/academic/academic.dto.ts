@@ -164,6 +164,10 @@ export class TransferDto extends ReasonDto {
   @ApiProperty() @IsDateString() effectiveAt!: string;
 }
 export class ReactivateStudentDto extends ReasonDto {}
+/** Ending one enrollment or all study: the reason is optional and only recorded in the audit log. */
+export class OptionalReasonDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(2000) reason?: string;
+}
 export class EndLeaveEarlyDto extends ReasonDto {
   @ApiProperty({ description: 'First local study date no longer covered by the pause.' })
   @IsDateString({ strict: true })
