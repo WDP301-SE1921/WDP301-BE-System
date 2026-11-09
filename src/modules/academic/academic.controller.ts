@@ -191,7 +191,15 @@ export class AcademicController {
   }
 
   @Patch('lessons/:id/outcomes')
-  @ApiOperation({ summary: 'Curriculum designer: map a draft lesson to draft CLOs' })
+  @ApiOperation({
+    summary: 'Curriculum designer: set the CLO links of a lesson',
+    description:
+      'Draft lessons accept CLOs of any set in the same program. Lessons of the applied curriculum ' +
+      'only add or remove CLOs of draft sets; links to reviewed or approved sets are kept even when ' +
+      'omitted, and adding one returns 409 OUTCOME_SET_LOCKED with details.outcomeIds. Lessons of an ' +
+      'archived curriculum return 409 LESSON_LOCKED. outcomeIds in the response are the links after ' +
+      'the write, including kept ones.',
+  })
   mapLessonOutcomes(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

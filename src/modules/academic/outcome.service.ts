@@ -6,6 +6,7 @@ import { AcademicRepository } from './academic.repository';
 import { LearningOutcomeWriteDto } from './academic.dto';
 import { OutcomeSetQueryDto } from './academic-list.dto';
 import { pageResult } from '../../common/pagination';
+import { AppError } from '../../common/errors/app.error';
 import type { Prisma } from '@prisma/client';
 
 @Injectable()
@@ -431,6 +432,12 @@ export class OutcomeService {
     return this.deleteOutcome(user, outcome.outcomeSetId, outcomeId);
   }
 
+  /**
+   * Replaces the CLO links of a lesson and returns the links it has afterwards.
+   * Lessons of the applied curriculum only change links to CLOs of draft sets: a link to a
+   * reviewed or approved set is kept even when the request omits it, because a designer
+   * only sees the sets they wrote.
+   */
   async setLessonOutcomes(
     user: AuthenticatedUser,
     lessonId: string,
@@ -438,7 +445,12 @@ export class OutcomeService {
   ): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     return this.repo.transaction(async (tx) => {
-      const lesson = await tx.lesson.findUnique({ where: { id: lessonId } });
+      // Serializes writers of this lesson and the manager's curriculum approval.
+      await tx.$queryRaw`SELECT id FROM lessons WHERE id = ${lessonId} FOR UPDATE`;
+      const lesson = await tx.lesson.findUnique({
+        where: { id: lessonId },
+        include: { unit: { select: { status: true } } },
+      });
       assertRule(lesson, 'LESSON_NOT_FOUND', 'Lesson not found', HttpStatus.NOT_FOUND);
       assertRule(
         lesson.designerId === user.id,
@@ -446,24 +458,91 @@ export class OutcomeService {
         'Only the lesson designer can edit it',
         HttpStatus.FORBIDDEN,
       );
-      assertRule(lesson.status === 'DRAFT', 'LESSON_LOCKED', 'Only a draft lesson can be remapped');
-      const outcomes = await tx.learningOutcome.findMany({
+      const unitStatus = lesson.unit?.status ?? null;
+      assertRule(
+        unitStatus !== 'ARCHIVED',
+        'LESSON_LOCKED',
+        'Lessons of an archived curriculum cannot be remapped',
+      );
+      assertRule(
+        lesson.status === 'DRAFT' || unitStatus === 'APPROVED',
+        'LESSON_LOCKED',
+        'An approved lesson can only be remapped while its curriculum is applied',
+      );
+      const requested = await tx.learningOutcome.findMany({
         where: { id: { in: outcomeIds } },
-        include: { outcomeSet: true },
+        select: { id: true, outcomeSetId: true, outcomeSet: { select: { programId: true } } },
       });
       // A new curriculum period re-links its draft lessons to the CLO set already in use.
       assertRule(
-        outcomes.length === outcomeIds.length &&
-          outcomes.every((item) => item.outcomeSet.programId === lesson.programId),
+        requested.length === outcomeIds.length &&
+          requested.every((item) => item.outcomeSet.programId === lesson.programId),
         'INVALID_OUTCOME_MAPPING',
         'Outcomes must belong to a set in the same program',
       );
-      await tx.lessonOutcome.deleteMany({ where: { lessonId } });
-      await tx.lessonOutcome.createMany({
-        data: outcomeIds.map((outcomeId) => ({ lessonId, outcomeId })),
+      const current = await tx.lessonOutcome.findMany({
+        where: { lessonId },
+        select: { outcomeId: true, outcome: { select: { outcomeSetId: true } } },
       });
-      return { lessonId, outcomeIds };
+      const wanted = new Set(outcomeIds);
+      const linked = new Set(current.map((link) => link.outcomeId));
+      const added = outcomeIds.filter((outcomeId) => !linked.has(outcomeId));
+      let removed = current.filter((link) => !wanted.has(link.outcomeId));
+      if (added.length || removed.length) {
+        const setOf = new Map<string, string>([
+          ...requested.map((item): [string, string] => [item.id, item.outcomeSetId]),
+          ...current.map((link): [string, string] => [link.outcomeId, link.outcome.outcomeSetId]),
+        ]);
+        // Every set whose links change is locked, draft lessons included, so a concurrent
+        // technical approval never approves a set from links that are being removed.
+        const statuses = await this.lockOutcomeSetStatuses(tx, [
+          ...added.map((outcomeId) => setOf.get(outcomeId) ?? ''),
+          ...removed.map((link) => link.outcome.outcomeSetId),
+        ]);
+        // Monthly tests stay DRAFT after approval, so the unit status decides what is published.
+        if (unitStatus === 'APPROVED') {
+          const lockedAdds = added.filter(
+            (outcomeId) => statuses.get(setOf.get(outcomeId) ?? '') !== 'DRAFT',
+          );
+          if (lockedAdds.length)
+            throw new AppError(
+              'OUTCOME_SET_LOCKED',
+              'An approved lesson can only be linked to CLOs of a draft set',
+              HttpStatus.CONFLICT,
+              { outcomeIds: lockedAdds },
+            );
+          removed = removed.filter((link) => statuses.get(link.outcome.outcomeSetId) === 'DRAFT');
+        }
+      }
+      if (removed.length)
+        await tx.lessonOutcome.deleteMany({
+          where: { lessonId, outcomeId: { in: removed.map((link) => link.outcomeId) } },
+        });
+      if (added.length)
+        await tx.lessonOutcome.createMany({
+          data: added.map((outcomeId) => ({ lessonId, outcomeId })),
+        });
+      const removedIds = new Set(removed.map((link) => link.outcomeId));
+      const kept = current
+        .map((link) => link.outcomeId)
+        .filter((outcomeId) => !wanted.has(outcomeId) && !removedIds.has(outcomeId));
+      return { lessonId, outcomeIds: [...outcomeIds, ...kept] };
     });
+  }
+
+  /** Locking reads return the committed status even when the transaction snapshot is older. */
+  private async lockOutcomeSetStatuses(
+    tx: Prisma.TransactionClient,
+    setIds: string[],
+  ): Promise<Map<string, string>> {
+    const statuses = new Map<string, string>();
+    // One fixed order for every writer avoids deadlocks between two remaps.
+    for (const setId of [...new Set(setIds)].filter(Boolean).sort()) {
+      const rows = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+        SELECT id, status FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
+      if (rows[0]) statuses.set(setId, rows[0].status);
+    }
+    return statuses;
   }
 
   async verifySource(
@@ -507,6 +586,9 @@ export class OutcomeService {
   async technicalApprove(user: AuthenticatedUser, setId: string): Promise<unknown> {
     roles(user, 'TEACHER');
     return this.repo.transaction(async (tx) => {
+      // Every lesson remap that changes this set's links locks the same row first,
+      // so the links read below cannot change before the status update.
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({
         where: { id: setId },
         include: { outcomes: { include: { lessonLinks: true } } },

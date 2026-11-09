@@ -14,7 +14,7 @@ Hai parser import nhận thêm định dạng version 1. File cũ không có c�
 
 - Assignment: `kind,prompt,choices,correctAnswer,rubric,maxScore,csvVersion`.
 - Curriculum: `kind,sequence,title,content,monthKey,csvVersion`.
-- Cột `csvVersion` đứng cuối và phải bằng `1` trên mọi dòng có dữ liệu; phiên bản khác hoặc thiếu bị từ chối.
+- Cột `csvVersion` đứng cuối. Ô trống được coi là `1` (cập nhật 09/11/2026: dòng người dùng thêm trong Excel thường bỏ trống ô này); giá trị khác `1` bị từ chối với lỗi kèm số dòng. Dấu phân cách `;` của Excel vùng Việt Nam cũng được nhận; với file `;`, `maxScore` nhận số thập phân dạng `0,5`. Chi tiết lỗi theo dòng ở `ACADEMIC_API_FLOW.md` mục 4.
 - Dữ liệu có dấu nháy đầu hoặc mở đầu bằng công thức được Web thêm một dấu nháy bảo vệ. Version 1 chỉ bỏ một dấu nháy nếu ký tự tiếp theo là dấu nháy hoặc phần còn lại khớp mẫu công thức mở đầu. Sau đó áp dụng trim hiện có. Không đổi dữ liệu file cũ.
 - Lựa chọn version 1 tách bởi `|`, với `\\` là backslash và `\|` là pipe trong một lựa chọn. Escape khác giữ nguyên backslash.
 - UTF-8 BOM, CSV quoted/multiline và giới hạn 5 MiB, 100 câu hỏi / 1.000 bài học giữ nguyên. Không thêm endpoint export; Web dùng dữ liệu đọc đã được kiểm quyền.

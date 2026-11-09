@@ -78,6 +78,7 @@ describe('CLO lifecycle across curriculum periods', () => {
   it('maps a draft lesson to CLOs of an approved set in the same program', async () => {
     const createMany = jest.fn();
     const db = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       lesson: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'lesson-1',
@@ -93,7 +94,11 @@ describe('CLO lifecycle across curriculum periods', () => {
             { id: 'clo-a', outcomeSet: { programId: 'program-1', status: 'APPROVED' } },
           ]),
       },
-      lessonOutcome: { deleteMany: jest.fn(), createMany },
+      lessonOutcome: {
+        findMany: jest.fn().mockResolvedValue([]),
+        deleteMany: jest.fn(),
+        createMany,
+      },
     };
     await expect(
       outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-a']),

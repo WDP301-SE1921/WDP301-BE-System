@@ -27,6 +27,7 @@ import { dateTimeRange } from '../../common/list-query';
 import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '../academic/academic-list.dto';
 import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
 import { parseCurriculumCsv } from './curriculum-csv';
+import { CsvFileError } from '../../common/csv/read-csv';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
 import {
   archiveSupersededCurricula,
@@ -398,6 +399,8 @@ export class CurriculumSchedulingService {
         }),
       ]);
       this.assert(!sessions && !feedback, 'LESSON_IN_USE', 'Lesson has dependent history');
+      // CLO links are mapping data, not history; the FK would otherwise refuse the delete.
+      await tx.lessonOutcome.deleteMany({ where: { lessonId } });
       await tx.lesson.delete({ where: { id: lessonId } });
       if (lesson.kind === 'LESSON') {
         const ordered = unit.lessons
@@ -475,6 +478,7 @@ export class CurriculumSchedulingService {
         'CSV_INVALID',
         error instanceof Error ? error.message : 'Invalid CSV',
         HttpStatus.BAD_REQUEST,
+        error instanceof CsvFileError ? error.details() : undefined,
       );
     }
     const errors = this.importErrors(unit, rows, mode);
@@ -615,6 +619,7 @@ export class CurriculumSchedulingService {
           'UNIT_IN_USE',
           'Draft lessons have dependent sessions, feedback or revisions',
         );
+        await tx.lessonOutcome.deleteMany({ where: { lesson: { unitId: id, kind: 'LESSON' } } });
         await tx.lesson.deleteMany({ where: { unitId: id, kind: 'LESSON' } });
       }
       await tx.lesson.createMany({
@@ -918,6 +923,7 @@ export class CurriculumSchedulingService {
       this.assert(!feedback, 'UNIT_IN_USE', 'Unit has teacher feedback');
       await tx.curriculumImportPreview.deleteMany({ where: { unitId: id } });
       await tx.curriculumImportCommit.deleteMany({ where: { unitId: id } });
+      await tx.lessonOutcome.deleteMany({ where: { lesson: { unitId: id } } });
       await tx.lesson.deleteMany({ where: { unitId: id } });
       await tx.curriculumUnit.delete({ where: { id } });
       return { id, deleted: true };

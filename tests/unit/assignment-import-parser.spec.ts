@@ -60,14 +60,11 @@ describe('assignment question CSV import', () => {
     });
   });
 
-  it.each(['', '2', '01', "'1", '1.0'])(
-    'rejects unsupported or empty row version %s',
-    (version) => {
-      expect(() =>
-        parseAssignmentCsv(Buffer.from(`${versionedHeader}ESSAY,text,,,rubric,1,${version}`)),
-      ).toThrow(AppError);
-    },
-  );
+  it.each(['2', '01', "'1", '1.0'])('rejects unsupported row version %s', (version) => {
+    expect(() =>
+      parseAssignmentCsv(Buffer.from(`${versionedHeader}ESSAY,text,,,rubric,1,${version}`)),
+    ).toThrow(AppError);
+  });
 
   it('requires csvVersion to be the final column and every versioned row to be marked', () => {
     expect(() =>
@@ -79,7 +76,7 @@ describe('assignment question CSV import', () => {
     ).toThrow(AppError);
     expect(() =>
       parseAssignmentCsv(
-        Buffer.from(`${versionedHeader}ESSAY,text,,,rubric,1,1\nESSAY,second,,,rubric,1,`),
+        Buffer.from(`${versionedHeader}ESSAY,text,,,rubric,1,1\nESSAY,second,,,rubric,1,2`),
       ),
     ).toThrow(AppError);
   });
@@ -161,6 +158,99 @@ describe('assignment question CSV import', () => {
     expect(result.questions[0].correctAnswer).toBeUndefined();
     expect(result.questions[1].rubric).toBeUndefined();
     expect(result.warnings).toHaveLength(3);
+  });
+
+  function importError(source: string | Buffer): AppError {
+    try {
+      parseAssignmentCsv(Buffer.isBuffer(source) ? source : Buffer.from(source));
+    } catch (error) {
+      if (error instanceof AppError) return error;
+      throw error;
+    }
+    throw new Error('Expected an import error');
+  }
+
+  const excelHeader = 'kind;prompt;choices;correctAnswer;rubric;maxScore;csvVersion\r\n';
+
+  it('reads an Excel semicolon file, its decimal comma and an empty csvVersion', () => {
+    const result = parseAssignmentCsv(
+      Buffer.from(
+        `\uFEFF${excelHeader}ESSAY;"Giải thích; nêu ví dụ";;;Đủ ý;0,5;\r\nMULTIPLE_CHOICE;Chọn;A|B;A;;2;1\r\n`,
+      ),
+    );
+    expect(result.questions).toEqual([
+      { kind: 'ESSAY', prompt: 'Giải thích; nêu ví dụ', rubric: 'Đủ ý', maxScore: 0.5 },
+      {
+        kind: 'MULTIPLE_CHOICE',
+        prompt: 'Chọn',
+        choices: ['A', 'B'],
+        correctAnswer: 'A',
+        maxScore: 2,
+      },
+    ]);
+  });
+
+  it('keeps a decimal comma invalid in a comma separated file', () => {
+    expect(importError(`${header}ESSAY,Giải thích,,,Đủ ý,"0,5"`)).toMatchObject({
+      code: 'ASSIGNMENT_IMPORT_INVALID_QUESTIONS',
+    });
+  });
+
+  it('ignores filled-down csvVersion rows and empty trailing Excel columns', () => {
+    const result = parseAssignmentCsv(
+      Buffer.from(
+        `${versionedHeader.trimEnd()},,\r\nESSAY,Câu một,,,Đủ ý,1,1,,\r\n,,,,,,1,,\r\n,,,,,,1,,\r\n`,
+      ),
+    );
+    expect(result.questions).toHaveLength(1);
+  });
+
+  it('names the Excel row and question of every invalid question', () => {
+    const error = importError(
+      `${header}ESSAY,"Hai\r\ndòng",,,Đủ ý,1\r\n\r\nOTHER,Câu hai,,,Đủ ý,1\r\nMULTIPLE_CHOICE,Câu ba,A|B,C,,1\r\n`,
+    );
+    expect(error.code).toBe('ASSIGNMENT_IMPORT_INVALID_QUESTIONS');
+    expect(error.message).toBe(
+      'Dòng 4 (câu 2) có nội dung, lựa chọn hoặc điểm tối đa không hợp lệ. Còn 1 câu lỗi khác.',
+    );
+    expect(error.details).toEqual({
+      code: 'INVALID_QUESTION',
+      rows: [
+        { code: 'INVALID_QUESTION', rowNumber: 4 },
+        { code: 'INVALID_QUESTION', rowNumber: 5 },
+      ],
+      rowErrorCount: 2,
+    });
+  });
+
+  it('reports structural errors by Excel row and explains how to save UTF-8', () => {
+    const versionError = importError(
+      `${versionedHeader}ESSAY,Câu một,,,Đủ ý,1,2\r\nESSAY,Câu hai,,,Đủ ý\r\n`,
+    );
+    expect(versionError).toMatchObject({
+      code: 'ASSIGNMENT_IMPORT_INVALID_CSV',
+      message: 'Dòng 2: csvVersion phải là 1 hoặc để trống. Còn 1 dòng lỗi khác.',
+      details: {
+        code: 'CSV_UNSUPPORTED_VERSION',
+        rows: [
+          { code: 'CSV_UNSUPPORTED_VERSION', rowNumber: 2 },
+          { code: 'CSV_INVALID_COLUMNS', rowNumber: 3 },
+        ],
+        rowErrorCount: 2,
+      },
+    });
+    const encodingError = importError(
+      Buffer.concat([
+        Buffer.from(`${header}ESSAY,C`),
+        Buffer.from([0xe2, 0x75]),
+        Buffer.from(',,,x,1'),
+      ]),
+    );
+    expect(encodingError).toMatchObject({
+      code: 'ASSIGNMENT_IMPORT_INVALID_CSV',
+      details: { code: 'CSV_NOT_UTF8', rows: [], rowErrorCount: 0 },
+    });
+    expect(encodingError.message).toContain('CSV UTF-8 (Comma delimited)');
   });
 
   it('does not coerce AI text scores or permit extra AI fields', () => {

@@ -348,7 +348,9 @@ Nguồn chính: CurriculumSchedulingService; các bài legacy và feedback ở C
 
 Buổi đã sinh giữ lesson ID cũ; duyệt phiên bản mới không tự thay nội dung của session quá khứ.
 
-Các lỗi tiêu biểu: UNIT_LOCKED, PREVIEW_STALE, REVISION_CONFLICT, INSUFFICIENT_LESSONS, LESSON_SEQUENCE_GAP, MISSING_MONTHLY_TEST.
+Gắn CLO (cập nhật 09/11/2026): bài của giáo trình đang áp dụng vẫn thêm hoặc bỏ được CLO của bộ CLO nháp, nên CLO thêm sau khi áp dụng giáo trình không còn kẹt; liên kết tới bộ đã duyệt chuyên môn hoặc đã duyệt được giữ nguyên. Bài của giáo trình đã lưu trữ thì không đổi được. Xóa bài, xóa giáo trình nháp và nhập CSV `REPLACE` xóa luôn liên kết CLO của bài bị xóa. Chi tiết ở `docs/learning-outcomes-design.md`, đoạn "Gắn CLO vào bài".
+
+Các lỗi tiêu biểu: UNIT_LOCKED, PREVIEW_STALE, REVISION_CONFLICT, INSUFFICIENT_LESSONS, LESSON_SEQUENCE_GAP, MISSING_MONTHLY_TEST, LESSON_LOCKED, OUTCOME_SET_LOCKED.
 
 ### 7.4. Feedback Teacher–Designer — đã có luồng chính
 

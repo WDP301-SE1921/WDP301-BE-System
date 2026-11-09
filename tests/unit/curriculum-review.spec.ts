@@ -379,4 +379,24 @@ describe('future curriculum revisions and separate tests', () => {
     });
     expect(db.lesson.createMany).not.toHaveBeenCalled();
   });
+
+  it('keeps CSV_INVALID and adds the structural problem and its rows as details', async () => {
+    const { service, db } = setup({ status: 'DRAFT' });
+    const csv = Buffer.from(
+      'kind,sequence,title,content,monthKey,csvVersion\nLESSON,1,Bài 1,A,,1\nLESSON,2,Bài 2,B,,3\n',
+    );
+    await expect(
+      service.importPreview(designer, 'unit', { buffer: csv } as Express.Multer.File, 'APPEND'),
+    ).rejects.toMatchObject({
+      code: 'CSV_INVALID',
+      statusCode: 400,
+      message: 'CSV_UNSUPPORTED_VERSION',
+      details: {
+        code: 'CSV_UNSUPPORTED_VERSION',
+        rows: [{ code: 'CSV_UNSUPPORTED_VERSION', rowNumber: 3 }],
+        rowErrorCount: 1,
+      },
+    });
+    expect(db.curriculumImportPreview.create).not.toHaveBeenCalled();
+  });
 });

@@ -120,6 +120,13 @@ Lấy `data.id` và `data.revision` từ response, thêm bài/kiểm tra, gọi 
 
 Header CSV bắt buộc có `kind,sequence,title,content,monthKey` (có thể đổi thứ tự cột). `kind` là `LESSON` hoặc `MONTHLY_TEST`. Bài thường dùng `sequence` bắt đầu từ 1; bài kiểm tra dùng `monthKey` như `2026-11`. File UTF-8, tối đa 5 MiB và 1.000 dòng dữ liệu; hỗ trợ BOM, dấu tiếng Việt, ô được quote và nội dung nhiều dòng. Số cột mỗi dòng phải khớp header.
 
+Đọc file Excel (cập nhật 09/11/2026, bộ đọc dùng chung `src/common/csv/read-csv.ts`, cũng dùng cho CSV câu hỏi của bài tập):
+
+- Dấu phân cách `,` hoặc `;` lấy từ dòng tiêu đề (Excel đặt vùng Việt Nam lưu bằng `;`).
+- Ô `csvVersion` trống được coi là `1`; giá trị khác `1` vẫn báo `CSV_UNSUPPORTED_VERSION`. Dòng chỉ có ô `csvVersion` (kéo điền xuống trong Excel) và dòng trống được bỏ qua. Cột trống thừa ở cuối dòng tiêu đề và cuối dòng dữ liệu được bỏ qua.
+- `rowNumber` là số dòng trong Excel: dòng tiêu đề là dòng 1, dòng trống vẫn được đếm, ô có xuống dòng không làm tăng số dòng.
+- Lỗi cấu trúc file trả 400 `CSV_INVALID`, thêm `details: { code, rows: [{ code, rowNumber }], rowErrorCount }` (`rows` tối đa 20 dòng). `details.code`: `CSV_NOT_UTF8` (file không phải UTF-8, ví dụ lưu bằng "CSV (Comma delimited)"; cần lưu lại bằng "CSV UTF-8 (Comma delimited)"), `CSV_EMPTY`, `CSV_TOO_LARGE`, `CSV_TOO_MANY_ROWS`, `CSV_INVALID_HEADER`, `CSV_INVALID_COLUMNS`, `CSV_UNSUPPORTED_VERSION`, `CSV_INVALID_QUOTE`, `CSV_UNCLOSED_QUOTE`. Lỗi nội dung (`kind` sai, thiếu tiêu đề, sai thứ tự) vẫn nằm trong `rows[].errors` của preview.
+
 ```csv
 kind,sequence,title,content,monthKey
 LESSON,1,"Tập hợp, số",Nội dung bài 1,
@@ -127,7 +134,7 @@ LESSON,2,Số tự nhiên,Nội dung bài 2,
 MONTHLY_TEST,,Kiểm tra tháng 11,Đề kiểm tra,2026-11
 ```
 
-Chỉ commit khi preview không có lỗi và chưa hết hạn. Bản nháp không được thay đổi revision giữa preview và commit. `REPLACE` bị chặn nếu bài cũ đã có buổi học, phản hồi hoặc revision tham chiếu.
+Chỉ commit khi preview không có lỗi và chưa hết hạn. Bản nháp không được thay đổi revision giữa preview và commit. `REPLACE` bị chặn nếu bài cũ đã có buổi học, phản hồi hoặc revision tham chiếu. Nhập `REPLACE` gỡ mọi liên kết mục tiêu (CLO) của các bài bị thay; cần gắn lại (09/11/2026).
 
 ## 5. Xem trước và sinh buổi học cho lớp
 

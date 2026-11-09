@@ -8,7 +8,7 @@ describe('CLO CRUD operations', () => {
 
   function outcomeService(db: unknown): OutcomeService {
     return new OutcomeService({
-      db: db as unknown as never,
+      db: db as never,
       transaction: (callback: (tx: unknown) => Promise<unknown>) => callback(db),
     } as unknown as never);
   }
@@ -227,6 +227,245 @@ describe('CLO CRUD operations', () => {
       await expect(outcomeService(db).deleteSet(designer, 'set-1')).rejects.toThrow(
         'Only draft outcome sets can be deleted',
       );
+    });
+  });
+
+  describe('setLessonOutcomes', () => {
+    interface RemapDb {
+      $queryRaw: jest.Mock;
+      lesson: { findUnique: jest.Mock };
+      learningOutcome: { findMany: jest.Mock };
+      lessonOutcome: Record<'findMany' | 'deleteMany' | 'createMany', jest.Mock>;
+    }
+    // CLO id → set id; set statuses below cover draft, teacher-reviewed and approved sets.
+    const catalog: Record<string, string> = {
+      'clo-draft': 'set-draft',
+      'clo-draft-2': 'set-draft',
+      'clo-approved': 'set-approved',
+      'clo-reviewed': 'set-reviewed',
+    };
+    const setStatus: Record<string, string> = {
+      'set-draft': 'DRAFT',
+      'set-approved': 'APPROVED',
+      'set-reviewed': 'TECHNICALLY_APPROVED',
+    };
+
+    function remapDb(
+      options: {
+        lessonStatus?: string;
+        unitStatus?: string | null;
+        designerId?: string;
+        current?: string[];
+        setStatus?: Record<string, string>;
+      } = {},
+    ): RemapDb {
+      const statuses = { ...setStatus, ...options.setStatus };
+      return {
+        $queryRaw: jest.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+          const id = String(values[0]);
+          return Promise.resolve(
+            strings.join('?').includes('outcome_sets') && statuses[id]
+              ? [{ id, status: statuses[id] }]
+              : [],
+          );
+        }),
+        lesson: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'lesson-1',
+            programId: 'program-1',
+            designerId: options.designerId ?? designer.id,
+            status: options.lessonStatus ?? 'APPROVED',
+            unit: options.unitStatus === null ? null : { status: options.unitStatus ?? 'APPROVED' },
+          }),
+        },
+        learningOutcome: {
+          findMany: jest.fn(({ where }: { where: { id: { in: string[] } } }) =>
+            Promise.resolve(
+              where.id.in
+                .filter((id) => catalog[id])
+                .map((id) => ({
+                  id,
+                  outcomeSetId: catalog[id],
+                  outcomeSet: { programId: 'program-1' },
+                })),
+            ),
+          ),
+        },
+        lessonOutcome: {
+          findMany: jest.fn().mockResolvedValue(
+            (options.current ?? []).map((outcomeId) => ({
+              outcomeId,
+              outcome: { outcomeSetId: catalog[outcomeId] },
+            })),
+          ),
+          deleteMany: jest.fn(),
+          createMany: jest.fn(),
+        },
+      };
+    }
+
+    function lockedSets(db: RemapDb): string[] {
+      const calls = db.$queryRaw.mock.calls as Array<[TemplateStringsArray, ...unknown[]]>;
+      return calls
+        .filter(([strings]) => strings.join('?').includes('outcome_sets'))
+        .map(([, id]) => String(id));
+    }
+    const lockedLessons: Array<[string, string | null]> = [
+      ['DRAFT', 'ARCHIVED'],
+      ['APPROVED', 'ARCHIVED'],
+      ['APPROVED', null],
+    ];
+
+    it('links a CLO of a draft set to a lesson of the applied curriculum', async () => {
+      const db = remapDb();
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft']),
+      ).resolves.toEqual({ lessonId: 'lesson-1', outcomeIds: ['clo-draft'] });
+      expect(db.lessonOutcome.createMany).toHaveBeenCalledWith({
+        data: [{ lessonId: 'lesson-1', outcomeId: 'clo-draft' }],
+      });
+      expect(db.lessonOutcome.deleteMany).not.toHaveBeenCalled();
+      const [firstLock] = db.$queryRaw.mock.calls[0] as [TemplateStringsArray];
+      expect(firstLock.join('?')).toContain('FROM lessons');
+      expect(lockedSets(db)).toEqual(['set-draft']);
+    });
+
+    it('keeps links to reviewed or approved sets that the request omits', async () => {
+      const db = remapDb({ current: ['clo-approved', 'clo-reviewed', 'clo-draft'] });
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft-2']),
+      ).resolves.toEqual({
+        lessonId: 'lesson-1',
+        outcomeIds: ['clo-draft-2', 'clo-approved', 'clo-reviewed'],
+      });
+      expect(db.lessonOutcome.deleteMany).toHaveBeenCalledWith({
+        where: { lessonId: 'lesson-1', outcomeId: { in: ['clo-draft'] } },
+      });
+      expect(db.lessonOutcome.createMany).toHaveBeenCalledWith({
+        data: [{ lessonId: 'lesson-1', outcomeId: 'clo-draft-2' }],
+      });
+      expect(lockedSets(db)).toEqual(['set-approved', 'set-draft', 'set-reviewed']);
+    });
+
+    it.each(['clo-approved', 'clo-reviewed'])(
+      'refuses to add %s to a lesson of the applied curriculum',
+      async (outcomeId) => {
+        const db = remapDb({ current: ['clo-draft'] });
+        await expect(
+          outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft', outcomeId]),
+        ).rejects.toMatchObject({
+          code: 'OUTCOME_SET_LOCKED',
+          statusCode: 409,
+          details: { outcomeIds: [outcomeId] },
+        });
+        expect(db.lessonOutcome.deleteMany).not.toHaveBeenCalled();
+        expect(db.lessonOutcome.createMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('applies the applied-curriculum rule to draft monthly tests of an approved unit', async () => {
+      const db = remapDb({ lessonStatus: 'DRAFT', unitStatus: 'APPROVED' });
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-approved']),
+      ).rejects.toMatchObject({ code: 'OUTCOME_SET_LOCKED' });
+    });
+
+    it('lets the designer remap again once the manager returns the set to draft', async () => {
+      // requestChanges puts the set back to DRAFT, which makes its links editable again.
+      const db = remapDb({
+        current: ['clo-draft', 'clo-approved'],
+        setStatus: { 'set-approved': 'DRAFT' },
+      });
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft']),
+      ).resolves.toEqual({ lessonId: 'lesson-1', outcomeIds: ['clo-draft'] });
+      expect(db.lessonOutcome.deleteMany).toHaveBeenCalledWith({
+        where: { lessonId: 'lesson-1', outcomeId: { in: ['clo-approved'] } },
+      });
+      expect(lockedSets(db)).toEqual(['set-approved']);
+    });
+
+    it('treats a reordered request as no change', async () => {
+      const db = remapDb({ current: ['clo-approved', 'clo-draft'] });
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft', 'clo-approved']),
+      ).resolves.toEqual({ lessonId: 'lesson-1', outcomeIds: ['clo-draft', 'clo-approved'] });
+      expect(db.lessonOutcome.deleteMany).not.toHaveBeenCalled();
+      expect(db.lessonOutcome.createMany).not.toHaveBeenCalled();
+      expect(lockedSets(db)).toEqual([]);
+    });
+
+    it('keeps the old rule for draft lessons: any set of the program, links may be removed', async () => {
+      const db = remapDb({ lessonStatus: 'DRAFT', unitStatus: 'DRAFT', current: ['clo-approved'] });
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-reviewed']),
+      ).resolves.toEqual({ lessonId: 'lesson-1', outcomeIds: ['clo-reviewed'] });
+      expect(db.lessonOutcome.deleteMany).toHaveBeenCalledWith({
+        where: { lessonId: 'lesson-1', outcomeId: { in: ['clo-approved'] } },
+      });
+      // Draft lessons still lock every set whose links change, against a concurrent approval.
+      expect(lockedSets(db)).toEqual(['set-approved', 'set-reviewed']);
+    });
+
+    it.each(lockedLessons)(
+      'locks a %s lesson whose unit is %s',
+      async (lessonStatus, unitStatus) => {
+        const db = remapDb({ lessonStatus, unitStatus });
+        await expect(
+          outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft']),
+        ).rejects.toMatchObject({ code: 'LESSON_LOCKED', statusCode: 409 });
+        expect(db.lessonOutcome.createMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses a designer who did not write the lesson', async () => {
+      const db = remapDb({ designerId: otherDesigner.id });
+      await expect(
+        outcomeService(db).setLessonOutcomes(designer, 'lesson-1', ['clo-draft']),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
+    });
+
+    it('lets the teacher approve the set once the new CLO is linked to an approved lesson', async () => {
+      const remap = remapDb();
+      await outcomeService(remap).setLessonOutcomes(designer, 'lesson-1', ['clo-draft']);
+      const teacher = { id: 'teacher-1', role: 'TEACHER' } as AuthenticatedUser;
+      const update = jest.fn().mockResolvedValue({ id: 'set-draft' });
+      const db = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        class: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([
+              { teacherId: teacher.id, pendingTeacherId: null, pendingTeacherFrom: null },
+            ]),
+        },
+        outcomeSet: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'set-draft',
+            programId: 'program-1',
+            status: 'DRAFT',
+            outcomes: [
+              {
+                sourceStatus: 'VERIFIED',
+                verifiedById: teacher.id,
+                lessonLinks: (
+                  remap.lessonOutcome.createMany.mock.calls[0] as [
+                    { data: Array<{ lessonId: string }> },
+                  ]
+                )[0].data,
+              },
+            ],
+          }),
+          update,
+        },
+      };
+      await outcomeService(db).technicalApprove(teacher, 'set-draft');
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'set-draft' },
+        data: expect.objectContaining({ status: 'TECHNICALLY_APPROVED' }) as unknown,
+      });
+      const [lock] = db.$queryRaw.mock.calls[0] as [TemplateStringsArray];
+      expect(lock.join('?')).toContain('FROM outcome_sets');
     });
   });
 });

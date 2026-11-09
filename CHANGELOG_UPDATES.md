@@ -40,6 +40,21 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - `pnpm seed` tạo dòng này (thông tin demo ở chế độ demo) và mỗi lần chạy ghi các biến `CENTER_NAME`, `CENTER_ADDRESS`, `CENTER_PHONE`, `CENTER_EMAIL`, `CENTER_OPENING_HOURS` có giá trị vào đó; `pnpm seed:dashboard` cũng vậy.
 - Ứng dụng phụ huynh dùng cho bill, biên lai và nút "Gọi trung tâm" ở màn học phí, đổi số không cần build lại app.
 
+### 1.5. Gắn CLO vào bài của giáo trình đang áp dụng (`PATCH /api/v1/academic/lessons/:id/outcomes`, 09/11)
+- Trước đây chỉ bài nháp gắn được CLO, nên CLO thêm sau khi Quản lý áp dụng giáo trình không bao giờ có bài và bộ CLO không duyệt chuyên môn được.
+- Bài của giáo trình `APPROVED` (kể cả bài kiểm tra tháng còn nháp) giờ thêm hoặc bỏ được CLO của **bộ `DRAFT`**. Liên kết tới bộ `TECHNICALLY_APPROVED` hoặc `APPROVED` được giữ nguyên kể cả khi request không gửi; thêm CLO của bộ đó trả 409 `OUTCOME_SET_LOCKED` với `details.outcomeIds`.
+- Bài nháp của giáo trình nháp hoặc chờ thẩm định: không đổi. Bài của giáo trình `ARCHIVED`, hoặc bài đã duyệt không thuộc giáo trình đang áp dụng: 409 `LESSON_LOCKED`.
+- Response vẫn là `{ lessonId, outcomeIds }`; `outcomeIds` là các liên kết sau khi ghi, gồm cả liên kết được giữ. Ghi theo phần chênh lệch, khóa dòng bài rồi mọi bộ CLO có liên kết thêm hoặc bớt (kể cả khi bài còn nháp); `technical-approve` khóa dòng bộ trước khi đọc liên kết, nên không duyệt bộ dựa trên liên kết đang bị gỡ.
+- Nhập `REPLACE` gỡ mọi liên kết mục tiêu của các bài bị thay; cần gắn lại.
+- Web: mở hộp "Gắn CLO" cho giáo trình đang áp dụng, khóa ô của bộ đã duyệt, sửa chữ của `LESSON_LOCKED` và `OUTCOME_SET_LOCKED`; câu xác nhận `REPLACE` báo liên kết mục tiêu bị gỡ. Mobile không gọi route này.
+
+### 1.6. CSV chịu được Excel, lỗi kèm số dòng (nhập giáo trình và câu hỏi bài tập, 09/11)
+- Bộ đọc dùng chung `src/common/csv/read-csv.ts` thay hai bộ tách ô riêng của `curriculum-csv.ts` và `assignment-import-parser.ts`.
+- Nhận dấu `;` (lấy từ dòng tiêu đề), ô `csvVersion` trống (coi là `1`), dòng chỉ có `csvVersion`, cột trống thừa ở cuối; file `;` nhận `maxScore` dạng `0,5`.
+- `rowNumber` là số dòng Excel (tiêu đề là dòng 1, ô xuống dòng không tăng số dòng). Trong preview giáo trình, dòng nằm sau một ô có xuống dòng giờ có số nhỏ hơn trước.
+- Mã lỗi giữ nguyên (`CSV_INVALID`, `ASSIGNMENT_IMPORT_INVALID_CSV`, `ASSIGNMENT_IMPORT_INVALID_QUESTIONS`), thêm `details: { code, rows: [{ code, rowNumber }], rowErrorCount }` (tối đa 20 dòng). File không phải UTF-8 có `details.code: 'CSV_NOT_UTF8'`. Câu hỏi bài tập sai báo "Dòng R (câu N): …" cho mọi câu sai; nhập DOCX/PDF bằng AI không đổi.
+- Web chưa phải sửa; màn nhập CSV sẽ đọc `details` ở W4. Mobile không dùng.
+
 ---
 
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
@@ -56,6 +71,7 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 | **8** | **Giáo trình của môn sắp học trả rỗng cho phụ huynh** (03/11) | `src/modules/curriculum-scheduling/curriculum-scheduling.service.ts` | `studentCurriculum` chỉ lấy ghi danh đang trong kỳ. | Lấy cả ghi danh `ACTIVE` chưa bắt đầu; lớp của kỳ sắp học là lần xếp lớp có hiệu lực lúc kỳ bắt đầu. |
 | **9** | **Ghi danh của con không có tên phòng** (03/11) | `src/modules/registration-flow/registration-flow.service.ts` | Chỉ trả `class.roomId`, ứng dụng phải gọi thêm `GET /rooms`. | `GET /me/students/:id/enrollments` (và route của nhân viên) trả thêm `class.room { id, name } | null`, cả trong `placements`. |
 | **10** | **Realtime của ứng dụng di động bị `ORIGIN_NOT_ALLOWED`** (03/11) | `src/modules/notifications/notifications.gateway.ts` | WebSocket của React Native gửi `Origin` là địa chỉ của chính API, không có trong `CORS_ORIGINS`. | Gateway cho qua `Origin` trùng host của request; web vẫn phải có trong `CORS_ORIGINS`. |
+| **11** | **Xóa bài đã gắn CLO trả 400 `INVALID_REFERENCE`** (09/11) | `src/modules/curriculum-scheduling/curriculum-scheduling.service.ts` | Khóa ngoại `lesson_outcomes` → `lessons` là `Restrict`; xóa bài, xóa giáo trình nháp và nhập CSV `REPLACE` không xóa liên kết CLO trước. | Xóa liên kết CLO của các bài sắp xóa trong cùng transaction, trước khi xóa bài. Không đổi khóa ngoại, không có migration. |
 
 ---
 

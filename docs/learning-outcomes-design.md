@@ -186,13 +186,22 @@ Các route mới dự kiến (chưa tồn tại):
 | `POST /programs/:id/outcome-sets` | Designer tạo draft |
 | `POST /outcome-sets/:id/technical-review` | Teacher được chỉ định nhận xét/xác nhận |
 | `POST /outcome-sets/:id/approve` | Manager duyệt sau chuyên môn |
-| `PUT /lessons/:id/outcomes` | Designer mapping trong draft |
+| `PATCH /academic/lessons/:id/outcomes` (đã có) | Designer soạn bài gắn CLO; luật ở đoạn "Gắn CLO vào bài" bên dưới |
 | `PUT /academic/assignments/:id/blueprint` | Teacher phụ trách lớp cập nhật draft |
 | `GET /academic/assignments/:id/learning-targets` | Người nhận bài qua PARENT/teacher; chỉ trả tiêu chí công khai |
 | `GET /students/:id/outcome-attainment` | Parent đúng con hoặc nhân sự có phạm vi; bắt buộc courseOfferingId |
 | `GET /classes/:id/outcome-coverage` | Teacher/manager có quyền xem lớp |
 
 Thông báo validation dự kiến: `OUTCOME_SET_NOT_APPROVED`, `OUTCOME_SCOPE_MISMATCH`, `REQUIRED_OUTCOME_UNCOVERED`, `CRITERION_SCORE_MISMATCH`, `PUBLIC_RUBRIC_REQUIRED`. Thiếu minh chứng là trạng thái học tập, không phải lỗi HTTP khi xem báo cáo.
+
+**Gắn CLO vào bài (`PATCH /academic/lessons/:id/outcomes`, cập nhật 09/11/2026).** Body `{ outcomeIds }` là danh sách CLO muốn bài có; chỉ người soạn bài được gọi.
+
+- Bài nháp của giáo trình `DRAFT` hoặc `PENDING_REVIEW` (và bài nháp không thuộc giáo trình): gắn hoặc bỏ CLO của mọi bộ cùng khóa, kể cả bộ đã duyệt. Giáo trình kỳ mới dùng đường này để gắn lại vào bộ đang dùng.
+- Bài của giáo trình đang áp dụng (`APPROVED`, gồm cả bài kiểm tra tháng còn `DRAFT`): chỉ thêm hoặc bỏ CLO của **bộ `DRAFT`**. Nhờ vậy CLO thêm sau khi giáo trình đã áp dụng vẫn gắn được bài và bộ CLO duyệt được. Liên kết tới CLO của bộ `TECHNICALLY_APPROVED` hoặc `APPROVED` luôn được giữ, kể cả khi request không gửi (Thiết kế GT chỉ thấy bộ của mình). Thêm một CLO của bộ đó trả 409 `OUTCOME_SET_LOCKED`, `details.outcomeIds` là các CLO bị chặn. Bộ bị Quản lý trả về nháp (`request-changes`) thì sửa lại được.
+- Bài thuộc giáo trình `ARCHIVED`, hoặc bài `APPROVED` không thuộc giáo trình đang áp dụng: 409 `LESSON_LOCKED`.
+- Response `{ lessonId, outcomeIds }`: `outcomeIds` là các liên kết sau khi ghi, gồm cả liên kết được giữ. Đổi thứ tự `outcomeIds` không tính là thay đổi.
+- Request khoá dòng bài, rồi khoá theo thứ tự id mọi bộ CLO có liên kết thêm hoặc bớt, kể cả khi bài còn nháp. `technical-approve` khoá dòng bộ trước khi đọc liên kết, nên giáo viên không duyệt bộ dựa trên liên kết đang bị gỡ.
+- Xóa bài nháp, xóa giáo trình nháp và nhập CSV kiểu `REPLACE` xóa luôn liên kết CLO của các bài bị xóa trong cùng transaction (trước đây trả 400 `INVALID_REFERENCE` vì khóa ngoại). Nhập `REPLACE` gỡ mọi liên kết mục tiêu của các bài bị thay và không chép sang bài mới theo `sequence` (nội dung mới có thể khác hẳn); cần gắn lại.
 
 ## 10. Phạm vi triển khai và nghiệm thu
 
