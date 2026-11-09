@@ -5,8 +5,103 @@ import {
 } from '../../src/modules/academic/assignment-import-parser';
 
 const header = 'kind,prompt,choices,correctAnswer,rubric,maxScore\r\n';
+const versionedHeader = 'kind,prompt,choices,correctAnswer,rubric,maxScore,csvVersion\r\n';
 
 describe('assignment question CSV import', () => {
+  it('decodes version 1 exported text and escaped choices with a literal expected result', () => {
+    const result = parseAssignmentCsv(
+      Buffer.from(
+        '\uFEFF' +
+          versionedHeader +
+          String.raw`MULTIPLE_CHOICE,"'  =Tính, ""tổng""","'@A\|B|C\\D|E\q|''dẫn",'@A|B,,2.5,1` +
+          "\r\nESSAY,\"''Một câu\r\nnhiều dòng\",,,'  +Nêu lập luận,0.5,1\r\n",
+      ),
+    );
+    expect(result.questions).toEqual([
+      {
+        kind: 'MULTIPLE_CHOICE',
+        prompt: '=Tính, "tổng"',
+        choices: ['@A|B', 'C\\D', 'E\\q', "''dẫn"],
+        correctAnswer: '@A|B',
+        maxScore: 2.5,
+      },
+      {
+        kind: 'ESSAY',
+        prompt: "'Một câu\r\nnhiều dòng",
+        rubric: '+Nêu lập luận',
+        maxScore: 0.5,
+      },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each([
+    ["''dẫn", "'dẫn"],
+    ["'''dẫn", "''dẫn"],
+    ["'  \t\uFEFF-x", '-x'],
+    ["'@x", '@x'],
+    ["'ordinary", "'ordinary"],
+    ["'", "'"],
+    ["  '=x", "'=x"],
+    ['=x', '=x'],
+  ])('only removes an exported initial apostrophe from versioned text %s', (cell, expected) => {
+    const result = parseAssignmentCsv(Buffer.from(`${versionedHeader}ESSAY,${cell},,,rubric,1,1`));
+    expect(result.questions[0].prompt).toBe(expected);
+  });
+
+  it('retains literal apostrophes and pipe splitting in legacy files', () => {
+    const result = parseAssignmentCsv(
+      Buffer.from(header + String.raw`MULTIPLE_CHOICE,'=x,A\|B\\C,A\,,1`),
+    );
+    expect(result.questions[0]).toMatchObject({
+      prompt: "'=x",
+      choices: ['A\\', 'B\\\\C'],
+      correctAnswer: 'A\\',
+    });
+  });
+
+  it.each(['', '2', '01', "'1", '1.0'])(
+    'rejects unsupported or empty row version %s',
+    (version) => {
+      expect(() =>
+        parseAssignmentCsv(Buffer.from(`${versionedHeader}ESSAY,text,,,rubric,1,${version}`)),
+      ).toThrow(AppError);
+    },
+  );
+
+  it('requires csvVersion to be the final column and every versioned row to be marked', () => {
+    expect(() =>
+      parseAssignmentCsv(
+        Buffer.from(
+          'csvVersion,kind,prompt,choices,correctAnswer,rubric,maxScore\n1,ESSAY,text,,,rubric,1',
+        ),
+      ),
+    ).toThrow(AppError);
+    expect(() =>
+      parseAssignmentCsv(
+        Buffer.from(`${versionedHeader}ESSAY,text,,,rubric,1,1\nESSAY,second,,,rubric,1,`),
+      ),
+    ).toThrow(AppError);
+  });
+
+  it('keeps the exact byte and question count bounds for versioned CSV', () => {
+    const source = versionedHeader + 'ESSAY,text,,,rubric,1,1\r\n';
+    const limit = 5 * 1024 * 1024;
+    const bytes = Buffer.concat([
+      Buffer.from(source),
+      Buffer.alloc(limit - Buffer.byteLength(source), ' '),
+    ]);
+    expect(parseAssignmentCsv(bytes).questions).toHaveLength(1);
+    expect(() => parseAssignmentCsv(Buffer.concat([bytes, Buffer.from(' ')]))).toThrow('5 MB');
+    expect(
+      parseAssignmentCsv(Buffer.from(versionedHeader + 'ESSAY,text,,,rubric,1,1\n'.repeat(100)))
+        .questions,
+    ).toHaveLength(100);
+    expect(() =>
+      parseAssignmentCsv(Buffer.from(versionedHeader + 'ESSAY,text,,,rubric,1,1\n'.repeat(101))),
+    ).toThrow('100');
+  });
+
   it('preserves Vietnamese, BOM, quoted commas, multiline prompts and escaped quotes', () => {
     const result = parseAssignmentCsv(
       Buffer.from(

@@ -1,3 +1,5 @@
+import { decodeExportedCsvCell } from '../../common/csv/exported-cell';
+
 export type CsvRow = {
   rowNumber: number;
   kind: string;
@@ -61,14 +63,25 @@ export function parseCurriculumCsv(buffer: Buffer): CsvRow[] {
   if (!records.length) throw new Error('CSV_EMPTY');
   const header = records.shift()!.cells.map((value) => value.trim());
   const required = ['kind', 'sequence', 'title', 'content', 'monthKey'];
-  if (new Set(header).size !== header.length || !required.every((name) => header.includes(name)))
+  const versioned = header.includes('csvVersion');
+  if (
+    new Set(header).size !== header.length ||
+    !required.every((name) => header.includes(name)) ||
+    (versioned &&
+      (header.length !== required.length + 1 || header[header.length - 1] !== 'csvVersion'))
+  )
     throw new Error('CSV_INVALID_HEADER');
   const rows = records.filter((record) => record.cells.some((value) => value.trim()));
   if (rows.length > 1000) throw new Error('CSV_TOO_MANY_ROWS');
   if (rows.some((record) => record.cells.length !== header.length))
     throw new Error('CSV_INVALID_COLUMNS');
   return rows.map((record) => {
-    const get = (name: string): string => record.cells[header.indexOf(name)]?.trim() ?? '';
+    if (versioned && record.cells[header.length - 1].trim() !== '1')
+      throw new Error('CSV_UNSUPPORTED_VERSION');
+    const get = (name: string): string => {
+      const value = record.cells[header.indexOf(name)] ?? '';
+      return (versioned ? decodeExportedCsvCell(value) : value).trim();
+    };
     const sequence = get('sequence');
     return {
       rowNumber: record.rowNumber,

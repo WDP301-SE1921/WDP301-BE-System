@@ -1,6 +1,7 @@
 import { HttpStatus } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
+import { decodeExportedCsvCell, splitExportedCsvChoices } from '../../common/csv/exported-cell';
 import { AppError } from '../../common/errors/app.error';
 import { isRecord } from '../../integrations/academic-ai.service';
 import { QuestionDto } from './academic.dto';
@@ -70,9 +71,11 @@ export function parseAssignmentCsv(buffer: Buffer): ImportedQuestions {
   if (cell || cells.length || closed) finishRow();
   const header = rows.shift()?.map((value) => value.trim());
   const required = ['kind', 'prompt', 'choices', 'correctAnswer', 'rubric', 'maxScore'];
+  const versioned = header?.includes('csvVersion') ?? false;
   if (
     !header ||
-    header.length !== required.length ||
+    header.length !== required.length + (versioned ? 1 : 0) ||
+    (versioned && header[header.length - 1] !== 'csvVersion') ||
     new Set(header).size !== header.length ||
     !required.every((column) => header.includes(column))
   )
@@ -80,16 +83,22 @@ export function parseAssignmentCsv(buffer: Buffer): ImportedQuestions {
   if (rows.some((row) => row.length !== header.length))
     invalidCsv('Số cột của các dòng CSV phải khớp với dòng tiêu đề.');
   const questions = rows.map((row) => {
-    const get = (name: string): string => row[header.indexOf(name)].trim();
+    if (versioned && row[header.length - 1].trim() !== '1')
+      invalidCsv('Phiên bản CSV không được hỗ trợ; csvVersion phải là 1 trên mọi dòng.');
+    const get = (name: string): string => {
+      const value = row[header.indexOf(name)];
+      return (versioned ? decodeExportedCsvCell(value) : value).trim();
+    };
+    const choices = get('choices');
     const score = get('maxScore');
     return {
       kind: get('kind'),
       prompt: get('prompt'),
-      ...(get('choices')
+      ...(choices
         ? {
-            choices: get('choices')
-              .split('|')
-              .map((choice) => choice.trim()),
+            choices: (versioned ? splitExportedCsvChoices(choices) : choices.split('|')).map(
+              (choice) => choice.trim(),
+            ),
           }
         : {}),
       ...(get('correctAnswer') ? { correctAnswer: get('correctAnswer') } : {}),
