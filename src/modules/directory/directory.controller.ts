@@ -70,7 +70,7 @@ export class DirectoryController {
   }
 
   @Post('teachers')
-  @ApiOperation({ summary: 'Deprecated: use teacher invitations and review (returns 410)' })
+  @ApiOperation({ summary: 'Manager: create an active teacher account with an initial password' })
   createTeacher(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: CreateStaffAccountDto,
@@ -191,6 +191,7 @@ export class DirectoryController {
   }
 
   @Post('teacher-invitations')
+  @ApiOperation({ summary: 'Retired: teacher invitations are disabled (returns 410)' })
   inviteTeacher(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: CreateAccountInvitationDto,
@@ -199,6 +200,7 @@ export class DirectoryController {
   }
 
   @Get('teacher-invitations')
+  @ApiOperation({ summary: 'Manager: read historical teacher invitations' })
   teacherInvitations(
     @CurrentUser() user: AuthenticatedUser,
     @Query() page: InvitationQueryDto,

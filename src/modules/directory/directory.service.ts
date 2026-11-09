@@ -90,12 +90,6 @@ export class DirectoryService {
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     this.assert(
-      role !== 'TEACHER',
-      'TEACHER_INVITATION_REQUIRED',
-      'Create a teacher through the invitation and review workflow',
-      HttpStatus.GONE,
-    );
-    this.assert(
       Buffer.byteLength(input.password, 'utf8') <= BCRYPT_MAX_BYTES,
       'VALIDATION_ERROR',
       'Password must be at most 72 UTF-8 bytes',
@@ -111,7 +105,7 @@ export class DirectoryService {
             displayName: input.displayName,
             role,
             status: 'ACTIVE',
-            // Accounts issued by the manager are trusted; there is no email-verification step for staff.
+            // Manager-issued accounts can sign in immediately with their initial password.
             emailVerifiedAt: new Date(),
           },
           select: accountSelect,
@@ -461,6 +455,7 @@ export class DirectoryService {
     input: CreateAccountInvitationDto,
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
+    this.requireEnabledInvitationRole(role);
     const existing = await this.db.user.findUnique({ where: { email: input.email } });
     if (existing) {
       const latest = await this.db.accountInvitation.findFirst({
@@ -547,8 +542,11 @@ export class DirectoryService {
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     return this.db.$transaction(async (tx) => {
+      const existing = await tx.accountInvitation.findUnique({ where: { id }, select: { role: true } });
+      this.assert(existing, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
+      this.requireEnabledInvitationRole(existing.role);
       const claimed = await tx.accountInvitation.updateMany({
-        where: { id, status: 'INVITED' },
+        where: { id, role: 'MANAGER', status: 'INVITED' },
         data: { tokenHash, expiresAt: new Date(Date.now() + 48 * 3600000) },
       });
       this.assert(
@@ -599,6 +597,7 @@ export class DirectoryService {
     );
     const tokenHash = createHash('sha256').update(input.token).digest('hex');
     const invitation = await this.db.accountInvitation.findUnique({ where: { tokenHash } });
+    if (invitation) this.requireEnabledInvitationRole(invitation.role);
     this.assert(
       invitation && invitation.status === 'INVITED' && invitation.expiresAt > new Date(),
       'INVITATION_INVALID',
@@ -662,6 +661,7 @@ export class DirectoryService {
     const invitation = await this.db.accountInvitation.findUnique({ where: { id } });
     this.assert(invitation, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
     this.requireRoles(user, 'MANAGER');
+    this.requireEnabledInvitationRole(invitation.role);
     this.assert(
       invitation.status === 'ACCEPTED' && invitation.acceptedUserId,
       'INVITATION_NOT_ACCEPTED',
@@ -721,6 +721,15 @@ export class DirectoryService {
       where: { id },
       omit: { tokenHash: true },
     });
+  }
+
+  private requireEnabledInvitationRole(role: UserRole): void {
+    this.assert(
+      role !== 'TEACHER',
+      'TEACHER_INVITATION_DISABLED',
+      'Teacher invitations are disabled; a manager must create the teacher account directly',
+      HttpStatus.GONE,
+    );
   }
 
   private accountWhere(role: UserRole, query: ListAccountsDto): Prisma.UserWhereInput {

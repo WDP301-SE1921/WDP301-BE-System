@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import type { UserRole } from '@prisma/client';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { Server } from 'node:http';
 import * as bcrypt from 'bcrypt';
 import * as mysql from 'mysql2/promise';
@@ -14,6 +15,7 @@ import { ResponseInterceptor } from '../../src/common/interceptors/response.inte
 import { validateEnvironment } from '../../src/config/configuration';
 import { DatabaseService } from '../../src/database/orm/database.service';
 import { AuthService } from '../../src/modules/auth/auth.service';
+import { EmailDeliveriesService } from '../../src/modules/academic/email-deliveries.service';
 import type { ParentSuggestionDto } from '../../src/modules/registration-flow/dto/registration-flow.dto';
 
 interface Envelope<T> {
@@ -931,9 +933,10 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         .expect(200);
     });
 
-    it('creates, lists, renames and disables staff and designers without exposing secrets', async () => {
+    it('creates, lists, renames and disables managed accounts without exposing secrets', async () => {
       for (const [role, path] of [
         ['STAFF', 'staff'],
+        ['TEACHER', 'teachers'],
         ['CURRICULUM_DESIGNER', 'curriculum-designers'],
       ] as const) {
         const email = `new${path}@example.com`;
@@ -954,6 +957,15 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
         const stored = await db.user.findUniqueOrThrow({ where: { id: account.id } });
         expect(await bcrypt.compare('InitialPass123!', stored.passwordHash ?? '')).toBe(true);
         expect(stored.emailVerifiedAt).not.toBeNull();
+        if (role === 'TEACHER') {
+          const login = await app!.get(AuthService).login(email, 'InitialPass123!');
+          expect(login.user).toMatchObject({ id: account.id, role: 'TEACHER' });
+          const audit = await db.auditLog.findFirstOrThrow({
+            where: { entityId: account.id, action: 'TEACHER_ACCOUNT_CREATE' },
+          });
+          expect(audit.afterData).toEqual({ email, role: 'TEACHER' });
+          expect(JSON.stringify(audit)).not.toMatch(/passwordHash|InitialPass123/);
+        }
         const list = await call('MANAGER', 'get', path)
           .query({ status: 'ACTIVE', search: 'new' })
           .expect(200);
@@ -979,13 +991,6 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
           (disabled.body as Envelope<{ items: Account[] }>).data.items.map((row) => row.id),
         ).toContain(account.id);
       }
-      await call('MANAGER', 'post', 'teachers')
-        .send({
-          email: 'direct.teacher@example.com',
-          password: 'InitialPass123!',
-          displayName: 'Direct',
-        })
-        .expect(410);
       // Other roles' accounts are invisible through these endpoints.
       const managerId = (await db.user.findFirstOrThrow({ where: { role: 'MANAGER' } })).id;
       await call('MANAGER', 'get', `staff/${managerId}`).expect(404);
@@ -1005,6 +1010,9 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       await call('STAFF', 'delete', 'parents/any').expect(403);
       for (const role of ['TEACHER', 'CURRICULUM_DESIGNER', 'PARENT'] as UserRole[]) {
         await call(role, 'get', 'teachers').expect(403);
+        await call(role, 'post', 'teachers')
+          .send({ email: 'denied.teacher@example.com', password, displayName: 'Denied' })
+          .expect(403);
         await call(role, 'post', 'staff')
           .send({ email: 'y@example.com', password: 'InitialPass123!', displayName: 'Y' })
           .expect(403);
@@ -1016,6 +1024,112 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       await call('MANAGER', 'post', 'staff')
         .send({ email: 'bad', password: 'short', displayName: '' })
         .expect(400);
+    });
+
+    it('keeps public registration parent-only and validates manager-issued teacher input', async () => {
+      await request(httpServer)
+        .post('/api/v1/auth/register')
+        .send({ email: 'self.teacher@example.com', password, role: 'TEACHER' })
+        .expect(400);
+      expect(await db.user.findUnique({ where: { email: 'self.teacher@example.com' } })).toBeNull();
+      for (const invalid of [
+        { email: 'bad', password, displayName: 'Name' },
+        { email: 'invalid.teacher@example.com', password: 'short', displayName: 'Name' },
+        { email: 'invalid.teacher@example.com', password: 'ắ'.repeat(25), displayName: 'Name' },
+        { email: 'invalid.teacher@example.com', password, displayName: ' ' },
+      ]) {
+        await call('MANAGER', 'post', 'teachers').send(invalid).expect(400);
+      }
+    });
+
+    it('retires teacher invitations and queued mail while preserving history and disabled accounts', async () => {
+      const denied = await call('MANAGER', 'post', 'teacher-invitations')
+        .send({ email: 'retired.teacher@example.com' })
+        .expect(410);
+      expect(denied.body).toMatchObject({ error: { code: 'TEACHER_INVITATION_DISABLED' } });
+      const manager = await db.user.findFirstOrThrow({ where: { role: 'MANAGER' } });
+      const oldToken = 'historical-teacher-token';
+      const invitation = await db.accountInvitation.create({
+        data: {
+          email: 'retired.teacher@example.com',
+          role: 'TEACHER',
+          invitedById: manager.id,
+          tokenHash: createHash('sha256').update(oldToken).digest('hex'),
+          expiresAt: new Date(Date.now() + 3600000),
+        },
+      });
+      for (const action of ['resend', 'accept']) {
+        const rejected =
+          action === 'accept'
+            ? await request(httpServer)
+                .post('/api/v1/account-invitations/accept')
+                .send({ token: oldToken, password, displayName: 'Retired Teacher' })
+                .expect(410)
+            : await call('MANAGER', 'post', `account-invitations/${invitation.id}/resend`).expect(
+                410,
+              );
+        expect(rejected.body).toMatchObject({ error: { code: 'TEACHER_INVITATION_DISABLED' } });
+      }
+      expect(await db.user.findUnique({ where: { email: invitation.email } })).toBeNull();
+      const queued = await db.outboxEvent.create({
+        data: {
+          eventType: 'ACCOUNT_INVITATION',
+          aggregateType: 'AccountInvitation',
+          aggregateId: invitation.id,
+          recipient: invitation.email,
+          subject: 'Historical teacher invitation',
+          dedupeKey: `old:${invitation.id}`,
+          payload: { tokenHash: invitation.tokenHash, text: 'Old invitation' },
+        },
+      });
+      await expect(
+        app!
+          .get(EmailDeliveriesService)
+          .retry({ ...manager, hasAvatar: false, sessionId: 'fixture-session' }, queued.id),
+      ).rejects.toMatchObject({ code: 'TEACHER_INVITATION_DISABLED' });
+      expect(await db.outboxEvent.findUniqueOrThrow({ where: { id: queued.id } })).toMatchObject({
+        status: 'FAILED',
+        attemptCount: 0,
+        lastError: 'TEACHER_INVITATION_DISABLED',
+      });
+      const historical = await call('MANAGER', 'get', 'teacher-invitations').expect(200);
+      expect(
+        (historical.body as Envelope<{ items: WithId[] }>).data.items.map((row) => row.id),
+      ).toContain(invitation.id);
+      expect(JSON.stringify(historical.body)).not.toContain('tokenHash');
+      await call('MANAGER', 'post', `account-invitations/${invitation.id}/revoke`).expect(201);
+      const disabled = await db.user.create({
+        data: { email: 'accepted.teacher@example.com', role: 'TEACHER', status: 'DISABLED' },
+      });
+      const accepted = await db.accountInvitation.create({
+        data: {
+          email: disabled.email,
+          role: 'TEACHER',
+          invitedById: manager.id,
+          acceptedUserId: disabled.id,
+          status: 'ACCEPTED',
+          tokenHash: createHash('sha256').update('accepted-teacher-token').digest('hex'),
+          expiresAt: new Date(Date.now() + 3600000),
+        },
+      });
+      for (const decision of ['APPROVE', 'REJECT']) {
+        const rejected = await call('MANAGER', 'post', `account-invitations/${accepted.id}/review`)
+          .send({ decision })
+          .expect(410);
+        expect(rejected.body).toMatchObject({ error: { code: 'TEACHER_INVITATION_DISABLED' } });
+      }
+      await call('MANAGER', 'post', 'teachers')
+        .send({ email: disabled.email, password, displayName: 'Duplicate disabled teacher' })
+        .expect(409);
+      expect(await db.user.findUniqueOrThrow({ where: { id: disabled.id } })).toMatchObject({
+        status: 'DISABLED',
+      });
+      await call('MANAGER', 'patch', `teachers/${disabled.id}`)
+        .send({ status: 'ACTIVE' })
+        .expect(200);
+      expect(await db.user.findUniqueOrThrow({ where: { id: disabled.id } })).toMatchObject({
+        status: 'ACTIVE',
+      });
     });
 
     it('lets the manager manage parents but never their email or password', async () => {

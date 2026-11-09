@@ -104,8 +104,30 @@ export class EmailDeliveriesService implements OnModuleInit, OnModuleDestroy {
       const payload = event.payload as { tokenHash?: string };
       const invitation = await this.db.accountInvitation.findUnique({
         where: { id: event.aggregateId },
-        select: { tokenHash: true, status: true, expiresAt: true },
+        select: { role: true, tokenHash: true, status: true, expiresAt: true },
       });
+      if (invitation?.role === 'TEACHER') {
+        await this.db.outboxEvent.updateMany({
+          where: {
+            id,
+            OR: [
+              { status: { in: ['PENDING', 'FAILED'] } },
+              { status: 'PROCESSING', leaseExpiresAt: { lte: new Date() } },
+            ],
+          },
+          data: {
+            status: 'FAILED',
+            lastError: 'TEACHER_INVITATION_DISABLED',
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+        });
+        throw new AppError(
+          'TEACHER_INVITATION_DISABLED',
+          'Teacher invitations are disabled',
+          HttpStatus.GONE,
+        );
+      }
       if (
         !invitation ||
         invitation.status !== 'INVITED' ||
