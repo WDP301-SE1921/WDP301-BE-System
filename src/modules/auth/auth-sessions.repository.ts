@@ -32,7 +32,7 @@ export class AuthSessionsRepository {
         id: sessionId,
         revokedAt: null,
         expiresAt: { gt: now },
-        user: { status: UserStatus.ACTIVE },
+        user: { status: UserStatus.ACTIVE, deletedAt: null },
       },
       include: { user: true },
     });

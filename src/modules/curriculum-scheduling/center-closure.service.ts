@@ -1,5 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { roleAllowed } from '../../common/auth/role-access';
 import { AppError } from '../../common/errors/app.error';
 import { pageResult } from '../../common/pagination';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
@@ -253,7 +254,7 @@ export class CenterClosureService {
 
   private requireRole(user: AuthenticatedUser, ...roles: AuthenticatedUser['role'][]): void {
     this.assert(
-      roles.includes(user.role),
+      roleAllowed(user.role, roles),
       'FORBIDDEN',
       'Role is not allowed',
       HttpStatus.FORBIDDEN,

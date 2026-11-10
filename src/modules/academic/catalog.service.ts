@@ -2,7 +2,15 @@ import { NotificationEventsService } from '../notifications/notification-events.
 import { Injectable } from '@nestjs/common';
 import { pageResult } from '../../common/pagination';
 import { dateTimeRange } from '../../common/list-query';
-import { AcademicProgramQueryDto, AcademicClassQueryDto, LessonQueryDto, AcademicSessionQueryDto, FeedbackQueryDto, EnrollmentQueryDto, RosterQueryDto } from './academic-list.dto';
+import {
+  AcademicProgramQueryDto,
+  AcademicClassQueryDto,
+  LessonQueryDto,
+  AcademicSessionQueryDto,
+  FeedbackQueryDto,
+  EnrollmentQueryDto,
+  RosterQueryDto,
+} from './academic-list.dto';
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
@@ -22,6 +30,7 @@ import {
   ResolveFeedbackDto,
   SessionDto,
 } from './academic.dto';
+import { isBackOffice, isManagerOrAdmin } from '../../common/auth/role-access';
 
 @Injectable()
 export class CatalogService {
@@ -39,24 +48,29 @@ export class CatalogService {
   async programs(user: AuthenticatedUser, page: AcademicProgramQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER');
     const where: Prisma.ProgramWhereInput = {
+      deletedAt: null,
       ...(page.search ? { name: { contains: page.search } } : {}),
       ...(page.subjectId ? { subjectId: page.subjectId } : {}),
       ...(page.subject ? { subject: page.subject } : {}),
       ...(page.grade ? { grade: page.grade } : {}),
       ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
     };
-    return pageResult(page, this.repo.db.program.findMany({
-      where,
-      skip: (page.page - 1) * page.limit,
-      take: page.limit,
-      orderBy: { id: 'asc' },
-    }), () => this.repo.db.program.count({ where }));
+    return pageResult(
+      page,
+      this.repo.db.program.findMany({
+        where,
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+        orderBy: { id: 'asc' },
+      }),
+      () => this.repo.db.program.count({ where }),
+    );
   }
 
   async createClass(user: AuthenticatedUser, input: ClassDto): Promise<unknown> {
     roles(user, 'MANAGER');
     const teacher = await this.repo.db.user.findFirst({
-      where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE' },
+      where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
     });
     assertRule(teacher, 'INVALID_TEACHER', 'An active teacher is required');
     return this.repo.db.class.create({ data: { ...input, isOpen: false } });
@@ -64,30 +78,41 @@ export class CatalogService {
 
   async classes(user: AuthenticatedUser, page: AcademicClassQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER');
-    const where: Prisma.ClassWhereInput = { AND: [
-      user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {},
-      {
-        ...(page.search ? { name: { contains: page.search } } : {}),
-        ...(page.programId ? { programId: page.programId } : {}),
-        ...(page.teacherId ? assignedTeacherWhere(page.teacherId, new Date()) : {}),
-        ...(page.roomId ? { roomId: page.roomId } : {}),
-        ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
-        ...(page.isOpen === undefined ? {} : { isOpen: page.isOpen }),
-        program: { ...(page.grade ? { grade: page.grade } : {}), ...(page.subject ? { subject: page.subject } : {}), ...(page.subjectId ? { subjectId: page.subjectId } : {}) },
-      },
-    ] };
-    return pageResult(page, this.repo.db.class.findMany({
-      where,
-      skip: (page.page - 1) * page.limit,
-      take: page.limit,
-      orderBy: { id: 'asc' },
-    }), () => this.repo.db.class.count({ where }));
+    const where: Prisma.ClassWhereInput = {
+      deletedAt: null,
+      AND: [
+        user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {},
+        {
+          ...(page.search ? { name: { contains: page.search } } : {}),
+          ...(page.programId ? { programId: page.programId } : {}),
+          ...(page.teacherId ? assignedTeacherWhere(page.teacherId, new Date()) : {}),
+          ...(page.roomId ? { roomId: page.roomId } : {}),
+          ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
+          ...(page.isOpen === undefined ? {} : { isOpen: page.isOpen }),
+          program: {
+            ...(page.grade ? { grade: page.grade } : {}),
+            ...(page.subject ? { subject: page.subject } : {}),
+            ...(page.subjectId ? { subjectId: page.subjectId } : {}),
+          },
+        },
+      ],
+    };
+    return pageResult(
+      page,
+      this.repo.db.class.findMany({
+        where,
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+        orderBy: { id: 'asc' },
+      }),
+      () => this.repo.db.class.count({ where }),
+    );
   }
 
   async createLesson(user: AuthenticatedUser, input: LessonDto): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     assertRule(
-      user.role === 'MANAGER' || input.designerId === user.id,
+      isManagerOrAdmin(user.role) || input.designerId === user.id,
       'FORBIDDEN',
       'Cannot assign another designer',
     );
@@ -118,31 +143,37 @@ export class CatalogService {
     roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
     // Curriculum designers share every draft (Q6), so they list every lesson like the manager.
     const where: Prisma.LessonWhereInput =
-      user.role === 'MANAGER' || user.role === 'CURRICULUM_DESIGNER'
+      isManagerOrAdmin(user.role) || user.role === 'CURRICULUM_DESIGNER'
         ? {}
         : {
-              status: 'APPROVED',
-              sessions: {
-                some: {
-                  OR: [
-                    { teacherId: user.id },
-                    { class: assignedTeacherWhere(user.id, new Date()) },
-                  ],
-                },
+            status: 'APPROVED',
+            sessions: {
+              some: {
+                OR: [{ teacherId: user.id }, { class: assignedTeacherWhere(user.id, new Date()) }],
               },
-            };
-    const filtered: Prisma.LessonWhereInput = { AND: [where, {
-      ...(page.programId ? { programId: page.programId } : {}),
-      ...(page.unitId ? { unitId: page.unitId } : {}),
-      ...(page.status ? { status: page.status } : {}),
-      ...(page.search ? { title: { contains: page.search } } : {}),
-    }] };
-    return pageResult(page, this.repo.db.lesson.findMany({
-      where: filtered,
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-    }), () => this.repo.db.lesson.count({ where: filtered }));
+            },
+          };
+    const filtered: Prisma.LessonWhereInput = {
+      AND: [
+        where,
+        {
+          ...(page.programId ? { programId: page.programId } : {}),
+          ...(page.unitId ? { unitId: page.unitId } : {}),
+          ...(page.status ? { status: page.status } : {}),
+          ...(page.search ? { title: { contains: page.search } } : {}),
+        },
+      ],
+    };
+    return pageResult(
+      page,
+      this.repo.db.lesson.findMany({
+        where: filtered,
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.lesson.count({ where: filtered }),
+    );
   }
 
   async createSession(user: AuthenticatedUser, input: SessionDto): Promise<unknown> {
@@ -186,7 +217,7 @@ export class CatalogService {
       assertProgramFrequency(classroom.program, classroom.weeklySchedules.length, classroom.id);
       if (lesson.unit) assertCurriculumSessionDates(lesson.unit, start, end);
       const teacher = await tx.user.findFirst({
-        where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE' },
+        where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
       });
       assertRule(teacher, 'INVALID_TEACHER', 'Active teacher required');
       const conflict = await tx.classSession.count({
@@ -222,47 +253,55 @@ export class CatalogService {
   }
 
   async sessions(user: AuthenticatedUser, page: AcademicSessionQueryDto): Promise<unknown> {
-    const where: Prisma.ClassSessionWhereInput =
-      user.role === 'MANAGER' || user.role === 'STAFF'
-        ? {}
-        : user.role === 'TEACHER'
-          ? { teacherId: user.id }
-          : {
-              participants: {
-                some: {
-                  cancelled: false,
-                  enrollment: {
-                    status: { not: 'PENDING_LINK' },
-                    studentProfile: { parentProfile: { userId: user.id } },
-                  },
+    const where: Prisma.ClassSessionWhereInput = isBackOffice(user.role)
+      ? {}
+      : user.role === 'TEACHER'
+        ? { teacherId: user.id }
+        : {
+            participants: {
+              some: {
+                cancelled: false,
+                enrollment: {
+                  status: { not: 'PENDING_LINK' },
+                  studentProfile: { parentProfile: { userId: user.id } },
                 },
               },
-            };
+            },
+          };
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
-    const filtered: Prisma.ClassSessionWhereInput = { AND: [where, {
-      ...(page.classId ? { classId: page.classId } : {}),
-      ...(page.teacherId ? { teacherId: page.teacherId } : {}),
-      ...(page.lessonId ? { lessonId: page.lessonId } : {}),
-      ...(page.status ? { status: page.status } : {}),
-      ...(page.search ? { lesson: { title: { contains: page.search } } } : {}),
-      startsAt: dateTimeRange(page.fromDate, page.toDate),
-    }] };
-    return pageResult(page, this.repo.db.classSession.findMany({
-      where: filtered,
-      select: {
-        id: true,
-        classId: true,
-        teacherId: true,
-        startsAt: true,
-        endsAt: true,
-        status: true,
-        summary: true,
-        lesson: { select: { id: true, title: true } },
-      },
-      orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-    }), () => this.repo.db.classSession.count({ where: filtered }));
+    const filtered: Prisma.ClassSessionWhereInput = {
+      AND: [
+        where,
+        {
+          ...(page.classId ? { classId: page.classId } : {}),
+          ...(page.teacherId ? { teacherId: page.teacherId } : {}),
+          ...(page.lessonId ? { lessonId: page.lessonId } : {}),
+          ...(page.status ? { status: page.status } : {}),
+          ...(page.search ? { lesson: { title: { contains: page.search } } } : {}),
+          startsAt: dateTimeRange(page.fromDate, page.toDate),
+        },
+      ],
+    };
+    return pageResult(
+      page,
+      this.repo.db.classSession.findMany({
+        where: filtered,
+        select: {
+          id: true,
+          classId: true,
+          teacherId: true,
+          startsAt: true,
+          endsAt: true,
+          status: true,
+          summary: true,
+          lesson: { select: { id: true, title: true } },
+        },
+        orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+      }),
+      () => this.repo.db.classSession.count({ where: filtered }),
+    );
   }
 
   async prepareRoster(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -387,21 +426,31 @@ export class CatalogService {
   async listFeedback(user: AuthenticatedUser, page: FeedbackQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
     // Any curriculum designer handles feedback, so it never waits for an absent author (Q6).
+    // Manager and ADMIN see every feedback too; only a teacher is limited to their own.
     const scope: Prisma.CurriculumFeedbackWhereInput =
       user.role === 'TEACHER' ? { teacherId: user.id } : {};
-    const where: Prisma.CurriculumFeedbackWhereInput = { AND: [scope, {
-      ...(page.lessonId ? { lessonId: page.lessonId } : {}),
-      ...(page.teacherId ? { teacherId: page.teacherId } : {}),
-      ...(page.status ? { status: page.status } : {}),
-      ...(page.search ? { content: { contains: page.search } } : {}),
-      createdAt: dateTimeRange(page.fromDate, page.toDate),
-    }] };
-    return pageResult(page, this.repo.db.curriculumFeedback.findMany({
-      where,
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-    }), () => this.repo.db.curriculumFeedback.count({ where }));
+    const where: Prisma.CurriculumFeedbackWhereInput = {
+      AND: [
+        scope,
+        {
+          ...(page.lessonId ? { lessonId: page.lessonId } : {}),
+          ...(page.teacherId ? { teacherId: page.teacherId } : {}),
+          ...(page.status ? { status: page.status } : {}),
+          ...(page.search ? { content: { contains: page.search } } : {}),
+          createdAt: dateTimeRange(page.fromDate, page.toDate),
+        },
+      ],
+    };
+    return pageResult(
+      page,
+      this.repo.db.curriculumFeedback.findMany({
+        where,
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.curriculumFeedback.count({ where }),
+    );
   }
 
   async resolveFeedback(
@@ -476,74 +525,90 @@ export class CatalogService {
   async enrollments(user: AuthenticatedUser, page: EnrollmentQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const now = new Date();
-    const where: Prisma.EnrollmentWhereInput =
-      user.role === 'MANAGER' || user.role === 'STAFF'
-        ? {}
-        : user.role === 'PARENT'
-          ? {
-              status: { not: 'PENDING_LINK' },
-              studentProfile: { parentProfile: { userId: user.id } },
-            }
-          : {
-              OR: [
-                {
-                  placements: {
-                    some: {
-                      effectiveFrom: { lte: now },
-                      OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
-                      class: assignedTeacherWhere(user.id, now),
-                    },
+    const where: Prisma.EnrollmentWhereInput = isBackOffice(user.role)
+      ? {}
+      : user.role === 'PARENT'
+        ? {
+            status: { not: 'PENDING_LINK' },
+            studentProfile: { parentProfile: { userId: user.id } },
+          }
+        : {
+            OR: [
+              {
+                placements: {
+                  some: {
+                    effectiveFrom: { lte: now },
+                    OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+                    class: assignedTeacherWhere(user.id, now),
                   },
                 },
-                { placements: { none: {} }, class: assignedTeacherWhere(user.id, now) },
-              ],
-            };
-    const filtered: Prisma.EnrollmentWhereInput = { AND: [where, {
-      ...(page.classId ? { classId: page.classId } : {}),
-      ...(page.studentId ? { studentProfileId: page.studentId } : {}),
-      ...(page.status ? { status: page.status } : {}),
-      ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
-    }] };
-    return pageResult(page, this.repo.db.enrollment.findMany({
-      where: filtered,
-      select: {
-        id: true,
-        classId: true,
-        status: true,
-        startDate: true,
-        endDate: true,
-        packageMonths: true,
-        class: { select: { id: true, name: true } },
-        studentProfile: { select: { id: true, fullName: true, grade: true } },
-        placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
-      },
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-    }), () => this.repo.db.enrollment.count({ where: filtered }));
+              },
+              { placements: { none: {} }, class: assignedTeacherWhere(user.id, now) },
+            ],
+          };
+    const filtered: Prisma.EnrollmentWhereInput = {
+      AND: [
+        where,
+        {
+          ...(page.classId ? { classId: page.classId } : {}),
+          ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+          ...(page.status ? { status: page.status } : {}),
+          ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
+        },
+      ],
+    };
+    return pageResult(
+      page,
+      this.repo.db.enrollment.findMany({
+        where: filtered,
+        select: {
+          id: true,
+          classId: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          packageMonths: true,
+          class: { select: { id: true, name: true } },
+          studentProfile: { select: { id: true, fullName: true, grade: true } },
+          placements: { select: { classId: true, effectiveFrom: true, effectiveTo: true } },
+        },
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.enrollment.count({ where: filtered }),
+    );
   }
 
   async roster(user: AuthenticatedUser, id: string, page: RosterQueryDto): Promise<unknown> {
     // Staff only read rosters for scheduling; marking attendance stays with teachers and managers.
     if (user.role !== 'STAFF') await this.access.session(user, id);
     const where: Prisma.SessionParticipantWhereInput = {
-      sessionId: id, cancelled: false,
+      sessionId: id,
+      cancelled: false,
       ...(page.attendance ? { attendance: page.attendance } : {}),
       ...(page.kind ? { kind: page.kind } : {}),
-      enrollment: { ...(page.studentId ? { studentProfileId: page.studentId } : {}), ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}) },
-    };
-    return pageResult(page, this.repo.db.sessionParticipant.findMany({
-      where,
-      select: {
-        id: true,
-        enrollmentId: true,
-        kind: true,
-        attendance: true,
-        enrollment: { select: { studentProfile: { select: { id: true, fullName: true } } } },
+      enrollment: {
+        ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+        ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
       },
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: { id: 'asc' },
-    }), () => this.repo.db.sessionParticipant.count({ where }));
+    };
+    return pageResult(
+      page,
+      this.repo.db.sessionParticipant.findMany({
+        where,
+        select: {
+          id: true,
+          enrollmentId: true,
+          kind: true,
+          attendance: true,
+          enrollment: { select: { studentProfile: { select: { id: true, fullName: true } } } },
+        },
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: { id: 'asc' },
+      }),
+      () => this.repo.db.sessionParticipant.count({ where }),
+    );
   }
 }

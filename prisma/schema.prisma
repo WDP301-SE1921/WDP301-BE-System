@@ -13,6 +13,7 @@ enum UserRole {
   TEACHER
   CURRICULUM_DESIGNER
   PARENT
+  ADMIN
 }
 
 enum UserStatus {
@@ -106,6 +107,9 @@ model User {
   scheduleGenerations        ScheduleGeneration[]
   sessionBulkCancels         SessionBulkCancel[]
   centerClosures             CenterClosure[]
+  deletedAt                  DateTime?
+  deletedById                String?                  @db.VarChar(191)
+  deleteReason               String?                  @db.VarChar(300)
   createdAt                  DateTime                 @default(now())
   updatedAt                  DateTime                 @updatedAt
 
@@ -203,6 +207,9 @@ model StudentProfile {
   parentProfile   ParentProfile       @relation(fields: [parentProfileId], references: [id], onDelete: Restrict)
   enrollments     Enrollment[]
   targetedOrders  RegistrationOrder[] @relation("TargetStudent")
+  deletedAt       DateTime?
+  deletedById     String?             @db.VarChar(191)
+  deleteReason    String?             @db.VarChar(300)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
@@ -223,6 +230,9 @@ model Program {
   lessons         Lesson[]
   curriculumUnits CurriculumUnit[]
   outcomeSets     OutcomeSet[]
+  deletedAt       DateTime?
+  deletedById     String?          @db.VarChar(191)
+  deleteReason    String?          @db.VarChar(300)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -231,13 +241,16 @@ model Program {
 }
 
 model Subject {
-  id        String    @id @default(cuid()) @db.VarChar(191)
-  code      String    @unique @db.VarChar(64)
-  name      String    @db.VarChar(191)
-  isActive  Boolean   @default(true)
-  programs  Program[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id           String    @id @default(cuid()) @db.VarChar(191)
+  code         String    @unique @db.VarChar(64)
+  name         String    @db.VarChar(191)
+  isActive     Boolean   @default(true)
+  programs     Program[]
+  deletedAt    DateTime?
+  deletedById  String?   @db.VarChar(191)
+  deleteReason String?   @db.VarChar(300)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@map("subjects")
 }
@@ -268,6 +281,9 @@ model Class {
   program               Program               @relation(fields: [programId], references: [id], onDelete: Restrict)
   registrationOrders    RegistrationOrder[]
   enrollments           Enrollment[]
+  deletedAt             DateTime?
+  deletedById           String?               @db.VarChar(191)
+  deleteReason          String?               @db.VarChar(300)
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
 
@@ -279,14 +295,17 @@ model Class {
 }
 
 model Room {
-  id        String         @id @default(cuid()) @db.VarChar(191)
-  name      String         @unique @db.VarChar(191)
-  capacity  Int
-  isActive  Boolean        @default(true)
-  classes   Class[]
-  sessions  ClassSession[]
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
+  id           String         @id @default(cuid()) @db.VarChar(191)
+  name         String         @unique @db.VarChar(191)
+  capacity     Int
+  isActive     Boolean        @default(true)
+  classes      Class[]
+  sessions     ClassSession[]
+  deletedAt    DateTime?
+  deletedById  String?        @db.VarChar(191)
+  deleteReason String?        @db.VarChar(300)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   @@map("rooms")
 }

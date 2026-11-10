@@ -59,7 +59,7 @@ export async function reviewerTiers(db: Db, programId: string, at: Date): Promis
     candidates.length
       ? (
           await db.user.findMany({
-            where: { id: { in: candidates }, role: 'TEACHER', status: 'ACTIVE' },
+            where: { id: { in: candidates }, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
             select: { id: true },
           })
         ).map((user) => user.id)
@@ -114,7 +114,8 @@ export async function mayReviewProgramOutcomes(
 
 async function isActiveTeacher(db: Db, teacherId: string): Promise<boolean> {
   const teacher = await db.user.findFirst({
-    where: { id: teacherId, role: 'TEACHER', status: 'ACTIVE' },
+    // A teacher soft-deleted by the ADMIN is never a valid reviewer, matching the reviewer list.
+    where: { id: teacherId, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
     select: { id: true },
   });
   return !!teacher;

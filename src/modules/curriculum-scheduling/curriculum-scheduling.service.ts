@@ -24,7 +24,11 @@ import {
 import type { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
 import { pageResult } from '../../common/pagination';
 import { dateTimeRange } from '../../common/list-query';
-import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '../academic/academic-list.dto';
+import {
+  SearchPageDto,
+  ClassContentQueryDto,
+  ParentCurriculumQueryDto,
+} from '../academic/academic-list.dto';
 import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
 import { parseCurriculumCsv } from './curriculum-csv';
 import { CsvFileError } from '../../common/csv/read-csv';
@@ -45,6 +49,7 @@ import {
 } from './session-lesson-plan';
 import { closuresBetween } from './center-closure.service';
 import { SessionCancellationRepository } from './session-cancellation.repository';
+import { roleAllowed } from '../../common/auth/role-access';
 
 // Seeds and older callers import the calendar helper from here.
 export { slotsForRange } from './session-lesson-plan';
@@ -183,7 +188,10 @@ export class CurriculumSchedulingService {
       ...(page.search ? { title: { contains: page.search } } : {}),
       ...(page.toDate ? { fromDate: { lte: new Date(page.toDate) } } : {}),
       ...(page.fromDate ? { toDate: { gte: new Date(page.fromDate) } } : {}),
-      program: { ...(page.subject ? { subject: page.subject } : {}), ...(page.grade ? { grade: page.grade } : {}) },
+      program: {
+        ...(page.subject ? { subject: page.subject } : {}),
+        ...(page.grade ? { grade: page.grade } : {}),
+      },
     };
     const [units, total] = await Promise.all([
       this.db.curriculumUnit.findMany({
@@ -754,7 +762,11 @@ export class CurriculumSchedulingService {
     });
   }
 
-  async reviewers(user: AuthenticatedUser, id: string, query = new SearchPageDto()): Promise<unknown> {
+  async reviewers(
+    user: AuthenticatedUser,
+    id: string,
+    query = new SearchPageDto(),
+  ): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'CURRICULUM_DESIGNER');
     const unit = await this.loadUnit(id);
     await this.canReadUnit(user, unit);
@@ -763,8 +775,15 @@ export class CurriculumSchedulingService {
     const where: Prisma.UserWhereInput = {
       role: 'TEACHER',
       status: 'ACTIVE',
+      // Teachers soft-deleted by the ADMIN never show up as reviewers.
+      deletedAt: null,
       ...(query.search
-        ? { OR: [{ displayName: { contains: query.search } }, { email: { contains: query.search } }] }
+        ? {
+            OR: [
+              { displayName: { contains: query.search } },
+              { email: { contains: query.search } },
+            ],
+          }
         : {}),
     };
     const select = { id: true, email: true, displayName: true } as const;
@@ -1398,7 +1417,14 @@ export class CurriculumSchedulingService {
           ...(query.teacherId ? { teacherId: query.teacherId } : {}),
           ...(query.roomId ? { roomId: query.roomId } : {}),
           ...(query.lessonId ? { lessonId: query.lessonId } : {}),
-          ...(query.search ? { OR: [{ lesson: { title: { contains: query.search.trim() } } }, { class: { name: { contains: query.search.trim() } } }] } : {}),
+          ...(query.search
+            ? {
+                OR: [
+                  { lesson: { title: { contains: query.search.trim() } } },
+                  { class: { name: { contains: query.search.trim() } } },
+                ],
+              }
+            : {}),
         },
         ...(parent ? [parentSessionWhere(enrollments)] : []),
         ...(query.classId ? [{ classId: query.classId }] : []),
@@ -1600,7 +1626,11 @@ export class CurriculumSchedulingService {
     return row;
   }
 
-  async generationList(user: AuthenticatedUser, classId: string, query = new ClassContentQueryDto()): Promise<unknown> {
+  async generationList(
+    user: AuthenticatedUser,
+    classId: string,
+    query = new ClassContentQueryDto(),
+  ): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER');
     if (user.role === 'TEACHER') {
       const classroom = await this.db.class.findUnique({ where: { id: classId } });
@@ -1611,20 +1641,30 @@ export class CurriculumSchedulingService {
         HttpStatus.FORBIDDEN,
       );
     }
-    const where: Prisma.ScheduleGenerationWhereInput = { AND: [{ classId }, {
-      ...(query.classId ? { classId: query.classId } : {}),
-      ...(query.search ? { unit: { title: { contains: query.search } } } : {}),
-      createdAt: dateTimeRange(query.fromDate, query.toDate),
-    }] };
-    return pageResult(query, this.db.scheduleGeneration.findMany({
-      where,
-      include: {
-        unit: { select: { id: true, title: true, version: true, status: true } },
-        _count: { select: { sessions: true } },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.scheduleGeneration.count({ where }));
+    const where: Prisma.ScheduleGenerationWhereInput = {
+      AND: [
+        { classId },
+        {
+          ...(query.classId ? { classId: query.classId } : {}),
+          ...(query.search ? { unit: { title: { contains: query.search } } } : {}),
+          createdAt: dateTimeRange(query.fromDate, query.toDate),
+        },
+      ],
+    };
+    return pageResult(
+      query,
+      this.db.scheduleGeneration.findMany({
+        where,
+        include: {
+          unit: { select: { id: true, title: true, version: true, status: true } },
+          _count: { select: { sessions: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.scheduleGeneration.count({ where }),
+    );
   }
 
   async generationDetail(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -2334,7 +2374,7 @@ export class CurriculumSchedulingService {
 
   private requireRole(user: AuthenticatedUser, ...roles: AuthenticatedUser['role'][]): void {
     this.assert(
-      roles.includes(user.role),
+      roleAllowed(user.role, roles),
       'FORBIDDEN',
       'Role is not allowed',
       HttpStatus.FORBIDDEN,

@@ -441,6 +441,14 @@ describe('bulk cancel', () => {
     });
   });
 
+  it('lets the ADMIN bulk cancel like a manager', async () => {
+    const { service } = setup(standardWeek());
+    const admin = { id: 'admin-1', role: 'ADMIN' } as AuthenticatedUser;
+    await expect(service.bulkCancel(admin, body, 'bulk-admin')).resolves.toMatchObject({
+      cancelledCount: 2,
+    });
+  });
+
   it('replays a finished request and refuses the key for another one', async () => {
     const { service, db, repo } = setup(standardWeek());
     const first = await service.bulkCancel(manager, body, 'bulk-1');

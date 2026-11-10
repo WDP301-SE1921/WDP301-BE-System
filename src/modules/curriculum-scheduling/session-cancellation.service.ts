@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
+import { isManagerOrAdmin } from '../../common/auth/role-access';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
@@ -700,7 +701,12 @@ export class SessionCancellationService {
   }
 
   private requireManager(user: AuthenticatedUser): void {
-    this.assert(user.role === 'MANAGER', 'FORBIDDEN', 'Role is not allowed', HttpStatus.FORBIDDEN);
+    this.assert(
+      isManagerOrAdmin(user.role),
+      'FORBIDDEN',
+      'Role is not allowed',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   private requireKey(key: string | undefined): string {

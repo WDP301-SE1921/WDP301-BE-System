@@ -21,6 +21,7 @@ import {
   UpdateStaffAccountDto,
   ReviewAccountInvitationDto,
 } from './dto/directory.dto';
+import { roleAllowed } from '../../common/auth/role-access';
 
 const PASSWORD_HASH_ROUNDS = 12;
 const BCRYPT_MAX_BYTES = 72;
@@ -78,7 +79,7 @@ export class DirectoryService {
       user,
       ...(role === 'TEACHER' ? (['MANAGER', 'STAFF'] as const) : ['MANAGER' as const]),
     );
-    const account = await this.db.user.findFirst({ where: { id, role }, select: accountSelect });
+    const account = await this.db.user.findFirst({ where: { id, role, deletedAt: null }, select: accountSelect });
     this.assert(account, 'ACCOUNT_NOT_FOUND', 'Account not found', HttpStatus.NOT_FOUND);
     return account;
   }
@@ -136,7 +137,7 @@ export class DirectoryService {
   ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     return this.db.$transaction(async (tx) => {
-      const before = await tx.user.findFirst({ where: { id, role }, select: accountSelect });
+      const before = await tx.user.findFirst({ where: { id, role, deletedAt: null }, select: accountSelect });
       this.assert(before, 'ACCOUNT_NOT_FOUND', 'Account not found', HttpStatus.NOT_FOUND);
       const updated = await tx.user.update({
         where: { id },
@@ -227,7 +228,7 @@ export class DirectoryService {
     try {
       return await this.db.$transaction(async (tx) => {
         const parent = await tx.user.findFirst({
-          where: { id, role: 'PARENT' },
+          where: { id, role: 'PARENT', deletedAt: null },
           select: {
             id: true,
             email: true,
@@ -277,7 +278,7 @@ export class DirectoryService {
   async getParent(user: AuthenticatedUser, id: string): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     const parent = await this.db.user.findFirst({
-      where: { id, role: 'PARENT' },
+      where: { id, role: 'PARENT', deletedAt: null },
       select: {
         ...accountSelect,
         parentProfile: {
@@ -302,7 +303,7 @@ export class DirectoryService {
     this.requireRoles(user, 'MANAGER');
     await this.db.$transaction(async (tx) => {
       const before = await tx.user.findFirst({
-        where: { id, role: 'PARENT' },
+        where: { id, role: 'PARENT', deletedAt: null },
         select: { ...accountSelect, parentProfile: { select: { id: true, phone: true } } },
       });
       this.assert(before, 'PARENT_NOT_FOUND', 'Parent account not found', HttpStatus.NOT_FOUND);
@@ -369,10 +370,11 @@ export class DirectoryService {
           _sum: { amount: true },
           _count: true,
         }),
-        this.db.studentProfile.count({ where: { status: 'ACTIVE' } }),
+        this.db.studentProfile.count({ where: { status: 'ACTIVE', deletedAt: null } }),
         this.db.studentProfile.count({
           where: {
             status: 'ACTIVE',
+            deletedAt: null,
             enrollments: {
               some: {
                 status: 'ACTIVE',
@@ -382,9 +384,9 @@ export class DirectoryService {
             },
           },
         }),
-        this.db.user.count({ where: { role: 'PARENT', status: 'ACTIVE' } }),
-        this.db.user.count({ where: { role: 'TEACHER', status: 'ACTIVE' } }),
-        this.db.user.count({ where: { role: 'STAFF', status: 'ACTIVE' } }),
+        this.db.user.count({ where: { role: 'PARENT', status: 'ACTIVE', deletedAt: null } }),
+        this.db.user.count({ where: { role: 'TEACHER', status: 'ACTIVE', deletedAt: null } }),
+        this.db.user.count({ where: { role: 'STAFF', status: 'ACTIVE', deletedAt: null } }),
         this.db.registrationOrder.groupBy({ by: ['status'], _count: true }),
       ]);
     const byStatus = Object.fromEntries(registrations.map((row) => [row.status, row._count]));
@@ -521,7 +523,9 @@ export class DirectoryService {
       role,
       ...(page.search ? { email: { contains: page.search.trim() } } : {}),
       ...(page.status ? { status: page.status } : {}),
-      ...(page.fromDate || page.toDate ? { createdAt: dateTimeRange(page.fromDate, page.toDate) } : {}),
+      ...(page.fromDate || page.toDate
+        ? { createdAt: dateTimeRange(page.fromDate, page.toDate) }
+        : {}),
     };
     const [items, total] = await Promise.all([
       this.db.accountInvitation.findMany({
@@ -542,7 +546,10 @@ export class DirectoryService {
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     return this.db.$transaction(async (tx) => {
-      const existing = await tx.accountInvitation.findUnique({ where: { id }, select: { role: true } });
+      const existing = await tx.accountInvitation.findUnique({
+        where: { id },
+        select: { role: true },
+      });
       this.assert(existing, 'INVITATION_NOT_FOUND', 'Invitation not found', HttpStatus.NOT_FOUND);
       this.requireEnabledInvitationRole(existing.role);
       const claimed = await tx.accountInvitation.updateMany({
@@ -736,7 +743,10 @@ export class DirectoryService {
     const search = query.search?.trim();
     return {
       role,
-      ...(query.fromDate || query.toDate ? { createdAt: dateTimeRange(query.fromDate, query.toDate) } : {}),
+      deletedAt: null,
+      ...(query.fromDate || query.toDate
+        ? { createdAt: dateTimeRange(query.fromDate, query.toDate) }
+        : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(search
         ? { OR: [{ email: { contains: search } }, { displayName: { contains: search } }] }
@@ -746,7 +756,7 @@ export class DirectoryService {
 
   private requireRoles(user: AuthenticatedUser, ...roles: UserRole[]): void {
     this.assert(
-      roles.includes(user.role),
+      roleAllowed(user.role, roles),
       'FORBIDDEN',
       'Role is not allowed',
       HttpStatus.FORBIDDEN,

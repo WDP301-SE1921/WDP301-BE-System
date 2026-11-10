@@ -49,6 +49,7 @@ import {
   UpdateRoomDto,
   UpdateStudentDto,
 } from './dto/registration-flow.dto';
+import { isManagerOrAdmin, roleAllowed } from '../../common/auth/role-access';
 
 const HCM_OFFSET_MS = 7 * 3_600_000;
 
@@ -99,21 +100,29 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async listMyStudents(user: AuthenticatedUser, query = new MyStudentFilterDto()): Promise<unknown> {
+  async listMyStudents(
+    user: AuthenticatedUser,
+    query = new MyStudentFilterDto(),
+  ): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     const profile = await this.parentProfileForUser(user.id);
     const where: Prisma.StudentProfileWhereInput = {
       parentProfileId: profile.id,
+      deletedAt: null,
       ...(query.search ? { fullName: { contains: query.search.trim() } } : {}),
       ...(query.grade ? { grade: query.grade } : {}),
       ...(query.status ? { status: query.status } : {}),
     };
-    return pageResult(query, this.db.studentProfile.findMany({
-      where,
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      take: query.limit,
-      skip: (query.page - 1) * query.limit,
-    }), () => this.db.studentProfile.count({ where }));
+    return pageResult(
+      query,
+      this.db.studentProfile.findMany({
+        where,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.studentProfile.count({ where }),
+    );
   }
 
   async createMyStudent(user: AuthenticatedUser, input: CreateStudentDto): Promise<unknown> {
@@ -221,7 +230,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     this.requireRoles(user, 'STAFF', 'MANAGER');
     const normalizedEmail = email.trim().toLowerCase();
     const parent = await this.db.user.findFirst({
-      where: { email: normalizedEmail, role: 'PARENT' },
+      where: { email: normalizedEmail, role: 'PARENT', deletedAt: null },
       select: {
         id: true,
         email: true,
@@ -303,44 +312,50 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     return subject;
   }
 
-  async searchParents(
-    user: AuthenticatedUser,
-    query: ParentSearchDto,
-  ): Promise<unknown> {
+  async searchParents(user: AuthenticatedUser, query: ParentSearchDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF');
     const email = query.email.trim().toLowerCase();
     // LOCATE matches literal email characters, including % and _, rather than LIKE wildcards.
     // Tagged parameters are bound by Prisma; the schema uses utf8mb4_unicode_ci for email.
-    return pageResult(query, this.db.$queryRaw<ParentSuggestionDto[]>`
+    return pageResult(
+      query,
+      this.db.$queryRaw<ParentSuggestionDto[]>`
       SELECT id, email, displayName, status
       FROM users
-      WHERE role = 'PARENT' AND LOCATE(${email}, LOWER(email)) > 0
+      WHERE role = 'PARENT' AND deletedAt IS NULL AND LOCATE(${email}, LOWER(email)) > 0
       ORDER BY email ASC
       LIMIT ${query.limit}
       OFFSET ${(query.page - 1) * query.limit}
-    `, async () => {
-      const rows = await this.db.$queryRaw<Array<{ total: bigint }>>`
+    `,
+      async () => {
+        const rows = await this.db.$queryRaw<Array<{ total: bigint }>>`
         SELECT COUNT(*) AS total FROM users
-        WHERE role = 'PARENT' AND LOCATE(${email}, LOWER(email)) > 0
+        WHERE role = 'PARENT' AND deletedAt IS NULL AND LOCATE(${email}, LOWER(email)) > 0
       `;
-      return Number(rows[0].total);
-    });
+        return Number(rows[0].total);
+      },
+    );
   }
 
   async listPrograms(user: AuthenticatedUser, page: ProgramFilterDto): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER', 'CURRICULUM_DESIGNER');
     const where: Prisma.ProgramWhereInput = {
-        ...(page.search ? { name: { contains: page.search.trim() } } : {}),
-        ...(page.subjectId ? { subjectId: page.subjectId } : {}),
-        ...(page.grade ? { grade: page.grade } : {}),
-        ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
+      deletedAt: null,
+      ...(page.search ? { name: { contains: page.search.trim() } } : {}),
+      ...(page.subjectId ? { subjectId: page.subjectId } : {}),
+      ...(page.grade ? { grade: page.grade } : {}),
+      ...(page.isActive === undefined ? {} : { isActive: page.isActive }),
     };
-    return pageResult(page, this.db.program.findMany({
-      where,
-      orderBy: [{ grade: 'asc' }, { subject: 'asc' }, { id: 'asc' }],
-      skip: (page.page - 1) * page.limit,
-      take: page.limit,
-    }), () => this.db.program.count({ where }));
+    return pageResult(
+      page,
+      this.db.program.findMany({
+        where,
+        orderBy: [{ grade: 'asc' }, { subject: 'asc' }, { id: 'asc' }],
+        skip: (page.page - 1) * page.limit,
+        take: page.limit,
+      }),
+      () => this.db.program.count({ where }),
+    );
   }
 
   async getProgram(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -517,11 +532,21 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   async listRooms(user: AuthenticatedUser, query = new RoomFilterDto()): Promise<unknown> {
     this.requireRoles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
     const where: Prisma.RoomWhereInput = {
+      deletedAt: null,
       ...(query.search ? { name: { contains: query.search.trim() } } : {}),
       ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
       ...(query.minCapacity ? { capacity: { gte: query.minCapacity } } : {}),
     };
-    return pageResult(query, this.db.room.findMany({ where, orderBy: [{ name: 'asc' }, { id: 'asc' }], take: query.limit, skip: (query.page - 1) * query.limit }), () => this.db.room.count({ where }));
+    return pageResult(
+      query,
+      this.db.room.findMany({
+        where,
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.room.count({ where }),
+    );
   }
 
   async createRoom(user: AuthenticatedUser, input: RoomDto): Promise<unknown> {
@@ -678,22 +703,34 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async substituteCandidates(user: AuthenticatedUser, sessionId: string, query = new LookupQueryDto()): Promise<unknown> {
+  async substituteCandidates(
+    user: AuthenticatedUser,
+    sessionId: string,
+    query = new LookupQueryDto(),
+  ): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     const session = await this.db.classSession.findUnique({ where: { id: sessionId } });
     this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
     const where: Prisma.UserWhereInput = {
-        role: 'TEACHER',
-        status: 'ACTIVE',
-        id: { not: session.teacherId },
-        ...(query.search ? { OR: [{ displayName: { contains: query.search.trim() } }, { email: { contains: query.search.trim() } }] } : {}),
-        teachingSessions: {
-          none: {
-            status: 'SCHEDULED',
-            startsAt: { lt: session.endsAt },
-            endsAt: { gt: session.startsAt },
-          },
+      deletedAt: null,
+      role: 'TEACHER',
+      status: 'ACTIVE',
+      id: { not: session.teacherId },
+      ...(query.search
+        ? {
+            OR: [
+              { displayName: { contains: query.search.trim() } },
+              { email: { contains: query.search.trim() } },
+            ],
+          }
+        : {}),
+      teachingSessions: {
+        none: {
+          status: 'SCHEDULED',
+          startsAt: { lt: session.endsAt },
+          endsAt: { gt: session.startsAt },
         },
+      },
     };
     // `subjects`: the subjects of the active classes each teacher already runs, so the manager can
     // prefer a teacher of the same subject. Filtering and order stay as they were.
@@ -710,7 +747,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           },
         },
         orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
-        take: query.limit, skip: (query.page - 1) * query.limit,
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
       })
       .then((rows) =>
         rows.map(({ teachingClasses, ...teacher }) => ({
@@ -813,7 +851,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         assertProgramFrequency(program, classroom.weeklySchedules.length, classId);
       } else {
         this.assert(
-          user.role === 'MANAGER',
+          isManagerOrAdmin(user.role),
           'FORBIDDEN',
           'Only a manager can unlock a confirmed schedule',
           HttpStatus.FORBIDDEN,
@@ -859,13 +897,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       ...(input.grade ? { grade: input.grade } : {}),
     };
     const where: Prisma.ClassWhereInput = {
-        AND: [input.teacherId ? assignedTeacherWhere(input.teacherId, new Date()) : {}],
-        ...(input.roomId ? { roomId: input.roomId } : {}),
-        ...(user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {}),
-        ...(Object.keys(programWhere).length ? { program: programWhere } : {}),
-        ...(input.search ? { name: { contains: input.search.trim() } } : {}),
-        ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
-        ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+      deletedAt: null,
+      AND: [input.teacherId ? assignedTeacherWhere(input.teacherId, new Date()) : {}],
+      ...(input.roomId ? { roomId: input.roomId } : {}),
+      ...(user.role === 'TEACHER' ? assignedTeacherWhere(user.id, new Date()) : {}),
+      ...(Object.keys(programWhere).length ? { program: programWhere } : {}),
+      ...(input.search ? { name: { contains: input.search.trim() } } : {}),
+      ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
+      ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
     };
     const rows = await this.db.class.findMany({
       where,
@@ -1007,18 +1046,35 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async classSchedules(user: AuthenticatedUser, classId: string, query = new WeeklyScheduleQueryDto()): Promise<unknown> {
+  async classSchedules(
+    user: AuthenticatedUser,
+    classId: string,
+    query = new WeeklyScheduleQueryDto(),
+  ): Promise<unknown> {
     await this.getClass(user, classId, { page: 1, limit: 1 });
-    const where: Prisma.ClassWeeklyScheduleWhereInput = { AND: [{ classId }, {
-      ...(query.weekday ? { weekday: query.weekday } : {}),
-      ...(query.classId ? { classId: query.classId } : {}),
-      class: { ...(query.search ? { name: { contains: query.search } } : {}), ...(query.subject ? { program: { subject: query.subject } } : {}) },
-    }] };
-    return pageResult(query, this.db.classWeeklySchedule.findMany({
-      where,
-      orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.classWeeklySchedule.count({ where }));
+    const where: Prisma.ClassWeeklyScheduleWhereInput = {
+      AND: [
+        { classId },
+        {
+          ...(query.weekday ? { weekday: query.weekday } : {}),
+          ...(query.classId ? { classId: query.classId } : {}),
+          class: {
+            ...(query.search ? { name: { contains: query.search } } : {}),
+            ...(query.subject ? { program: { subject: query.subject } } : {}),
+          },
+        },
+      ],
+    };
+    return pageResult(
+      query,
+      this.db.classWeeklySchedule.findMany({
+        where,
+        orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.classWeeklySchedule.count({ where }),
+    );
   }
 
   async updateClassSchedule(
@@ -1316,10 +1372,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     dateTimeRange(query.fromDate, query.toDate);
     const search = query.search?.trim();
     const where: Prisma.PaymentWhereInput = {
-      AND: [{ registrationOrder: {
-        ...(query.classId ? { classId: query.classId } : {}),
-        ...(query.studentId ? { targetStudentId: query.studentId } : {}),
-      } }],
+      AND: [
+        {
+          registrationOrder: {
+            ...(query.classId ? { classId: query.classId } : {}),
+            ...(query.studentId ? { targetStudentId: query.studentId } : {}),
+          },
+        },
+      ],
       ...(query.fromDate || query.toDate
         ? {
             confirmedAt: dateTimeRange(query.fromDate, query.toDate),
@@ -1387,7 +1447,14 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       ...(page.studentId ? { targetStudentId: page.studentId } : {}),
       ...(page.classId ? { classId: page.classId } : {}),
       ...(page.status ? { status: page.status } : {}),
-      ...(page.search ? { OR: [{ studentFullName: { contains: page.search.trim() } }, { payment: { receiptNumber: { contains: page.search.trim() } } }] } : {}),
+      ...(page.search
+        ? {
+            OR: [
+              { studentFullName: { contains: page.search.trim() } },
+              { payment: { receiptNumber: { contains: page.search.trim() } } },
+            ],
+          }
+        : {}),
       createdAt: dateTimeRange(page.fromDate, page.toDate),
     };
     const [orders, total] = await Promise.all([
@@ -1617,16 +1684,29 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     return receiptResponse(order);
   }
 
-  async myStudentEnrollments(user: AuthenticatedUser, studentId: string, query = new StudentHistoryQueryDto()): Promise<unknown> {
+  async myStudentEnrollments(
+    user: AuthenticatedUser,
+    studentId: string,
+    query = new StudentHistoryQueryDto(),
+  ): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     await this.findVisibleStudent(user, studentId);
-    return pageResult(query, this.enrollmentsOf(studentId, query), () => this.db.enrollment.count({ where: this.historyWhere(studentId, query) }));
+    return pageResult(query, this.enrollmentsOf(studentId, query), () =>
+      this.db.enrollment.count({ where: this.historyWhere(studentId, query) }),
+    );
   }
 
-  async myStudentSchedule(user: AuthenticatedUser, studentId: string, query = new WeeklyScheduleQueryDto()): Promise<unknown> {
+  async myStudentSchedule(
+    user: AuthenticatedUser,
+    studentId: string,
+    query = new WeeklyScheduleQueryDto(),
+  ): Promise<unknown> {
     this.requireRoles(user, 'PARENT');
     await this.findVisibleStudent(user, studentId);
-    return pageArray(this.filteredSchedule(scheduleOf(await this.enrollmentsOf(studentId)), query), query);
+    return pageArray(
+      this.filteredSchedule(scheduleOf(await this.enrollmentsOf(studentId)), query),
+      query,
+    );
   }
 
   async listStudents(user: AuthenticatedUser, query: ListStudentsDto): Promise<unknown> {
@@ -1662,6 +1742,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             ? { enrollments: { some: { status: 'ACTIVE', participants: { some: pendingMakeup } } } }
             : {};
     const where: Prisma.StudentProfileWhereInput = {
+      deletedAt: null,
       ...(query.status ? { status: query.status } : {}),
       ...(query.grade ? { grade: query.grade } : {}),
       ...(query.parentUserId ? { parentProfile: { userId: query.parentUserId } } : {}),
@@ -1782,32 +1863,65 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async studentEnrollments(user: AuthenticatedUser, studentId: string, query = new StudentHistoryQueryDto()): Promise<unknown> {
+  async studentEnrollments(
+    user: AuthenticatedUser,
+    studentId: string,
+    query = new StudentHistoryQueryDto(),
+  ): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
     await this.findVisibleStudent(user, studentId);
-    return pageResult(query, this.enrollmentsOf(studentId, query), () => this.db.enrollment.count({ where: this.historyWhere(studentId, query) }));
+    return pageResult(query, this.enrollmentsOf(studentId, query), () =>
+      this.db.enrollment.count({ where: this.historyWhere(studentId, query) }),
+    );
   }
 
-  async studentSchedule(user: AuthenticatedUser, studentId: string, query = new WeeklyScheduleQueryDto()): Promise<unknown> {
+  async studentSchedule(
+    user: AuthenticatedUser,
+    studentId: string,
+    query = new WeeklyScheduleQueryDto(),
+  ): Promise<unknown> {
     this.requireRoles(user, 'STAFF', 'MANAGER');
     await this.findVisibleStudent(user, studentId);
-    return pageArray(this.filteredSchedule(scheduleOf(await this.enrollmentsOf(studentId)), query), query);
+    return pageArray(
+      this.filteredSchedule(scheduleOf(await this.enrollmentsOf(studentId)), query),
+      query,
+    );
   }
 
-  private filteredSchedule(rows: Record<string, unknown>[], query: WeeklyScheduleQueryDto): Record<string, unknown>[] {
-    return rows.filter((row) =>
-      (!query.weekday || row.weekday === query.weekday) &&
-      (!query.classId || row.classId === query.classId) &&
-      (!query.subject || row.subject === query.subject) &&
-      (!query.search || String(row.className).toLocaleLowerCase().includes(query.search.trim().toLocaleLowerCase())),
-    ).sort((a, b) => Number(a.weekday) - Number(b.weekday) || String(a.startTime).localeCompare(String(b.startTime)) || String(a.classId).localeCompare(String(b.classId)) || String(a.enrollmentId).localeCompare(String(b.enrollmentId)));
+  private filteredSchedule(
+    rows: Record<string, unknown>[],
+    query: WeeklyScheduleQueryDto,
+  ): Record<string, unknown>[] {
+    return rows
+      .filter(
+        (row) =>
+          (!query.weekday || row.weekday === query.weekday) &&
+          (!query.classId || row.classId === query.classId) &&
+          (!query.subject || row.subject === query.subject) &&
+          (!query.search ||
+            String(row.className)
+              .toLocaleLowerCase()
+              .includes(query.search.trim().toLocaleLowerCase())),
+      )
+      .sort(
+        (a, b) =>
+          Number(a.weekday) - Number(b.weekday) ||
+          String(a.startTime).localeCompare(String(b.startTime)) ||
+          String(a.classId).localeCompare(String(b.classId)) ||
+          String(a.enrollmentId).localeCompare(String(b.enrollmentId)),
+      );
   }
 
-  private historyWhere(studentId: string, query?: StudentHistoryQueryDto): Prisma.EnrollmentWhereInput {
+  private historyWhere(
+    studentId: string,
+    query?: StudentHistoryQueryDto,
+  ): Prisma.EnrollmentWhereInput {
     return {
       studentProfileId: studentId,
       status: query?.status ?? { not: 'PENDING_LINK' },
-      ...(query?.classId ? { OR: [{ classId: query.classId }, { placements: { some: { classId: query.classId } } }] } : {}),
+      ...(query?.classId
+        ? { OR: [{ classId: query.classId }, { placements: { some: { classId: query.classId } } }] }
+        : {}),
       class: {
         ...(query?.subject ? { program: { subject: query.subject } } : {}),
         ...(query?.search ? { name: { contains: query.search.trim() } } : {}),
@@ -1815,7 +1929,10 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async enrollmentsOf(studentId: string, query?: StudentHistoryQueryDto): Promise<
+  private async enrollmentsOf(
+    studentId: string,
+    query?: StudentHistoryQueryDto,
+  ): Promise<
     Array<
       EnrollmentWithPlacements & {
         term: ReturnType<typeof termStatus> & { startDate: string | null; endDate: string | null };
@@ -1861,11 +1978,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     }));
   }
 
-  async getClass(
-    user: AuthenticatedUser,
-    id: string,
-    page: ClassRosterQueryDto,
-  ): Promise<unknown> {
+  async getClass(user: AuthenticatedUser, id: string, page: ClassRosterQueryDto): Promise<unknown> {
     await this.activateDueTeachers();
     this.requireRoles(user, 'STAFF', 'MANAGER', 'TEACHER');
     const classroom = await this.db.class.findUnique({
@@ -2192,7 +2305,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   private async assertTeacher(teacherId?: string | null): Promise<void> {
     if (!teacherId) return;
     const teacher = await this.db.user.findFirst({
-      where: { id: teacherId, role: 'TEACHER', status: 'ACTIVE' },
+      where: { id: teacherId, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
     });
     this.assert(teacher, 'INVALID_TEACHER', 'An active teacher is required');
   }
@@ -2203,7 +2316,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     db: Prisma.TransactionClient | DatabaseService = this.db,
   ): Promise<void> {
     if (!roomId) return;
-    const room = await db.room.findFirst({ where: { id: roomId, isActive: true } });
+    const room = await db.room.findFirst({ where: { id: roomId, isActive: true, deletedAt: null } });
     this.assert(room, 'INVALID_ROOM', 'An active room is required');
     this.assert(
       room.capacity >= classCapacity,
@@ -2235,7 +2348,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
 
   private requireRoles(user: AuthenticatedUser, ...roles: AuthenticatedUser['role'][]): void {
     this.assert(
-      roles.includes(user.role),
+      roleAllowed(user.role, roles),
       'FORBIDDEN',
       'Role is not allowed',
       HttpStatus.FORBIDDEN,

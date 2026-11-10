@@ -3,7 +3,11 @@ import { Prisma, UserRole, UserStatus, type User } from '@prisma/client';
 
 import { DatabaseService } from '../../database/orm/database.service';
 
-export type SafeUser = Omit<User, 'passwordHash' | 'permissions' | 'avatarStorageKey'> & { phone?: string | null; hasAvatar: boolean };
+// Cột xóa mềm chỉ dành cho web Admin; không đưa ra hồ sơ người dùng (giữ nguyên hợp đồng /auth/me).
+export type SafeUser = Omit<
+  User,
+  'passwordHash' | 'permissions' | 'avatarStorageKey' | 'deletedAt' | 'deletedById' | 'deleteReason'
+> & { phone?: string | null; hasAvatar: boolean };
 
 @Injectable()
 export class UsersRepository {

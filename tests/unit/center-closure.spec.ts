@@ -123,7 +123,7 @@ describe('center closures in the weekly calendar', () => {
 describe('center closure routes', () => {
   it('lets every staff role list closures, with paging metadata on request', async () => {
     const { service, db } = setup([row('c1', '2030-02-06', '2030-02-11')]);
-    for (const role of ['MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER'] as const) {
+    for (const role of ['MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER', 'ADMIN'] as const) {
       const result = (await service.list({ id: 'u', role } as AuthenticatedUser, {
         page: 1,
         limit: 20,
@@ -181,6 +181,14 @@ describe('center closure routes', () => {
       service.remove(staff, 'c1'),
     ])
       expect(await rejection(call)).toMatchObject({ code: 'FORBIDDEN', statusCode: 403 });
+  });
+
+  it('lets the ADMIN change closures like a manager', async () => {
+    const { service } = setup();
+    const admin = { id: 'admin-1', role: 'ADMIN' } as AuthenticatedUser;
+    await expect(
+      service.create(admin, { fromDate: '2030-02-04', toDate: '2030-02-08', reason: 'Lễ' }),
+    ).resolves.toMatchObject({ fromDate: '2030-02-04', toDate: '2030-02-08' });
   });
 
   it('rejects reversed, too long and overlapping ranges', async () => {

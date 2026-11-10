@@ -9,6 +9,7 @@ import { AppConfigModule } from './config/config.module';
 import type { AppConfiguration } from './config/configuration';
 import { DatabaseModule } from './database/orm/database.module';
 import { ObjectStorageModule } from './integrations/object-storage.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -40,6 +41,7 @@ import { ChatModule } from './modules/chat/chat.module';
     RegistrationFlowModule,
     // After RegistrationFlowModule so static parents/search and parents/lookup win over parents/:id.
     DirectoryModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

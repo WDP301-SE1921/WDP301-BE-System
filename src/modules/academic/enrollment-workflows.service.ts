@@ -37,6 +37,7 @@ import {
   RescheduleMakeupDto,
   TransferDto,
 } from './academic.dto';
+import { actsAsStaff, isBackOffice } from '../../common/auth/role-access';
 
 /** Adds the optional staff reason to an audit payload without changing its shape when absent. */
 function withReason<T extends object>(data: T, reason?: string): T & { reason?: string } {
@@ -99,10 +100,16 @@ export class EnrollmentWorkflowsService {
     roles(user, 'MANAGER', 'STAFF', 'PARENT');
     dateTimeRange(query.fromDate, query.toDate);
     const where: Prisma.LeaveRequestWhereInput = {
-      AND: [{ enrollment: {
-        ...(query.classId ? { classId: query.classId } : {}),
-        ...(query.search ? { studentProfile: { fullName: { contains: query.search.trim() } } } : {}),
-      } }],
+      AND: [
+        {
+          enrollment: {
+            ...(query.classId ? { classId: query.classId } : {}),
+            ...(query.search
+              ? { studentProfile: { fullName: { contains: query.search.trim() } } }
+              : {}),
+          },
+        },
+      ],
       ...(user.role === 'PARENT'
         ? { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } }
         : {}),
@@ -146,25 +153,30 @@ export class EnrollmentWorkflowsService {
 
   async makeups(user: AuthenticatedUser, page: MakeupQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF', 'TEACHER', 'PARENT');
-    const where: Prisma.MakeupBookingWhereInput =
-      user.role === 'MANAGER' || user.role === 'STAFF'
-        ? {}
-        : user.role === 'TEACHER'
-          ? { replacement: { session: { teacherId: user.id } } }
-          : {
-              original: { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } },
-            };
-    where.AND = [{
-      ...(page.status ? { status: page.status } : {}),
-      original: { enrollment: {
-        ...(page.studentId ? { studentProfileId: page.studentId } : {}),
-        ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
-      } },
-      replacement: { session: {
-        ...(page.classId ? { classId: page.classId } : {}),
-        startsAt: dateTimeRange(page.fromDate, page.toDate),
-      } },
-    }];
+    const where: Prisma.MakeupBookingWhereInput = isBackOffice(user.role)
+      ? {}
+      : user.role === 'TEACHER'
+        ? { replacement: { session: { teacherId: user.id } } }
+        : {
+            original: { enrollment: { studentProfile: { parentProfile: { userId: user.id } } } },
+          };
+    where.AND = [
+      {
+        ...(page.status ? { status: page.status } : {}),
+        original: {
+          enrollment: {
+            ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+            ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
+          },
+        },
+        replacement: {
+          session: {
+            ...(page.classId ? { classId: page.classId } : {}),
+            startsAt: dateTimeRange(page.fromDate, page.toDate),
+          },
+        },
+      },
+    ];
     return pageResult(
       page,
       this.repo.db.makeupBooking.findMany({
@@ -199,7 +211,12 @@ export class EnrollmentWorkflowsService {
       'INVALID_DATE',
       'Use YYYY-MM-DD dates',
     );
-    assertRule(from <= to, 'INVALID_DATE_RANGE', 'Start must not follow end', HttpStatus.BAD_REQUEST);
+    assertRule(
+      from <= to,
+      'INVALID_DATE_RANGE',
+      'Start must not follow end',
+      HttpStatus.BAD_REQUEST,
+    );
     assertRule(
       (input.kind === 'SINGLE_ABSENCE') === !!input.sessionId,
       'INVALID_LEAVE',
@@ -267,7 +284,7 @@ export class EnrollmentWorkflowsService {
         });
       }
       const leave = await tx.leaveRequest.create({ data });
-      if (user.role !== 'STAFF') {
+      if (!actsAsStaff(user.role)) {
         await this.queueFamilyEmail(
           tx,
           user.id,
@@ -497,46 +514,52 @@ export class EnrollmentWorkflowsService {
   async makeupSources(user: AuthenticatedUser, query: MakeupSourceFilterDto): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
     const where: Prisma.SessionParticipantWhereInput = {
-        cancelled: false,
-        kind: 'REGULAR',
-        attendance: { notIn: ['PRESENT', 'EXCUSED'] },
-        // completedOnly: the absence already happened (UNMARKED in a completed session counts as absent).
-        session: {
-          ...(query.completedOnly ? { status: 'COMPLETED' as const } : { status: { not: 'CANCELLED' as const } }),
-          ...(query.classId ? { classId: query.classId } : {}),
-          startsAt: dateTimeRange(query.fromDate, query.toDate),
-        },
-        sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
-        enrollment: {
-          status: 'ACTIVE',
-          ...(query.studentId ? { studentProfileId: query.studentId } : {}),
-          ...(query.search ? { studentProfile: { fullName: { contains: query.search } } } : {}),
-        },
+      cancelled: false,
+      kind: 'REGULAR',
+      attendance: { notIn: ['PRESENT', 'EXCUSED'] },
+      // completedOnly: the absence already happened (UNMARKED in a completed session counts as absent).
+      session: {
+        ...(query.completedOnly
+          ? { status: 'COMPLETED' as const }
+          : { status: { not: 'CANCELLED' as const } }),
+        ...(query.classId ? { classId: query.classId } : {}),
+        startsAt: dateTimeRange(query.fromDate, query.toDate),
+      },
+      sourceBookings: { none: { status: { in: ['BOOKED', 'COMPLETED'] } } },
+      enrollment: {
+        status: 'ACTIVE',
+        ...(query.studentId ? { studentProfileId: query.studentId } : {}),
+        ...(query.search ? { studentProfile: { fullName: { contains: query.search } } } : {}),
+      },
     };
-    return pageResult(query, this.repo.db.sessionParticipant.findMany({
-      where,
-      select: {
-        id: true,
-        attendance: true,
-        enrollmentId: true,
-        enrollment: {
-          select: { studentProfile: { select: { id: true, fullName: true, grade: true } } },
-        },
-        session: {
-          select: {
-            id: true,
-            startsAt: true,
-            endsAt: true,
-            status: true,
-            lesson: { select: { id: true, title: true } },
-            class: { select: { id: true, name: true } },
+    return pageResult(
+      query,
+      this.repo.db.sessionParticipant.findMany({
+        where,
+        select: {
+          id: true,
+          attendance: true,
+          enrollmentId: true,
+          enrollment: {
+            select: { studentProfile: { select: { id: true, fullName: true, grade: true } } },
+          },
+          session: {
+            select: {
+              id: true,
+              startsAt: true,
+              endsAt: true,
+              status: true,
+              lesson: { select: { id: true, title: true } },
+              class: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      orderBy: [{ session: { startsAt: 'desc' } }, { id: 'asc' }],
-      take: query.limit,
-      skip: (query.page - 1) * query.limit,
-    }), () => this.repo.db.sessionParticipant.count({ where }));
+        orderBy: [{ session: { startsAt: 'desc' } }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.repo.db.sessionParticipant.count({ where }),
+    );
   }
 
   async makeupCandidates(
@@ -551,18 +574,20 @@ export class EnrollmentWorkflowsService {
         include: { session: true },
       });
       const where: Prisma.ClassSessionWhereInput = {
-          id: { not: original.sessionId },
-          lessonId: original.session.lessonId,
-          startsAt: { gt: new Date() },
-          status: 'SCHEDULED',
-          AND: [{
+        id: { not: original.sessionId },
+        lessonId: original.session.lessonId,
+        startsAt: { gt: new Date() },
+        status: 'SCHEDULED',
+        AND: [
+          {
             startsAt: dateTimeRange(page.fromDate, page.toDate),
             ...(page.classId ? { classId: page.classId } : {}),
             ...(page.teacherId ? { teacherId: page.teacherId } : {}),
             ...(page.lessonId ? { lessonId: page.lessonId } : {}),
             ...(page.status ? { status: page.status } : {}),
             ...(page.search ? { class: { name: { contains: page.search } } } : {}),
-          }],
+          },
+        ],
       };
       const targets = await tx.classSession.findMany({
         where,
@@ -571,17 +596,21 @@ export class EnrollmentWorkflowsService {
         skip: (page.page - 1) * page.limit,
         orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       });
-      return pageResult(page, Promise.all(
-        targets.map(async (target) => {
-          const state = await this.makeupTargetState(tx, participantId, target.id);
-          return {
-            ...target,
-            eligible: state.reasonCodes.length === 0,
-            availableSeats: state.availableSeats,
-            reasonCodes: state.reasonCodes,
-          };
-        }),
-      ), () => tx.classSession.count({ where }));
+      return pageResult(
+        page,
+        Promise.all(
+          targets.map(async (target) => {
+            const state = await this.makeupTargetState(tx, participantId, target.id);
+            return {
+              ...target,
+              eligible: state.reasonCodes.length === 0,
+              availableSeats: state.availableSeats,
+              reasonCodes: state.reasonCodes,
+            };
+          }),
+        ),
+        () => tx.classSession.count({ where }),
+      );
     });
   }
 
@@ -661,7 +690,7 @@ export class EnrollmentWorkflowsService {
     input: AttendanceQueryDto & { classId?: string; studentId?: string },
   ): Promise<unknown> {
     // Manager and staff read any class (student detail, class roster); teachers only their own classes.
-    const backOffice = user.role === 'MANAGER' || user.role === 'STAFF';
+    const backOffice = isBackOffice(user.role);
     assertRule(
       ((user.role === 'TEACHER' || backOffice) && !!input.classId) ||
         (user.role === 'PARENT' && !!input.studentId),
@@ -711,7 +740,9 @@ export class EnrollmentWorkflowsService {
         },
         enrollment: {
           ...(input.studentId ? { studentProfileId: input.studentId } : {}),
-          ...(input.search ? { studentProfile: { fullName: { contains: input.search.trim() } } } : {}),
+          ...(input.search
+            ? { studentProfile: { fullName: { contains: input.search.trim() } } }
+            : {}),
         },
       },
       select: {

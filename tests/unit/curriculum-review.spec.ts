@@ -303,7 +303,13 @@ describe('curriculum teacher review and manager confirmation', () => {
     ]);
     expect(db.user.findMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: { role: 'TEACHER', status: 'ACTIVE', id: { in: ['current', 'future-old'] } },
+        // Giáo viên đã bị Admin xóa mềm không còn trong danh sách chọn người duyệt.
+        where: {
+          role: 'TEACHER',
+          status: 'ACTIVE',
+          deletedAt: null,
+          id: { in: ['current', 'future-old'] },
+        },
         select: { id: true, email: true, displayName: true },
       }),
     );
@@ -372,6 +378,7 @@ describe('curriculum teacher review and manager confirmation', () => {
           where: {
             role: 'TEACHER',
             status: 'ACTIVE',
+            deletedAt: null,
             OR: [{ displayName: { contains: 'Z' } }, { email: { contains: 'Z' } }],
           },
           take: 20,
