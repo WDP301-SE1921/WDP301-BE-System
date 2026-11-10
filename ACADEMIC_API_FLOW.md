@@ -176,7 +176,7 @@ Backend yêu cầu bản giáo trình `APPROVED`, cùng `programId` với lớp,
 | ---------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
 | `POST /sessions/:id/reschedule-preview`        | Manager | Body `startsAt`, `endsAt`, `reason`, `expectedRevision`; kiểm tra khả năng đổi giờ.                            |
 | `POST /sessions/:id/reschedule`                | Manager | Cùng body preview, thêm `Idempotency-Key`; giữ nguyên session ID, tăng revision, ghi audit.                    |
-| `POST /sessions/:id/cancel`                    | Manager | `{ "reason": "...", "expectedRevision": 1 }`, thêm `Idempotency-Key`; chuyển buổi sang `CANCELLED`, ghi audit. |
+| `POST /sessions/:id/cancel`                    | Manager | `{ "reason": "...", "expectedRevision": 1 }`, thêm `Idempotency-Key`; chuyển buổi sang `CANCELLED`, ghi audit. Body thêm `shiftLessons?` (dời bài); kèm `cancel-preview`, `bulk-cancel-preview`, `bulk-cancel`, chi tiết ở `CURRICULUM_SCHEDULING_API.md`. |
 
 Chỉ xử lý buổi `SCHEDULED` ở tương lai. Khi đổi giờ, backend kiểm tra xung đột lớp/giáo viên, thứ tự bài và các dữ liệu học viên liên quan. Khi hủy, booking học bù, điểm danh đã ghi hoặc đơn nghỉ đang hiệu lực phải được xử lý trước. Lấy `revision` mới từ chi tiết buổi trước mỗi thao tác; nếu có người khác đã sửa, tải lại buổi và preview lại.
 

@@ -490,6 +490,19 @@ PATCH /api/v1/classes/:id
 POST  /api/v1/classes/:id/schedules
 ```
 
+Hủy buổi và ngày nghỉ trung tâm (từ 10/11; request, response và mã lỗi ở `CURRICULUM_SCHEDULING_API.md`):
+
+```http
+POST   /api/v1/academic/sessions/:id/cancel            # MANAGER/ADMIN, Idempotency-Key bắt buộc, shiftLessons tùy chọn
+POST   /api/v1/academic/sessions/:id/cancel-preview    # MANAGER/ADMIN, không ghi gì
+POST   /api/v1/academic/sessions/bulk-cancel-preview   # MANAGER/ADMIN, không ghi gì
+POST   /api/v1/academic/sessions/bulk-cancel           # MANAGER/ADMIN, Idempotency-Key bắt buộc
+GET    /api/v1/academic/center-closures                # MANAGER, STAFF, TEACHER, CURRICULUM_DESIGNER
+POST   /api/v1/academic/center-closures                # chỉ MANAGER/ADMIN
+PATCH  /api/v1/academic/center-closures/:id            # chỉ MANAGER/ADMIN, expectedRevision
+DELETE /api/v1/academic/center-closures/:id            # chỉ MANAGER/ADMIN
+```
+
 ### Đăng ký và thu tiền
 
 ```http
@@ -559,7 +572,7 @@ sequenceDiagram
 409 DUPLICATE_CLASS_REGISTRATION
 409 STUDENT_SCHEDULE_CONFLICT
 409 REGISTRATION_NOT_DRAFT
-409 IDEMPOTENCY_KEY_REQUIRED
+409 IDEMPOTENCY_KEY_REQUIRED    (luồng đăng ký; hủy buổi và hủy theo lô trả 400 cùng mã này)
 500 INTERNAL_ERROR
 ```
 
