@@ -588,10 +588,28 @@ export class EnrollmentWorkflowsService {
   async bookMakeup(user: AuthenticatedUser, input: MakeupDto): Promise<unknown> {
     roles(user, 'STAFF');
     return this.repo.transaction(async (tx) => {
+      // Lock both sessions before checking their lessons: cancelling with lesson shift (B6)
+      // locks the same rows, so a booking cannot land on a lesson that is being moved.
+      const sourceSeat = await tx.sessionParticipant.findUnique({
+        where: { id: input.originalParticipantId },
+        select: { sessionId: true },
+      });
+      const locked = sourceSeat
+        ? await tx.$queryRaw<Array<{ id: string; lessonId: string }>>`
+            SELECT id, lessonId FROM class_sessions
+            WHERE id = ${sourceSeat.sessionId} OR id = ${input.targetSessionId}
+            ORDER BY id FOR UPDATE`
+        : [];
       const state = await this.makeupTargetState(
         tx,
         input.originalParticipantId,
         input.targetSessionId,
+      );
+      // The locking read sees the latest lessons even where a plain read uses an older snapshot.
+      assertRule(
+        locked.length < 2 || locked[0].lessonId === locked[1].lessonId,
+        'INVALID_MAKEUP_TARGET',
+        'Makeup target is not eligible',
       );
       const problem = state.reasonCodes[0];
       assertRule(!problem, problem ?? 'INVALID_MAKEUP_TARGET', 'Makeup target is not eligible');

@@ -39,12 +39,20 @@ import {
   LessonOrderDto,
   SessionRescheduleDto,
   SessionCancelDto,
+  SessionCancelPreviewDto,
+  SessionBulkCancelDto,
+  SessionBulkCancelPreviewDto,
+  CenterClosureDto,
+  CenterClosureQueryDto,
+  UpdateCenterClosureDto,
   ImportCommitDto,
   SubmitCurriculumUnitDto,
   TechnicalReviewDto,
   ReviseCurriculumUnitDto,
 } from './curriculum-scheduling.dto';
 import { CurriculumSchedulingService } from './curriculum-scheduling.service';
+import { SessionCancellationService } from './session-cancellation.service';
+import { CenterClosureService } from './center-closure.service';
 
 @ApiExtraModels(ParentCurriculumResponseDto)
 @ApiTags('curriculum-scheduling')
@@ -52,7 +60,11 @@ import { CurriculumSchedulingService } from './curriculum-scheduling.service';
 @UseFilters(AcademicErrorsFilter)
 @Controller({ path: 'academic', version: '1' })
 export class CurriculumSchedulingController {
-  constructor(private readonly service: CurriculumSchedulingService) {}
+  constructor(
+    private readonly service: CurriculumSchedulingService,
+    private readonly cancellation: SessionCancellationService,
+    private readonly closures: CenterClosureService,
+  ) {}
 
   @ApiOkResponse({
     schema: {
@@ -316,12 +328,90 @@ export class CurriculumSchedulingController {
   }
 
   @Post('sessions/:id/cancel')
+  @ApiOperation({
+    summary:
+      'Manager: cancel a session. shiftLessons=true moves every later lesson of the same curriculum back one session',
+  })
   cancelSession(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Headers('idempotency-key') key: string | undefined,
     @Body() input: SessionCancelDto,
   ): Promise<unknown> {
+    if (input.shiftLessons === true)
+      return this.cancellation.cancelWithShift(user, id, input, key);
     return this.service.cancelSession(user, id, input.reason, input.expectedRevision, key);
+  }
+
+  @Post('sessions/:id/cancel-preview')
+  @ApiOperation({ summary: 'Manager: what cancelling this session would block or change; writes nothing' })
+  cancelPreview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: SessionCancelPreviewDto,
+  ): Promise<unknown> {
+    return this.cancellation.cancelPreview(user, id, input);
+  }
+
+  @Post('sessions/bulk-cancel-preview')
+  @ApiOperation({ summary: 'Manager: preview cancelling up to 200 sessions; writes nothing' })
+  bulkCancelPreview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: SessionBulkCancelPreviewDto,
+  ): Promise<unknown> {
+    return this.cancellation.bulkCancelPreview(user, input);
+  }
+
+  @Post('sessions/bulk-cancel')
+  @ApiOperation({
+    summary: 'Manager: cancel up to 200 sessions in one transaction (all or nothing)',
+  })
+  bulkCancel(
+    @CurrentUser() user: AuthenticatedUser,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body() input: SessionBulkCancelDto,
+  ): Promise<unknown> {
+    return this.cancellation.bulkCancel(user, input, key);
+  }
+
+  @Get('center-closures')
+  @ApiOperation({ summary: 'Staff: center closures overlapping fromDate–toDate' })
+  centerClosures(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: CenterClosureQueryDto,
+  ): Promise<unknown> {
+    return this.closures.list(user, query);
+  }
+
+  @Post('center-closures')
+  @ApiOperation({
+    summary: 'Manager: add a center closure; returns the scheduled sessions inside it',
+  })
+  createCenterClosure(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CenterClosureDto,
+  ): Promise<unknown> {
+    return this.closures.create(user, input);
+  }
+
+  @Patch('center-closures/:id')
+  @ApiOperation({
+    summary: 'Manager: change a center closure; returns the scheduled sessions inside it',
+  })
+  updateCenterClosure(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: UpdateCenterClosureDto,
+  ): Promise<unknown> {
+    return this.closures.update(user, id, input);
+  }
+
+  @Delete('center-closures/:id')
+  @ApiOperation({ summary: 'Manager: remove a center closure' })
+  deleteCenterClosure(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.closures.remove(user, id);
   }
 }

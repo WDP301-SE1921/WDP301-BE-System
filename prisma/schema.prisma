@@ -104,6 +104,8 @@ model User {
   designedUnits              CurriculumUnit[]
   reviewingCurriculumUnits   CurriculumUnit[]         @relation("CurriculumReviewer")
   scheduleGenerations        ScheduleGeneration[]
+  sessionBulkCancels         SessionBulkCancel[]
+  centerClosures             CenterClosure[]
   createdAt                  DateTime                 @default(now())
   updatedAt                  DateTime                 @updatedAt
 
@@ -695,6 +697,37 @@ model SessionMutation {
 
   @@unique([sessionId, key])
   @@map("session_mutations")
+}
+
+// Idempotency record of one bulk session cancellation (B6, C5).
+model SessionBulkCancel {
+  id          String   @id @default(cuid()) @db.VarChar(191)
+  actorUserId String   @db.VarChar(191)
+  key         String   @db.VarChar(191)
+  requestHash String   @db.Char(64)
+  response    Json
+  createdAt   DateTime @default(now())
+  actor       User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([actorUserId, key])
+  @@map("session_bulk_cancels")
+}
+
+// Center-wide days off (B5). Sessions are never generated on these local dates.
+model CenterClosure {
+  id          String   @id @default(cuid()) @db.VarChar(191)
+  fromDate    DateTime @db.Date
+  toDate      DateTime @db.Date
+  reason      String   @db.VarChar(255)
+  createdById String   @db.VarChar(191)
+  revision    Int      @default(1)
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([fromDate, toDate])
+  @@index([createdById])
+  @@map("center_closures")
 }
 
 model SchedulePreview {

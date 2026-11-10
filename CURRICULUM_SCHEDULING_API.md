@@ -63,9 +63,62 @@ Idempotency-Key: <uuid-once-per-operation>
 
 `GET /academic/scheduled-sessions?studentId=...&classId=...&fromDate=2027-01-04&toDate=2027-01-31&page=1&limit=20` trả buổi học và bài (`kind`, `monthKey`, `unitId`). MANAGER/STAFF xem lớp, TEACHER chỉ xem buổi được phân công. PARENT có thể chọn một con bằng `studentId`; kết quả gồm lịch placement, học bù khác lớp và lịch sử hợp lệ, với `participations` chỉ thuộc con của Parent. Nếu Parent không gửi khoảng ngày, API mặc định từ hôm nay đến 30 ngày sau.
 
+### Gán bài khi tạo lịch (C4, từ 10/11)
+
+- Lớp **đã có** buổi chưa hủy mang bài của giáo trình này: khoảng mới bắt đầu bằng bài liền sau bài của buổi cuối đó. Nhờ vậy hủy có dời bài, ngày nghỉ thêm muộn hay đổi ngày không làm mất hoặc lặp bài.
+- Lớp **chưa có** buổi nào của giáo trình: bài theo vị trí buổi tính từ đầu kỳ, bỏ ngày nghỉ trung tâm, để lớp mở giữa kỳ học cùng bài với các lớp khác trong tuần.
+- `fromDate` phải sau buổi cuối đã có của cùng giáo trình; nếu không: 409 `SESSIONS_AFTER_RANGE_EXIST`, `details.lastScheduledDate`.
+- Hết bài trước khi hết buổi **trong khoảng được yêu cầu**: 409 `INSUFFICIENT_LESSONS`. Hết buổi trong kỳ mà còn bài: không lỗi, `session-preview` trả `unscheduledLessons`.
+- `session-preview` trả thêm `mode` (`CONTINUE` | `TERM_POSITION`) và `startLesson`.
+- Hủy và bỏ bài ở đúng buổi cuối cùng: bài đó quay lại ở lần tạo lịch sau (hệ thống không lưu buổi nào bị "bỏ bài"). Hủy bỏ bài ở buổi giữa: bài đó không lặp lại.
+
+## Hủy buổi (B6, từ 10/11)
+
+Ba cách, theo thứ tự khuyên dùng: đổi sang ngày khác (`POST /academic/sessions/:id/reschedule`, giữ bài) → hủy và dời bài sang buổi sau (`shiftLessons: true`) → hủy, bỏ bài (mặc định).
+
+```http
+POST /api/v1/academic/sessions/<sessionId>/cancel
+Idempotency-Key: <uuid>
+
+{ "reason": "Giáo viên ốm", "expectedRevision": 3, "shiftLessons": true }
+```
+
+- `shiftLessons` không gửi hoặc `false`: hành vi, kiểm tra và response như cũ.
+- `true`: các buổi `SCHEDULED` sau buổi bị hủy, cùng lớp và cùng giáo trình (`lesson.unitId`, chỉ bài `LESSON`; buổi của giáo trình khác giữ nguyên), mỗi buổi nhận bài của buổi liền trước. Bài của buổi cuối bị đẩy ra: `pushedLesson`. Buổi hủy có bài không thuộc giáo trình nào thì không dời gì, `pushedLesson` là chính bài đó. Bài kiểm tra (`Assignment`) gắn với buổi giữ nguyên buổi, `shiftedSessions[].hasAssessments` báo để nhắc giáo viên.
+- Response: các field của buổi học (`id`, `classId`, `startsAt`, `endsAt`, `status`, `revision`, ...) cộng `shiftedSessions[{ sessionId, startsAt, fromLesson, toLesson, hasAssessments }]`, `pushedLesson`, `pushedLessonFits` (`false`: kỳ không còn buổi trống, web báo "Bài <tên> chưa có buổi trong kỳ này"). Gửi lại cùng key trả đúng response này.
+- Lỗi: như hủy cũ (`SESSION_LOCKED`, `REVISION_CONFLICT`, `MAKEUP_BOOKING_EXISTS`, `SESSION_HAS_DEPENDENCIES`) và 409 `LESSON_SHIFT_BLOCKED` khi một buổi bị đổi bài có học bù đã đặt (học bù phải cùng bài, SRS 5.6), `details.sessions[{ sessionId, startsAt }]`.
+
+`POST /academic/sessions/:id/cancel-preview` (body `{ "shiftLessons": true }`): cùng phép tính, không ghi gì, luôn 200: `{ sessionId, classId, shiftLessons, cancellable, blockers[{ sessionId, code }], shiftedSessions, pushedLesson, pushedLessonFits }`.
+
+Hủy nhiều buổi (chỉ MANAGER):
+
+```http
+POST /api/v1/academic/sessions/bulk-cancel
+Idempotency-Key: <uuid>
+
+{ "sessionIds": ["..."], "reason": "Nghỉ Tết", "shiftLessons": true }
+```
+
+- `sessionIds` 1–200, không trùng. Một transaction: được cả hoặc không được gì. Trong từng lớp, kết quả giống hủy lần lượt theo thời gian.
+- Bị chặn: 409 `BULK_CANCEL_BLOCKED`, `details.blockers[{ sessionId, code }]`, `code` ∈ `SESSION_NOT_FOUND`, `SESSION_LOCKED` (đã qua hoặc không còn `SCHEDULED`), `MAKEUP_BOOKING_EXISTS`, `ATTENDANCE_RECORDED`, `LEAVE_EXISTS`, `LESSON_SHIFT_BLOCKED`.
+- Response: `{ bulkId, cancelledCount, shiftLessons, classes[{ classId, className, cancelledSessions, shiftedSessions, pushedLessons[{ id, title, sequence, fitsInTerm }] }] }`. Cùng key và cùng body (thứ tự `sessionIds` không quan trọng) trả lại kết quả cũ; body khác: `IDEMPOTENCY_CONFLICT`.
+- Mỗi lớp một thông báo `SESSION_CANCELLED` (đích `CLASS`) kèm lý do và ngày các buổi bị hủy.
+- `POST /academic/sessions/bulk-cancel-preview`: cùng body (được gửi kèm `reason`), không ghi gì, luôn 200: `{ total, shiftLessons, cancellable, blockers, classes }`.
+
+Khác biệt cần biết: hủy một buổi báo đã điểm danh và có đơn nghỉ chung một mã `SESSION_HAS_DEPENDENCIES`; danh sách `blockers` của preview và hủy nhiều buổi tách thành `ATTENDANCE_RECORDED` và `LEAVE_EXISTS`.
+
+## Ngày nghỉ trung tâm (B5, từ 10/11)
+
+- `GET /academic/center-closures?fromDate=2027-02-01&toDate=2027-02-28&page=1&limit=20&paginated=true` (MANAGER, STAFF, TEACHER, CURRICULUM_DESIGNER): ngày nghỉ chồng lên khoảng hỏi, xếp theo `fromDate`.
+- `POST /academic/center-closures` `{ fromDate, toDate, reason }`, `PATCH /academic/center-closures/:id` `{ fromDate?, toDate?, reason?, expectedRevision }`, `DELETE /academic/center-closures/:id`: chỉ MANAGER, có audit.
+- Ngày là ngày địa phương (UTC+7), `toDate` tính trọn ngày. Tối đa 92 ngày, không chồng ngày nghỉ khác.
+- `POST`/`PATCH` **không tự hủy buổi**: trả `affectedSessions` (tối đa 500) và `affectedTotal` để Quản lý hủy bằng `bulk-cancel` có dời bài. Không gửi thông báo khi tạo ngày nghỉ.
+- Tạo lịch bỏ ngày nghỉ khi gán bài theo vị trí trong kỳ và khi tính `unscheduledLessons`. Ngày nghỉ thêm sau khi đã tạo lịch: hủy các buổi trong ngày nghỉ bằng `bulk-cancel` có dời bài, rồi tạo lịch tiếp; bài không mất, không lặp.
+- Lỗi: 400 `INVALID_DATE_RANGE`, 400 `CLOSURE_TOO_LONG`, 409 `CENTER_CLOSURE_OVERLAP`, 409 `REVISION_CONFLICT`, 404 `CENTER_CLOSURE_NOT_FOUND`.
+
 ## Quy tắc và lỗi cần hiển thị
 
-- Học phần phải được duyệt, lớp phải đúng môn/khối, có lịch tuần và giáo viên đang hoạt động. Khoảng sinh phải nằm trong khoảng học phần. Hệ thống tính bài từ **đầu học phần**, nên sinh hai đoạn liên tiếp cho cùng lớp không làm bài quay về số 1.
+- Học phần phải được duyệt, lớp phải đúng môn/khối, có lịch tuần và giáo viên đang hoạt động. Khoảng sinh phải nằm trong khoảng học phần. Lần tạo lịch đầu của lớp tính bài từ **đầu học phần**; các lần sau nối tiếp bài của buổi cuối, nên sinh hai đoạn liên tiếp cho cùng lớp không làm bài quay về số 1.
 - Duyệt yêu cầu bài học có `sequence` liên tục từ 1 và bài kiểm tra cho mỗi tháng có buổi học. Nếu lớp được tạo sau khi duyệt, bước xem trước/sinh lịch vẫn kiểm tra lại đủ nội dung.
 - Hai lớp dùng cùng ID bài nhưng có thể học khác ngày. Buổi học bù chỉ có ứng viên nếu lớp khác đã sinh buổi cùng ID bài; riêng ranh giới tháng có thể làm vị trí bài kiểm tra giữa các lớp khác nhau.
 - `INSUFFICIENT_LESSONS`, `LESSON_SEQUENCE_GAP`, `MISSING_MONTHLY_TEST`, `NO_SCHEDULED_CLASS`: hoàn thiện giáo trình/lịch trước khi duyệt.

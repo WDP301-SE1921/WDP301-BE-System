@@ -1,7 +1,7 @@
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { Prisma, type ClassWeeklySchedule, type Lesson } from '@prisma/client';
+import { Prisma, type Lesson } from '@prisma/client';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
@@ -36,6 +36,18 @@ import {
   lockCurriculumProgram,
   publishedCurriculumWhere,
 } from './curriculum-lifecycle';
+import {
+  lessonQueue,
+  slotsForRange,
+  vietnamDate,
+  vietnamDayStart,
+  type ClosureRange,
+} from './session-lesson-plan';
+import { closuresBetween } from './center-closure.service';
+import { SessionCancellationRepository } from './session-cancellation.repository';
+
+// Seeds and older callers import the calendar helper from here.
+export { slotsForRange } from './session-lesson-plan';
 
 const DAY_MS = 86_400_000;
 const HCM_OFFSET_MS = 7 * 3_600_000;
@@ -59,6 +71,11 @@ type PlannedSlot = {
   kind: 'LESSON' | 'MONTHLY_TEST';
   monthKey: string;
 };
+type PlanContext = {
+  closures: ClosureRange[];
+  anchorLessonId: string | null;
+  anchorSequence: number | null;
+};
 
 function slotsTeacherIds(classroom: ClassWithSchedule, slots: PlannedSlot[]): string[] {
   return [...new Set(slots.map((slot) => assignedTeacherAt(classroom, slot.startsAt)))].filter(
@@ -68,6 +85,9 @@ function slotsTeacherIds(classroom: ClassWithSchedule, slots: PlannedSlot[]): st
 
 @Injectable()
 export class CurriculumSchedulingService {
+  // Stateless SQL helpers; created here so existing callers keep the two-argument constructor.
+  private readonly sessionRows = new SessionCancellationRepository();
+
   constructor(
     private readonly db: DatabaseService,
     private readonly notifications: NotificationEventsService,
@@ -1157,7 +1177,9 @@ export class CurriculumSchedulingService {
       this.loadUnit(input.curriculumUnitId),
       this.loadClass(classId),
     ]);
-    const slots = this.plan(unit, classroom, input);
+    const context = await this.planContext(this.db, classId, unit, input.fromDate, false);
+    const outlook = this.planWithOutlook(unit, classroom, input, context);
+    const slots = outlook.slots;
     const conflicts = await this.findConflicts(this.db, classroom, slots);
     const savedPreview = await this.db.schedulePreview.create({
       data: {
@@ -1166,7 +1188,7 @@ export class CurriculumSchedulingService {
         actorUserId: user.id,
         fromDate: localDate(input.fromDate),
         toDate: localDate(input.toDate),
-        snapshotHash: this.scheduleSnapshot(unit, classroom),
+        snapshotHash: this.scheduleSnapshot(unit, classroom, context),
         expiresAt: new Date(Date.now() + 15 * 60_000),
       },
     });
@@ -1188,6 +1210,11 @@ export class CurriculumSchedulingService {
       curriculumUnitId: unit.id,
       fromDate: input.fromDate,
       toDate: input.toDate,
+      // CONTINUE: follows the class's last lesson of this unit (C4); TERM_POSITION: first
+      // generation, lesson by slot position from the start of the term.
+      mode: context.anchorSequence === null ? 'TERM_POSITION' : 'CONTINUE',
+      startLesson: outlook.startLesson && lessonRef(outlook.startLesson),
+      unscheduledLessons: outlook.unscheduledLessons.map(lessonRef),
       summary: {
         total: slots.length,
         lessons: slots.filter((slot) => slot.kind === 'LESSON').length,
@@ -1263,6 +1290,9 @@ export class CurriculumSchedulingService {
       ]);
       this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+      // Read after the program and class locks: a concurrent cancel that shifts lessons
+      // locks the class first, so the anchor lesson cannot change under this generation.
+      const context = await this.planContext(tx, classId, unit, input.fromDate, true);
       if (input.previewId) {
         const preview = await tx.schedulePreview.findUnique({ where: { id: input.previewId } });
         this.assert(
@@ -1273,18 +1303,16 @@ export class CurriculumSchedulingService {
             dateOnly(preview.fromDate) === input.fromDate &&
             dateOnly(preview.toDate) === input.toDate &&
             preview.expiresAt > new Date() &&
-            preview.snapshotHash === this.scheduleSnapshot(unit, classroom),
+            preview.snapshotHash === this.scheduleSnapshot(unit, classroom, context),
           'PREVIEW_STALE',
           'Schedule preview is stale; preview again',
         );
       }
-      const teacherIds = [
-        ...new Set(slotsTeacherIds(classroom, this.plan(unit, classroom, input))),
-      ];
+      const slots = this.plan(unit, classroom, input, context);
+      const teacherIds = [...new Set(slotsTeacherIds(classroom, slots))];
       for (const teacherId of teacherIds) {
         await tx.$queryRaw`SELECT id FROM users WHERE id = ${teacherId} FOR UPDATE`;
       }
-      const slots = this.plan(unit, classroom, input);
       const conflicts = await this.findConflicts(tx, classroom, slots);
       this.assert(
         !conflicts.length,
@@ -1939,11 +1967,82 @@ export class CurriculumSchedulingService {
     return { startsAt, endsAt, roomId, conflicts: [] };
   }
 
+  /**
+   * Inputs of `plan` that come from other rows: center closures over the unit term and the
+   * lesson of the class's last session of this unit (C4). Load after locking the class.
+   * `lock`: read the anchor with `FOR UPDATE` (generate). A plain read inside a TiDB
+   * pessimistic transaction uses the snapshot from before the class lock was granted, so it
+   * could miss a cancel-with-shift that committed while this transaction waited.
+   */
+  private async planContext(
+    db: Prisma.TransactionClient,
+    classId: string,
+    unit: UnitWithLessons,
+    fromDate: string,
+    lock: boolean,
+  ): Promise<PlanContext> {
+    const [closures, last] = await Promise.all([
+      closuresBetween(db, dateOnly(unit.fromDate), dateOnly(unit.toDate)),
+      lock ? this.lockedAnchor(db, classId, unit) : this.anchor(db, classId, unit),
+    ]);
+    if (last)
+      this.assert(
+        last.startsAt < vietnamDayStart(fromDate),
+        'SESSIONS_AFTER_RANGE_EXIST',
+        'The class already has sessions of this curriculum on or after fromDate',
+        HttpStatus.CONFLICT,
+        { lastScheduledDate: vietnamDate(last.startsAt) },
+      );
+    return {
+      closures,
+      anchorLessonId: last?.lesson.id ?? null,
+      anchorSequence: last?.lesson.sequence ?? null,
+    };
+  }
+
+  private anchor(
+    db: Prisma.TransactionClient,
+    classId: string,
+    unit: UnitWithLessons,
+  ): Promise<{ startsAt: Date; lesson: { id: string; sequence: number } } | null> {
+    return db.classSession.findFirst({
+      where: {
+        classId,
+        status: { not: 'CANCELLED' },
+        lesson: { unitId: unit.id, kind: 'LESSON' },
+      },
+      orderBy: [{ startsAt: 'desc' }, { id: 'desc' }],
+      select: { startsAt: true, lesson: { select: { id: true, sequence: true } } },
+    });
+  }
+
+  private async lockedAnchor(
+    db: Prisma.TransactionClient,
+    classId: string,
+    unit: UnitWithLessons,
+  ): Promise<{ startsAt: Date; lesson: { id: string; sequence: number } } | null> {
+    const last = await this.sessionRows.lastUnitSession(db, classId, unit.id);
+    if (!last) return null;
+    const lesson = unit.lessons.find((row) => row.id === last.lessonId);
+    this.assert(lesson, 'LESSON_NOT_FOUND', 'Lesson of the last session is not in this unit');
+    return { startsAt: last.startsAt, lesson: { id: lesson.id, sequence: lesson.sequence } };
+  }
+
   private plan(
     unit: UnitWithLessons,
     classroom: ClassWithSchedule,
     input: ScheduleRangeDto,
+    context: PlanContext,
   ): PlannedSlot[] {
+    return this.planWithOutlook(unit, classroom, input, context).slots;
+  }
+
+  private planWithOutlook(
+    unit: UnitWithLessons,
+    classroom: ClassWithSchedule,
+    input: ScheduleRangeDto,
+    context: PlanContext,
+  ): { slots: PlannedSlot[]; unscheduledLessons: Lesson[]; startLesson: Lesson | null } {
     this.assertRange(input.fromDate, input.toDate);
     this.assert(
       unit.status === 'APPROVED',
@@ -1972,40 +2071,49 @@ export class CurriculumSchedulingService {
       'Assign an active teacher to the class',
     );
     assertProgramFrequency(classroom.program, classroom.weeklySchedules.length, classroom.id);
-    const dated = slotsForRange(
+    const term = slotsForRange(
       classroom.weeklySchedules,
       dateOnly(unit.fromDate),
       dateOnly(unit.toDate),
+      context.closures,
     );
-    this.assert(
-      dated.some((item) => item.date >= input.fromDate && item.date <= input.toDate),
-      'NO_SESSIONS',
-      'No class sessions fall in the requested range',
+    const inRange = term.filter(
+      (item) => item.date >= input.fromDate && item.date <= input.toDate,
     );
-    const lessons = unit.lessons
-      .filter((row) => row.kind === 'LESSON')
-      .sort((a, b) => a.sequence - b.sequence);
-    return dated
-      .map((item, index) => {
-        const month = item.date.slice(0, 7);
-        const lesson: Lesson | undefined = lessons[index];
-        this.assert(lesson, 'INSUFFICIENT_LESSONS', 'Not enough approved lessons for this range');
-        this.assert(
-          lesson.status === 'APPROVED',
-          'LESSON_NOT_APPROVED',
-          'All scheduled content must be approved',
-        );
-        return {
-          date: item.date,
-          startsAt: item.startsAt,
-          endsAt: item.endsAt,
-          lessonId: lesson.id,
-          lessonTitle: lesson.title,
-          kind: lesson.kind,
-          monthKey: month,
-        };
-      })
-      .filter((item) => item.date >= input.fromDate && item.date <= input.toDate);
+    this.assert(inRange.length, 'NO_SESSIONS', 'No class sessions fall in the requested range');
+    // Only the requested range must have a lesson for every slot: later slots are generated
+    // later and continue from the class's last lesson.
+    const queue = lessonQueue(
+      unit.lessons.filter((row) => row.kind === 'LESSON'),
+      term,
+      input.fromDate,
+      context.anchorSequence,
+    );
+    const slots = inRange.map((item, index) => {
+      const lesson: Lesson | undefined = queue[index];
+      this.assert(lesson, 'INSUFFICIENT_LESSONS', 'Not enough approved lessons for this range');
+      this.assert(
+        lesson.status === 'APPROVED',
+        'LESSON_NOT_APPROVED',
+        'All scheduled content must be approved',
+      );
+      return {
+        date: item.date,
+        startsAt: item.startsAt,
+        endsAt: item.endsAt,
+        lessonId: lesson.id,
+        lessonTitle: lesson.title,
+        kind: lesson.kind,
+        monthKey: item.date.slice(0, 7),
+      };
+    });
+    const slotsLeft = term.filter((item) => item.date > input.toDate).length;
+    return {
+      slots,
+      // Lessons that no slot of this term can take after this range (C4: warn, do not fail).
+      unscheduledLessons: queue.slice(inRange.length + slotsLeft),
+      startLesson: queue[0] ?? null,
+    };
   }
 
   private async findConflicts(
@@ -2049,10 +2157,16 @@ export class CurriculumSchedulingService {
     );
   }
 
-  private scheduleSnapshot(unit: UnitWithLessons, classroom: ClassWithSchedule): string {
+  private scheduleSnapshot(
+    unit: UnitWithLessons,
+    classroom: ClassWithSchedule,
+    context: PlanContext,
+  ): string {
     return createHash('sha256')
       .update(
         JSON.stringify({
+          closures: context.closures,
+          anchorLessonId: context.anchorLessonId,
           unit: {
             id: unit.id,
             status: unit.status,
@@ -2232,8 +2346,9 @@ export class CurriculumSchedulingService {
     code: string,
     message: string,
     status = HttpStatus.CONFLICT,
+    details?: unknown,
   ): asserts condition {
-    if (!condition) throw new AppError(code, message, status);
+    if (!condition) throw new AppError(code, message, status, details);
   }
 
   private async transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
@@ -2264,29 +2379,16 @@ function dateOnly(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
 
-function vietnamToday(): string {
-  return new Date(Date.now() + HCM_OFFSET_MS).toISOString().slice(0, 10);
+function lessonRef(lesson: Pick<Lesson, 'id' | 'title' | 'sequence'>): {
+  id: string;
+  title: string;
+  sequence: number;
+} {
+  return { id: lesson.id, title: lesson.title, sequence: lesson.sequence };
 }
 
-export function slotsForRange(
-  schedules: Array<Pick<ClassWeeklySchedule, 'weekday' | 'startTime' | 'endTime'>>,
-  from: string,
-  to: string,
-): Array<{ date: string; startsAt: Date; endsAt: Date }> {
-  const result: Array<{ date: string; startsAt: Date; endsAt: Date }> = [];
-  for (let day = localDate(from); day <= localDate(to); day = new Date(day.getTime() + DAY_MS)) {
-    const weekday = day.getUTCDay() || 7;
-    for (const schedule of schedules.filter((item) => item.weekday === weekday)) {
-      const [startHour, startMinute] = schedule.startTime.split(':').map(Number);
-      const [endHour, endMinute] = schedule.endTime.split(':').map(Number);
-      result.push({
-        date: dateOnly(day),
-        startsAt: new Date(day.getTime() + (startHour * 60 + startMinute) * 60_000 - HCM_OFFSET_MS),
-        endsAt: new Date(day.getTime() + (endHour * 60 + endMinute) * 60_000 - HCM_OFFSET_MS),
-      });
-    }
-  }
-  return result.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+function vietnamToday(): string {
+  return new Date(Date.now() + HCM_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 export function lastMonthlySlots(slots: Array<{ date: string }>): Map<string, number> {

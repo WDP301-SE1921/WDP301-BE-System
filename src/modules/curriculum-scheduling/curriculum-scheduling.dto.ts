@@ -1,12 +1,15 @@
 import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
+import { PageDto } from '../academic/academic.dto';
 import {
   IsDateString,
   IsInt,
   IsOptional,
   IsIn,
   IsArray,
+  ArrayMaxSize,
   ArrayMinSize,
+  ArrayUnique,
   ValidateNested,
   IsBoolean,
   IsString,
@@ -123,6 +126,78 @@ export class SessionRescheduleDto {
 export class SessionCancelDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
   @ApiProperty() @IsInt() @Min(1) expectedRevision!: number;
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'true: every later session of the same curriculum takes the previous lesson and the last lesson is pushed out (pushedLesson). false keeps the old behaviour: cancel and drop the lesson.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  shiftLessons?: boolean;
+}
+
+export class SessionCancelPreviewDto {
+  @ApiPropertyOptional({ default: false }) @IsOptional() @IsBoolean() shiftLessons?: boolean;
+}
+
+export class SessionBulkCancelPreviewDto {
+  @ApiProperty({ type: [String], minItems: 1, maxItems: 200 })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(200)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @MinLength(1, { each: true })
+  @MaxLength(191, { each: true })
+  sessionIds!: string[];
+  @ApiPropertyOptional({ default: false }) @IsOptional() @IsBoolean() shiftLessons?: boolean;
+  @ApiPropertyOptional({ description: 'Accepted so the cancel form body can be previewed as is.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
+export class SessionBulkCancelDto extends OmitType(SessionBulkCancelPreviewDto, ['reason']) {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
+}
+
+const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export class CenterClosureDto {
+  @ApiProperty({ example: '2027-02-05', description: 'First closed local (UTC+7) date' })
+  @IsDateString({ strict: true })
+  @Matches(LOCAL_DATE)
+  fromDate!: string;
+  @ApiProperty({ example: '2027-02-12', description: 'Last closed local date, inclusive' })
+  @IsDateString({ strict: true })
+  @Matches(LOCAL_DATE)
+  toDate!: string;
+  @ApiProperty({ example: 'Tết Nguyên đán' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  reason!: string;
+}
+
+export class UpdateCenterClosureDto {
+  @ApiPropertyOptional() @IsOptional() @IsDateString({ strict: true }) @Matches(LOCAL_DATE) fromDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString({ strict: true }) @Matches(LOCAL_DATE) toDate?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(255) reason?: string;
+  @ApiProperty() @IsInt() @Min(1) expectedRevision!: number;
+}
+
+export class CenterClosureQueryDto extends PageDto {
+  @ApiPropertyOptional({ description: 'Closures that end on or after this local date' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  @Matches(LOCAL_DATE)
+  fromDate?: string;
+  @ApiPropertyOptional({ description: 'Closures that start on or before this local date' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  @Matches(LOCAL_DATE)
+  toDate?: string;
 }
 
 export class ImportRowDto {

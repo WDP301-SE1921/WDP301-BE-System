@@ -17,6 +17,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
 import { assertProgramFrequency } from './program-frequency';
+import { scheduledUntilByClass } from './class-scheduled-until';
 import { attendanceContribution } from '../academic/attendance-calculation';
 import {
   ClassDto,
@@ -373,7 +374,18 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       },
     });
     this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
-    return program;
+    // scheduledUntil: last non-cancelled session date (UTC+7) for the readiness checklist.
+    const scheduledUntil = await scheduledUntilByClass(
+      this.db,
+      program.classes.map((row) => row.id),
+    );
+    return {
+      ...program,
+      classes: program.classes.map((row) => ({
+        ...row,
+        scheduledUntil: scheduledUntil.get(row.id) ?? null,
+      })),
+    };
   }
 
   async createClass(user: AuthenticatedUser, input: ClassDto): Promise<unknown> {
@@ -897,7 +909,15 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         }),
       ),
     );
-    const listed = rows.map((row, index) => ({ ...row, rosterCount: rosterCounts[index] }));
+    const scheduledUntil = await scheduledUntilByClass(
+      this.db,
+      rows.map((row) => row.id),
+    );
+    const listed = rows.map((row, index) => ({
+      ...row,
+      rosterCount: rosterCounts[index],
+      scheduledUntil: scheduledUntil.get(row.id) ?? null,
+    }));
     if (!input.startDate || !input.packageMonths || user.role === 'TEACHER')
       return pageResult(input, Promise.resolve(listed), () => this.db.class.count({ where }));
     const startDate = localDate(input.startDate);

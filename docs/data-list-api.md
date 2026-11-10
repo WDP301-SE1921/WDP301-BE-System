@@ -86,6 +86,7 @@ Lịch tuần là tập slot được tính từ các enrollment/placement của
 | `/academic/curriculum-units` | `programId`, `subject`, `grade`, `status`, `search` tiêu đề, `fromDate`, `toDate` theo khoảng giáo trình giao nhau; luôn áp dụng trang kể cả khi không yêu cầu metadata |
 | `/academic/curriculum-units/:id/reviewers` | `search` email/tên, áp sau khi chia nhóm `reason` (PROGRAM, SUBJECT, ANY); chỉ giáo viên ACTIVE; phân trang trên danh sách đã xếp theo nhóm |
 | `/academic/scheduled-sessions` | Giữ `classId`, `studentId`, ngày; thêm `teacherId`, `roomId`, `lessonId`, `status`, `search` tiêu đề bài/tên lớp |
+| `/academic/center-closures` | `fromDate`, `toDate` (ngày nghỉ chồng lên khoảng, ngày địa phương `YYYY-MM-DD`); xếp `fromDate`, `id` |
 | `/academic/classes/:id/session-generations` | `search` tiêu đề giáo trình, `classId`, `fromDate`, `toDate` theo ngày tạo |
 | `/academic/me/students/:id/curriculum` | `programId`, `subject`, `grade`, `search` tiêu đề, `fromDate`, `toDate` theo khoảng giáo trình giao nhau; chỉ giáo trình APPROVED trong phạm vi học của đúng con |
 
