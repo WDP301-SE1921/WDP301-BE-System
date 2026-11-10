@@ -128,6 +128,19 @@ export class ObjectStorageService implements OnApplicationShutdown {
     }
   }
 
+  async readObject(key: string, maxBytes = 10 * 1024 * 1024): Promise<Buffer> {
+    const { client, bucket } = this.getInternalClient();
+    const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), {
+      abortSignal: AbortSignal.timeout(30000),
+    });
+    if (!result.Body || (result.ContentLength ?? 0) > maxBytes)
+      throw new ServiceUnavailableException('File exceeds processing limit');
+    const bytes = await result.Body.transformToByteArray();
+    if (bytes.length > maxBytes)
+      throw new ServiceUnavailableException('File exceeds processing limit');
+    return Buffer.from(bytes);
+  }
+
   async deleteObject(key: string): Promise<void> {
     const { client, bucket } = this.getInternalClient();
     try {

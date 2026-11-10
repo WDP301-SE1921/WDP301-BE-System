@@ -41,7 +41,12 @@ export class PageDto {
   )
   @IsBoolean()
   paginated?: boolean;
-  @ApiPropertyOptional({ default: 1, maximum: 1000000 }) @Type(() => Number) @IsInt() @Min(1) @Max(1000000) page = 1;
+  @ApiPropertyOptional({ default: 1, maximum: 1000000 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1000000)
+  page = 1;
   @ApiPropertyOptional({ default: 20 }) @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
 }
 export class StudentPageDto extends PageDto {
@@ -212,7 +217,32 @@ export class SubmissionWindowDto {
   @ApiProperty() @IsDateString() dueAt!: string;
   @ApiProperty() @IsInt() @Min(1) @Max(10) maxAttempts!: number;
 }
+export class RubricCriterionDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(100) id!: string;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
+  @ApiProperty() @IsString() @MaxLength(5000) description!: string;
+  @ApiProperty() @IsNumber() @Min(0.01) @Max(100) maxScore!: number;
+}
+export class AssignmentFileDto {
+  @ApiPropertyOptional({
+    description: 'Zero-based question position; omitted means whole assignment',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  questionPosition?: number;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) fileId!: string;
+  @ApiProperty() @IsBoolean() teacherOnly!: boolean;
+}
 export class QuestionDto {
+  @ApiPropertyOptional({ type: [RubricCriterionDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => RubricCriterionDto)
+  criteria?: RubricCriterionDto[];
   @ApiProperty({ enum: QuestionKind }) @IsEnum(QuestionKind) kind!: QuestionKind;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(10000) prompt!: string;
   @ApiPropertyOptional({ type: [String] })
@@ -226,10 +256,21 @@ export class QuestionDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(10000) correctAnswer?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(10000) rubric?: string;
   @ApiPropertyOptional({ description: 'Approved CLO measured by this question' })
-  @IsOptional() @IsString() @MinLength(1) @MaxLength(191) outcomeId?: string;
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(191)
+  outcomeId?: string;
   @ApiProperty() @IsNumber() @Min(0.01) @Max(100) maxScore!: number;
 }
 export class AssignmentDto {
+  @ApiPropertyOptional({ type: [AssignmentFileDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @ValidateNested({ each: true })
+  @Type(() => AssignmentFileDto)
+  files?: AssignmentFileDto[];
   @ApiPropertyOptional({ enum: AssignmentKind, default: 'HOMEWORK' })
   @IsOptional()
   @IsEnum(AssignmentKind)
@@ -238,7 +279,11 @@ export class AssignmentDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) sessionId?: string;
   @ApiProperty() @IsString() @MinLength(1) classId!: string;
   @ApiPropertyOptional({ description: 'Approved CLO set for this assignment' })
-  @IsOptional() @IsString() @MinLength(1) @MaxLength(191) outcomeSetId?: string;
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(191)
+  outcomeSetId?: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MaxLength(10000) instructions!: string;
   @ApiProperty() @IsDateString() dueAt!: string;
@@ -272,8 +317,14 @@ export class OutcomeSourceReviewDto {
 export class OutcomeSetCreateDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) programId!: string;
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(100) level!: string;
-  @ApiPropertyOptional({ description: 'Copy CLOs and lesson links from this set of the same program' })
-  @IsOptional() @IsString() @MinLength(1) @MaxLength(191) copyFromId?: string;
+  @ApiPropertyOptional({
+    description: 'Copy CLOs and lesson links from this set of the same program',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(191)
+  copyFromId?: string;
 }
 
 export class OutcomeChangeRequestDto {
@@ -293,7 +344,9 @@ export class LearningOutcomeWriteDto {
 
 export class LessonOutcomeWriteDto {
   @ApiProperty({ type: [String] })
-  @IsArray() @ArrayUnique() @IsString({ each: true })
+  @IsArray()
+  @ArrayUnique()
+  @IsString({ each: true })
   outcomeIds!: string[];
 }
 export class RecipientsDto {
@@ -306,6 +359,16 @@ export class RecipientsDto {
   enrollmentIds!: string[];
 }
 export class AnswerDto {
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Optional mapping to uploaded files included in submission.fileIds',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @ArrayUnique()
+  @IsString({ each: true })
+  fileIds?: string[];
   @ApiProperty() @IsString() @MinLength(1) questionId!: string;
   @ApiProperty() @IsString() @MaxLength(20000) answer!: string;
 }
@@ -326,12 +389,43 @@ export class SubmissionDto {
   @IsString({ each: true })
   fileIds?: string[];
 }
+export class AiGradingRequestDto {
+  @ApiPropertyOptional({
+    type: [AnswerDto],
+    description: 'Teacher-verified transcription corrections; original submission is unchanged',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => AnswerDto)
+  corrections?: AnswerDto[];
+}
+export class CriterionScoreDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(100) criterionId!: string;
+  @ApiProperty() @IsNumber() @Min(0) @Max(100) score!: number;
+  @ApiProperty() @IsString() @MaxLength(5000) feedback!: string;
+}
 export class ScoreDto {
+  @ApiPropertyOptional({ type: [CriterionScoreDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => CriterionScoreDto)
+  criteria?: CriterionScoreDto[];
   @ApiProperty() @IsString() @MinLength(1) questionId!: string;
   @ApiProperty() @IsNumber() @Min(0) @Max(100) score!: number;
   @ApiProperty() @IsString() @MaxLength(5000) feedback!: string;
 }
 export class GradeDto {
+  @ApiPropertyOptional({
+    description: 'Last grade revision seen by the teacher; 0 for an ungraded submission',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  expectedRevision?: number;
   @ApiProperty({ type: [ScoreDto] })
   @IsArray()
   @ArrayMinSize(1)

@@ -72,6 +72,7 @@ describe('CLO source safeguards', () => {
     };
     const update = jest.fn();
     const db = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       class: {
         findMany: jest
           .fn()

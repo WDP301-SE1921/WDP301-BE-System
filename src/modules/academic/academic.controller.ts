@@ -1,3 +1,4 @@
+import { AiGradingRequestDto } from './academic.dto';
 import {
   Body,
   Controller,
@@ -33,7 +34,20 @@ import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
 import { OutcomeService } from './outcome.service';
 import { StudentGradeQueryDto } from './academic-list.dto';
-import { AcademicProgramQueryDto, AcademicClassQueryDto, LessonQueryDto, AcademicSessionQueryDto, FeedbackQueryDto, EnrollmentQueryDto, RosterQueryDto, AssignmentQueryDto, SubmissionQueryDto, MakeupQueryDto, ClassContentQueryDto, OutcomeSetQueryDto } from './academic-list.dto';
+import {
+  AcademicProgramQueryDto,
+  AcademicClassQueryDto,
+  LessonQueryDto,
+  AcademicSessionQueryDto,
+  FeedbackQueryDto,
+  EnrollmentQueryDto,
+  RosterQueryDto,
+  AssignmentQueryDto,
+  SubmissionQueryDto,
+  MakeupQueryDto,
+  ClassContentQueryDto,
+  OutcomeSetQueryDto,
+} from './academic-list.dto';
 import { AssignmentImportService } from './assignment-import.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
@@ -149,18 +163,27 @@ export class AcademicController {
 
   @Get('programs/:id/outcome-sets')
   @ApiOperation({ summary: 'List sourced CLO drafts and approved sets for one program' })
-  outcomeSets(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Query() query: OutcomeSetQueryDto): Promise<unknown> {
+  outcomeSets(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() query: OutcomeSetQueryDto,
+  ): Promise<unknown> {
     return this.outcomes.list(user, id, query);
   }
 
   @Post('outcome-sets')
   @ApiOperation({ summary: 'Curriculum designer: create a new versioned CLO set' })
-  createOutcomeSet(@CurrentUser() user: AuthenticatedUser, @Body() input: OutcomeSetCreateDto): Promise<unknown> {
+  createOutcomeSet(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: OutcomeSetCreateDto,
+  ): Promise<unknown> {
     return this.outcomes.createSet(user, input.programId, input.level, input.copyFromId);
   }
 
   @Post('outcome-sets/:id/request-changes')
-  @ApiOperation({ summary: 'Manager: send a teacher-reviewed CLO set back to draft' })
+  @ApiOperation({
+    summary: 'Manager: request a new revision without changing the approved CLO set',
+  })
   requestOutcomeChanges(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -211,18 +234,15 @@ export class AcademicController {
   }
 
   @Post('outcome-sets/:id/technical-approve')
-  @ApiOperation({ summary: 'Assigned teacher: approve a verified CLO set' })
+  @ApiOperation({
+    summary:
+      'Assigned teacher: final approval of a verified CLO set; immediately available for assignments',
+  })
   technicalApproveOutcomes(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
   ): Promise<unknown> {
     return this.outcomes.technicalApprove(user, id);
-  }
-
-  @Post('outcome-sets/:id/approve')
-  @ApiOperation({ summary: 'Manager: approve a teacher-reviewed CLO set' })
-  approveOutcomes(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
-    return this.outcomes.approve(user, id);
   }
 
   @Get('outcome-sets/:id')
@@ -233,7 +253,10 @@ export class AcademicController {
 
   @Delete('outcome-sets/:id')
   @ApiOperation({ summary: 'Curriculum designer / Manager: delete a draft outcome set' })
-  deleteOutcomeSet(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+  deleteOutcomeSet(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
     return this.outcomes.deleteSet(user, id);
   }
 
@@ -618,10 +641,9 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.assessment.submissions(user, id, page);
   }
-  @Post('submissions') submit(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() input: SubmissionDto,
-  ): Promise<unknown> {
+  @ApiOperation({ summary: 'Parent: submit typed answers and/or uploaded PDF, JPG, PNG files' })
+  @Post('submissions')
+  submit(@CurrentUser() user: AuthenticatedUser, @Body() input: SubmissionDto): Promise<unknown> {
     return this.assessment.submit(user, input);
   }
   @Post('submissions/:id/grades') grade(
@@ -637,16 +659,26 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.assessment.objectiveGrade(user, id);
   }
-  @Post('submissions/:id/grade-ai') ai(
+  @ApiOperation({
+    summary: 'Teacher: queue AI transcription and rubric grading; does not publish grades',
+    description:
+      'PDF/JPG/PNG work is transcribed with vision AI before scoring. Poll grading-jobs/:id. Unreadable questions require manual review. Optional corrections are teacher-verified transcripts and do not change the original submission.',
+  })
+  @Post('submissions/:id/grade-ai')
+  ai(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
+    @Body() input: AiGradingRequestDto,
   ): Promise<unknown> {
-    return this.grading.enqueue(user, id);
+    return this.grading.enqueue(user, id, input);
   }
-  @Get('grading-jobs/:id') job(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-  ): Promise<unknown> {
+  @ApiOperation({
+    summary: 'Teacher: poll QUEUED / PROCESSING / SUCCEEDED / FAILED AI job',
+    description:
+      'result includes scores, per-criterion feedback, readings with file/page sources, readingError and manualReviewQuestionIds. SUCCEEDED may still require manual review. errorCode identifies a failed run; no grade is saved or published automatically.',
+  })
+  @Get('grading-jobs/:id')
+  job(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
     return this.grading.result(user, id);
   }
   @Post('grades/:id/approve') approveGrade(

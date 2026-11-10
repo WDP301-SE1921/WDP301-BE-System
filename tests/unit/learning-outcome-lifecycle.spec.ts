@@ -9,9 +9,10 @@ const manager = { id: 'manager', role: 'MANAGER' } as AuthenticatedUser;
 const designer = { id: 'designer', role: 'CURRICULUM_DESIGNER' } as AuthenticatedUser;
 
 function outcomeService(db: Record<string, unknown>): OutcomeService {
+  const client = { $queryRaw: jest.fn().mockResolvedValue([]), ...db };
   return new OutcomeService({
-    db,
-    transaction: (work: (tx: unknown) => Promise<unknown>): Promise<unknown> => work(db),
+    db: client,
+    transaction: (work: (tx: unknown) => Promise<unknown>): Promise<unknown> => work(client),
   } as unknown as AcademicRepository);
 }
 
@@ -111,12 +112,12 @@ describe('CLO lifecycle across curriculum periods', () => {
 });
 
 describe('CLO set review loop', () => {
-  it('lets the manager send a teacher-reviewed set back to draft with a reason', async () => {
-    const update = jest.fn().mockResolvedValue({ id: 'set-1', status: 'DRAFT' });
+  it('lets the manager request a new revision without revoking approval', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 'set-1', status: 'APPROVED' });
     const auditLog = { create: jest.fn() };
     const db = {
       outcomeSet: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'set-1', status: 'TECHNICALLY_APPROVED' }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'set-1', status: 'APPROVED' }),
         update,
       },
       auditLog,
@@ -125,10 +126,7 @@ describe('CLO set review loop', () => {
     expect(update).toHaveBeenCalledWith({
       where: { id: 'set-1' },
       data: {
-        status: 'DRAFT',
         reviewNote: 'CLO-02 chưa đo được',
-        reviewerId: null,
-        reviewedAt: null,
       },
     });
     expect(auditLog.create).toHaveBeenCalledWith(
@@ -141,12 +139,12 @@ describe('CLO set review loop', () => {
     );
   });
 
-  it('refuses to reopen a draft or an already approved set', async () => {
+  it('refuses revision requests on drafts and blocks designers from the manager endpoint', async () => {
     const db = {
-      outcomeSet: { findUnique: jest.fn().mockResolvedValue({ id: 'set-1', status: 'APPROVED' }) },
+      outcomeSet: { findUnique: jest.fn().mockResolvedValue({ id: 'set-1', status: 'DRAFT' }) },
     };
     await expect(outcomeService(db).requestChanges(manager, 'set-1', 'Cần sửa')).rejects.toThrow(
-      'Only a teacher-reviewed set',
+      'Only an approved set',
     );
     await expect(outcomeService(db).requestChanges(designer, 'set-1', 'Cần sửa')).rejects.toThrow();
   });

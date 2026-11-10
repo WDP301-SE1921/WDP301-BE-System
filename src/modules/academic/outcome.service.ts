@@ -272,6 +272,7 @@ export class OutcomeService {
   async deleteSet(user: AuthenticatedUser, setId: string): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER', 'MANAGER');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({
         where: { id: setId },
         include: { outcomes: { select: { id: true } } },
@@ -319,16 +320,17 @@ export class OutcomeService {
   async requestChanges(user: AuthenticatedUser, setId: string, reason: string): Promise<unknown> {
     roles(user, 'MANAGER');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
       assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
       assertRule(
-        set.status === 'TECHNICALLY_APPROVED',
+        set.status === 'APPROVED',
         'OUTCOME_SET_NOT_REVIEWED',
-        'Only a teacher-reviewed set can be sent back to draft',
+        'Only an approved set can receive a revision request',
       );
       const result = await tx.outcomeSet.update({
         where: { id: setId },
-        data: { status: 'DRAFT', reviewNote: reason.trim(), reviewerId: null, reviewedAt: null },
+        data: { reviewNote: reason.trim() },
       });
       await tx.auditLog.create({
         data: {
@@ -351,6 +353,7 @@ export class OutcomeService {
   ): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
       assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
       assertRule(
@@ -385,13 +388,10 @@ export class OutcomeService {
     });
   }
 
-  async deleteOutcome(
-    user: AuthenticatedUser,
-    setId: string,
-    outcomeId: string,
-  ): Promise<unknown> {
+  async deleteOutcome(user: AuthenticatedUser, setId: string, outcomeId: string): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
       assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
       assertRule(
@@ -480,6 +480,7 @@ export class OutcomeService {
       HttpStatus.BAD_REQUEST,
     );
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT s.id FROM outcome_sets AS s INNER JOIN learning_outcomes AS o ON o.outcomeSetId = s.id WHERE o.id = ${outcomeId} FOR UPDATE`;
       const outcome = await tx.learningOutcome.findUnique({
         where: { id: outcomeId },
         include: { outcomeSet: true },
@@ -507,6 +508,7 @@ export class OutcomeService {
   async technicalApprove(user: AuthenticatedUser, setId: string): Promise<unknown> {
     roles(user, 'TEACHER');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({
         where: { id: setId },
         include: { outcomes: { include: { lessonLinks: true } } },
@@ -525,26 +527,17 @@ export class OutcomeService {
         'OUTCOME_SET_INCOMPLETE',
         'Every outcome needs a verified source and at least one linked lesson',
       );
+      const approvedAt = new Date();
       return tx.outcomeSet.update({
         where: { id: setId },
-        data: { status: 'TECHNICALLY_APPROVED', reviewerId: user.id, reviewedAt: new Date() },
-      });
-    });
-  }
-
-  async approve(user: AuthenticatedUser, setId: string): Promise<unknown> {
-    roles(user, 'MANAGER');
-    return this.repo.transaction(async (tx) => {
-      const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
-      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
-      assertRule(
-        set.status === 'TECHNICALLY_APPROVED' && set.reviewerId,
-        'TECHNICAL_REVIEW_REQUIRED',
-        'Teacher review is required before approval',
-      );
-      return tx.outcomeSet.update({
-        where: { id: setId },
-        data: { status: 'APPROVED', approvedById: user.id, approvedAt: new Date() },
+        data: {
+          status: 'APPROVED',
+          reviewerId: user.id,
+          reviewedAt: approvedAt,
+          approvedById: user.id,
+          approvedAt,
+          reviewNote: null,
+        },
       });
     });
   }
