@@ -92,6 +92,7 @@ Nếu một CLO không tìm được nguồn tương ứng, ghi `sourceType=INTE
 **Cập nhật 09/11/2026 (Q2 "CLO bản nhẹ", B2, B3, B4): thay một phần luồng trên.**
 
 - Bước 2: nguồn của CLO không bắt buộc (`sourceTitle`, `sourceUrl`, `sourceLocator` có thể `NULL`). Bộ CLO soạn được trước giáo trình. Mọi `CURRICULUM_DESIGNER` sửa được mọi bộ nháp; sửa cùng CLO bị chặn bằng `revision`.
+- Ngưỡng độ dài (C29): `title` 2–255, `statement` 2–5000 (bắt buộc, không null), `sourceTitle` 2–255, `sourceLocator` 2–255, `sourceUrl` không có độ dài tối thiểu nhưng phải là URL http/https, `sourceNote` tối đa 5000. `POST outcomes/:id/verify-source` nhận `sourceLocator` 2–255, `sourceNote` 5–5000 và `expectedRevision` tùy chọn (cũ hơn `revision` hiện tại thì 409 `REVISION_CONFLICT`, so sau khi khóa dòng).
 - Bước 4: giáo viên duyệt bộ (`technical-approve`) mà không phải xác minh từng nguồn. Hệ thống vẫn đòi mỗi CLO có ít nhất một bài, và đánh dấu `VERIFIED` cho các CLO chưa được ai xác minh. Người được duyệt: giáo viên dạy lớp của khóa hoặc của khóa cùng môn, hoặc giáo viên được chọn duyệt giáo trình của khóa.
 - Bước 6: chọn bộ CLO và gắn CLO cho từng câu là tùy chọn, kể cả khi khóa đã có bộ được duyệt. Đã chọn bộ thì bộ phải được duyệt và đúng khóa, và CLO gắn cho câu phải thuộc bộ đó. Câu "bài nháp thiếu CLO bị chặn" không còn đúng.
 - Mobile chỉ đọc mã, tên, mô tả và cờ bắt buộc, nên không đổi.

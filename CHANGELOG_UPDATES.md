@@ -93,6 +93,12 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 
 ---
 
+### 1.13. Hạ ngưỡng nhập mục tiêu và `expectedRevision` cho `verify-source` (10/11)
+- Chỉ nới, không phá contract: Ngưỡng độ dài (C29): `title` 2–255, `statement` 2–5000 (bắt buộc, không null), `sourceTitle` 2–255, `sourceLocator` 2–255, `sourceUrl` không có độ dài tối thiểu nhưng phải là URL http/https, `sourceNote` tối đa 5000. `POST outcomes/:id/verify-source` nhận `sourceLocator` 2–255, `sourceNote` 5–5000 và `expectedRevision` tùy chọn (cũ hơn `revision` hiện tại thì 409 `REVISION_CONFLICT`, so sau khi khóa dòng).
+- Người dùng ít rành công nghệ có thể ghi nguồn ngắn như "Trang 45" và mô tả ngắn như "Đọc hiểu".
+
+---
+
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
 
 | STT | Lỗi / Điểm nghẽn ban đầu | Tệp tin liên quan | Nguyên nhân | Giải pháp khắc phục triệt để |

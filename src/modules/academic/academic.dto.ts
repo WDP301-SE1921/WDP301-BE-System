@@ -259,15 +259,21 @@ export class AssignmentImportDto {
 export class OutcomeSourceReviewDto {
   @ApiProperty({ description: 'Exact requirement, section and printed page of the source' })
   @IsString()
-  @MinLength(12)
+  @MinLength(2)
   @MaxLength(255)
   sourceLocator!: string;
 
   @ApiProperty({ description: 'Teacher explanation of how this CLO follows the cited requirement' })
   @IsString()
-  @MinLength(12)
+  @MinLength(5)
   @MaxLength(5000)
   sourceNote!: string;
+
+  @ApiPropertyOptional({ description: 'Revision the teacher read; a stale value returns REVISION_CONFLICT.' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expectedRevision?: number;
 }
 
 export class OutcomeSetCreateDto {
@@ -284,21 +290,20 @@ export class OutcomeChangeRequestDto {
 export class LearningOutcomeWriteDto {
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(64) code!: string;
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(255) title!: string;
-  @ApiProperty() @IsString() @MinLength(12) @MaxLength(5000) statement!: string;
+  @ApiProperty() @IsString() @MinLength(2) @MaxLength(5000) statement!: string;
   // Sources are optional (light CLOs). Omitted keeps the stored value on update; null or a
   // blank string clears it, so the database never stores an empty string.
   @ApiPropertyOptional({ nullable: true })
   @Transform(blankToNull)
   @IsOptional()
   @IsString()
-  @MinLength(5)
+  @MinLength(2)
   @MaxLength(255)
   sourceTitle?: string | null;
   @ApiPropertyOptional({ nullable: true })
   @Transform(blankToNull)
   @IsOptional()
   @IsString()
-  @MinLength(12)
   @MaxLength(2000)
   @IsUrl({ require_protocol: true, protocols: ['http', 'https'] })
   sourceUrl?: string | null;
@@ -306,7 +311,7 @@ export class LearningOutcomeWriteDto {
   @Transform(blankToNull)
   @IsOptional()
   @IsString()
-  @MinLength(12)
+  @MinLength(2)
   @MaxLength(255)
   sourceLocator?: string | null;
   @ApiPropertyOptional({ nullable: true })

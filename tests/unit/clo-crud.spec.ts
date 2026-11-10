@@ -613,6 +613,59 @@ describe('CLO CRUD operations', () => {
     });
   });
 
+  describe('verifySource (C29, C30)', () => {
+    const teacher = { id: 'teacher-1', role: 'TEACHER' } as AuthenticatedUser;
+
+    function verifyDb(revision = 3): Record<string, unknown> {
+      return {
+        ...programTeacherDb('teacher-1'),
+        $queryRaw: lockedDraft('DRAFT', revision),
+        learningOutcome: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'clo-1',
+            outcomeSetId: 'set-1',
+            outcomeSet: { programId: 'program-1' },
+          }),
+          update: jest.fn(({ data }: { data: unknown }) => Promise.resolve({ id: 'clo-1', ...(data as object) })),
+        },
+      };
+    }
+
+    it('verifies with a short locator such as "Trang 45"', async () => {
+      const db = verifyDb();
+      await outcomeService(db).verifySource(teacher, 'clo-1', 'Trang 45', 'Khớp ý');
+      const update = (db.learningOutcome as Record<'update', jest.Mock>).update;
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ sourceLocator: 'Trang 45', sourceStatus: 'VERIFIED' }) as unknown,
+        }),
+      );
+    });
+
+    it('still refuses a one-character locator or a too short note', async () => {
+      await expect(
+        outcomeService(verifyDb()).verifySource(teacher, 'clo-1', 'x', 'Khớp ý'),
+      ).rejects.toMatchObject({ code: 'SOURCE_REVIEW_INCOMPLETE', statusCode: 400 });
+      await expect(
+        outcomeService(verifyDb()).verifySource(teacher, 'clo-1', 'Trang 45', 'ok'),
+      ).rejects.toMatchObject({ code: 'SOURCE_REVIEW_INCOMPLETE', statusCode: 400 });
+    });
+
+    it('refuses a stale expectedRevision, read after the row lock', async () => {
+      const db = verifyDb(4);
+      await expect(
+        outcomeService(db).verifySource(teacher, 'clo-1', 'Trang 45', 'Khớp ý', 3),
+      ).rejects.toMatchObject({ code: 'REVISION_CONFLICT', statusCode: 409 });
+      expect((db.learningOutcome as Record<'update', jest.Mock>).update).not.toHaveBeenCalled();
+    });
+
+    it('accepts the current expectedRevision', async () => {
+      const db = verifyDb(3);
+      await outcomeService(db).verifySource(teacher, 'clo-1', 'Trang 45', 'Khớp ý', 3);
+      expect((db.learningOutcome as Record<'update', jest.Mock>).update).toHaveBeenCalled();
+    });
+  });
+
   describe('createSet without a curriculum (Q2)', () => {
     function createDb(program: unknown): {
       program: { findUnique: jest.Mock };

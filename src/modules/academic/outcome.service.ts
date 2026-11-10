@@ -520,10 +520,11 @@ export class OutcomeService {
     outcomeId: string,
     sourceLocator: string,
     sourceNote: string,
+    expectedRevision?: number,
   ): Promise<unknown> {
     roles(user, 'TEACHER');
     assertRule(
-      sourceLocator.trim().length >= 12 && sourceNote.trim().length >= 12,
+      sourceLocator.trim().length >= 2 && sourceNote.trim().length >= 5,
       'SOURCE_REVIEW_INCOMPLETE',
       'Provide the exact source section/page and a review note',
       HttpStatus.BAD_REQUEST,
@@ -537,6 +538,15 @@ export class OutcomeService {
       await this.assertProgramTeacher(user, outcome.outcomeSet.programId);
       // Optional step: a CLO without a source may still be verified, which confirms its content.
       await this.lockDraftSet(tx, outcome.outcomeSetId, 'Only draft outcomes can be reviewed');
+      if (expectedRevision !== undefined) {
+        // Locking read: a plain read would use the snapshot taken before the lock wait (TiDB).
+        const locked = await this.lockOutcome(tx, outcomeId);
+        assertRule(
+          locked?.revision === expectedRevision,
+          'REVISION_CONFLICT',
+          'Outcome changed; reload it',
+        );
+      }
       return tx.learningOutcome.update({
         where: { id: outcomeId },
         data: {

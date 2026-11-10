@@ -215,7 +215,7 @@ export class AcademicController {
     @Param('id') id: string,
     @Body() input: OutcomeSourceReviewDto,
   ): Promise<unknown> {
-    return this.outcomes.verifySource(user, id, input.sourceLocator, input.sourceNote);
+    return this.outcomes.verifySource(user, id, input.sourceLocator, input.sourceNote, input.expectedRevision);
   }
 
   @Post('outcome-sets/:id/technical-approve')

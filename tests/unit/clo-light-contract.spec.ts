@@ -1,7 +1,10 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { Prisma } from '@prisma/client';
-import { LearningOutcomeWriteDto } from '../../src/modules/academic/academic.dto';
+import {
+  LearningOutcomeWriteDto,
+  OutcomeSourceReviewDto,
+} from '../../src/modules/academic/academic.dto';
 import { NotificationEventsService } from '../../src/modules/notifications/notification-events.service';
 import type { NotificationRecipientsService } from '../../src/modules/notifications/notification-recipients.service';
 import type { NotificationsService } from '../../src/modules/notifications/notifications.service';
@@ -42,9 +45,9 @@ describe('LearningOutcomeWriteDto with optional sources (B3)', () => {
     expect(
       await errorsOf({
         ...base,
-        sourceTitle: 'CT',
+        sourceTitle: 'C',
         sourceUrl: 'https://moet.gov.vn/chuong-trinh.pdf',
-        sourceLocator: 'ngắn',
+        sourceLocator: 'x',
       }),
     ).toEqual(['sourceTitle', 'sourceLocator']);
     expect(await errorsOf({ ...base, sourceUrl: 'ftp://moet.gov.vn/chuong-trinh.pdf' })).toEqual([
@@ -52,6 +55,37 @@ describe('LearningOutcomeWriteDto with optional sources (B3)', () => {
     ]);
     expect(await errorsOf({ ...base, sourceUrl: 'moet.gov.vn/chuong-trinh.pdf' })).toEqual([
       'sourceUrl',
+    ]);
+  });
+
+  it('accepts short sources such as "Trang 45" and a short statement (C29)', async () => {
+    expect(
+      await errorsOf({
+        ...base,
+        statement: 'Đọc hiểu',
+        sourceTitle: 'SGK',
+        sourceLocator: 'Trang 45',
+        sourceUrl: 'http://a.vn',
+      }),
+    ).toEqual([]);
+    expect(await errorsOf({ ...base, statement: 'x' })).toEqual(['statement']);
+  });
+
+  it('validates the source review body (C30)', async () => {
+    const check = async (body: Record<string, unknown>): Promise<string[]> =>
+      (
+        await validate(plainToInstance(OutcomeSourceReviewDto, body), {
+          whitelist: true,
+          forbidNonWhitelisted: true,
+        })
+      ).map((error) => error.property);
+    expect(await check({ sourceLocator: 'Trang 45', sourceNote: 'Khớp' + ' ý' })).toEqual([]);
+    expect(await check({ sourceLocator: 'x', sourceNote: 'ok' })).toEqual([
+      'sourceLocator',
+      'sourceNote',
+    ]);
+    expect(await check({ sourceLocator: 'Tr 5', sourceNote: 'Đúng ý', expectedRevision: 0 })).toEqual([
+      'expectedRevision',
     ]);
   });
 
