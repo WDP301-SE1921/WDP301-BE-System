@@ -8,6 +8,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { SubjectFilterDto } from './dto/registration-flow.dto';
 import { pageResult } from '../../common/pagination';
+import { isManagerOrAdmin, roleAllowed } from '../../common/auth/role-access';
 
 class SubjectDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(64) code!: string;
@@ -28,8 +29,8 @@ export class SubjectsController {
   private require(user: AuthenticatedUser, write = false): void {
     if (
       write
-        ? user.role !== 'MANAGER'
-        : !['MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER'].includes(user.role)
+        ? !isManagerOrAdmin(user.role)
+        : !roleAllowed(user.role, ['MANAGER', 'STAFF', 'TEACHER', 'CURRICULUM_DESIGNER'])
     )
       throw new AppError('FORBIDDEN', 'Role is not allowed', HttpStatus.FORBIDDEN);
   }
@@ -38,15 +39,28 @@ export class SubjectsController {
   list(@CurrentUser() user: AuthenticatedUser, @Query() query: SubjectFilterDto): Promise<unknown> {
     this.require(user);
     const where = {
-      ...(query.search ? { OR: [{ code: { contains: query.search.trim() } }, { name: { contains: query.search.trim() } }] } : {}),
+      deletedAt: null,
+      ...(query.search
+        ? {
+            OR: [
+              { code: { contains: query.search.trim() } },
+              { name: { contains: query.search.trim() } },
+            ],
+          }
+        : {}),
       ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
     };
-    return pageResult(query, this.db.subject.findMany({
-      where,
-      include: { _count: { select: { programs: true } } },
-      orderBy: [{ isActive: 'desc' }, { name: 'asc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.subject.count({ where }));
+    return pageResult(
+      query,
+      this.db.subject.findMany({
+        where,
+        include: { _count: { select: { programs: true } } },
+        orderBy: [{ isActive: 'desc' }, { name: 'asc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.subject.count({ where }),
+    );
   }
 
   @Get(':id')

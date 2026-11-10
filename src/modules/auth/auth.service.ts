@@ -140,7 +140,7 @@ export class AuthService {
   async login(email: string, password: string): Promise<AuthResponseDto> {
     this.assertPasswordWithinBcryptLimit(password);
     const user = await this.usersService.findByEmailWithPassword(email);
-    if (!user?.passwordHash || user.status !== 'ACTIVE') {
+    if (!user?.passwordHash || user.status !== 'ACTIVE' || user.deletedAt) {
       throw this.invalidCredentialsError();
     }
 
@@ -282,7 +282,7 @@ export class AuthService {
 
   async forgotPassword(email: string): Promise<{ accepted: true }> {
     const user = await this.usersService.findByEmailWithPassword(email);
-    if (!user || user.status !== 'ACTIVE') return { accepted: true };
+    if (!user || user.status !== 'ACTIVE' || user.deletedAt) return { accepted: true };
     const token = randomBytes(32).toString('base64url');
     const tokenHash = this.hashToken(token);
     const link = new URL('/reset-password', this.config.get('webOrigin', { infer: true }));

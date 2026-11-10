@@ -6,6 +6,7 @@ import { AcademicAccessService, assertRule, inTerm, roles } from './academic-acc
 import { AcademicRepository } from './academic.repository';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AnalyticsBucket, AnalyticsQueryDto, BulkReportExportDto } from './academic.dto';
+import { isManagerOrAdmin } from '../../common/auth/role-access';
 
 const DAY_MS = 86400000;
 const MAX_ROWS = 50000;
@@ -277,13 +278,13 @@ export class AnalyticsService {
           },
           take: MAX_ROWS + 1,
         }),
-        user.role === 'MANAGER'
+        isManagerOrAdmin(user.role)
           ? this.repo.db.leaveRequest.count({ where: { status: 'PENDING' } })
           : Promise.resolve(0),
-        user.role === 'MANAGER'
+        isManagerOrAdmin(user.role)
           ? this.repo.db.makeupBooking.count({ where: { status: 'BOOKED' } })
           : Promise.resolve(0),
-        user.role === 'MANAGER'
+        isManagerOrAdmin(user.role)
           ? this.repo.db.payment.findMany({
               where: {
                 status: 'CONFIRMED',
@@ -412,7 +413,7 @@ export class AnalyticsService {
       publishedGrades: allPublished,
       averageScore: allPublished ? round(weightedScores / allPublished) : null,
     };
-    if (user.role === 'MANAGER') {
+    if (isManagerOrAdmin(user.role)) {
       summary.pendingLeaves = pendingLeaves;
       summary.bookedMakeups = bookedMakeups;
       summary.confirmedRevenue = payments.reduce((sum, item) => sum + Number(item.amount), 0);

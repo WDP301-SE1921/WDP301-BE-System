@@ -268,7 +268,13 @@ describe('curriculum teacher review and manager confirmation', () => {
     await service.reviewers(designer, 'unit');
     expect(db.user.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: { in: ['current', 'future-old'] }, role: 'TEACHER', status: 'ACTIVE' },
+        // Giáo viên đã bị Admin xóa mềm không còn trong danh sách chọn người duyệt.
+        where: {
+          id: { in: ['current', 'future-old'] },
+          role: 'TEACHER',
+          status: 'ACTIVE',
+          deletedAt: null,
+        },
         select: { id: true, email: true, displayName: true },
       }),
     );

@@ -14,6 +14,14 @@ interface AccountDefinition {
 
 const BASE_ACCOUNTS: AccountDefinition[] = [
   {
+    // Admin tổng duy nhất được tạo sẵn; không có đăng ký ADMIN công khai.
+    key: 'admin',
+    role: 'ADMIN',
+    envKey: 'SEED_ADMIN_EMAIL',
+    email: 'admin@edugrade.local',
+    displayName: 'Admin tổng',
+  },
+  {
     key: 'manager',
     role: 'MANAGER',
     envKey: 'SEED_MANAGER_EMAIL',
