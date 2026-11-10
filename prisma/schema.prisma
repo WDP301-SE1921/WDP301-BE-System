@@ -811,6 +811,7 @@ model Assignment {
   class              Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
   session            ClassSession?         @relation(fields: [sessionId], references: [id], onDelete: Restrict)
   questions          AssignmentQuestion[]
+  files              AssignmentFile[]
   recipients         AssignmentRecipient[]
   outcomeSetId       String?               @db.VarChar(191)
   outcomeSet         OutcomeSet?           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
@@ -831,6 +832,7 @@ model AssignmentQuestion {
   choices       Json?
   correctAnswer String?          @db.Text
   rubric        String?          @db.Text
+  criteria      Json?
   maxScore      Float
   assignment    Assignment       @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
   outcomeId     String?          @db.VarChar(191)
@@ -843,7 +845,6 @@ model AssignmentQuestion {
 
 enum OutcomeSetStatus {
   DRAFT
-  TECHNICALLY_APPROVED
   APPROVED
 }
 
@@ -863,7 +864,7 @@ model OutcomeSet {
   reviewedAt   DateTime?
   approvedById String?           @db.VarChar(191)
   approvedAt   DateTime?
-  /// Manager's reason when a teacher-reviewed set is sent back to draft.
+  /// Optional manager request for a new revision; approval and existing assessments stay intact.
   reviewNote   String?           @db.Text
   program      Program           @relation(fields: [programId], references: [id], onDelete: Restrict)
   outcomes     LearningOutcome[]
@@ -944,6 +945,7 @@ model GradeReview {
   reviewerId   String      @db.VarChar(191)
   status       GradeStatus @default(DRAFT)
   scores       Json
+  rubricSnapshot Json?
   totalScore   Float
   feedback     String      @db.Text
   publishedAt  DateTime?
@@ -976,10 +978,23 @@ model FileAsset {
   mimeType    String           @db.VarChar(128)
   size        Int
   submissions SubmissionFile[]
+  assignments AssignmentFile[]
   createdAt   DateTime         @default(now())
 
   @@index([ownerId])
   @@map("file_assets")
+}
+
+model AssignmentFile {
+  assignmentId String @db.VarChar(191)
+  fileId String @db.VarChar(191)
+  teacherOnly Boolean @default(false)
+  questionPosition Int?
+  assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  file FileAsset @relation(fields: [fileId], references: [id], onDelete: Restrict)
+
+  @@id([assignmentId, fileId])
+  @@map("assignment_files")
 }
 
 model SubmissionFile {

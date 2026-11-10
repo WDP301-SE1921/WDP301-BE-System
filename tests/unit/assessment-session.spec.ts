@@ -38,6 +38,7 @@ describe('assignment session and type rules', () => {
     });
     create.mockResolvedValue({ id: 'assignment' });
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       assignment: { create, findUniqueOrThrow: findAssignment },
       classSession: { findUnique: findSession },
       enrollment: { findMany: findEnrollments },

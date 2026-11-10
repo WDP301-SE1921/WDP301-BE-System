@@ -2,6 +2,7 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { extname } from 'node:path';
 import * as mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
+import { validateAcademicSubmissionFile } from '../../integrations/file-validation';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AcademicAiService, isRecord } from '../../integrations/academic-ai.service';
@@ -16,7 +17,7 @@ import {
 
 export type AssignmentImportPreview = {
   fileName: string;
-  format: 'CSV' | 'DOCX' | 'PDF';
+  format: 'CSV' | 'DOCX' | 'PDF' | 'IMAGE';
   title?: string;
   instructions?: string;
   questions: QuestionDto[];
@@ -68,13 +69,15 @@ export class AssignmentImportService {
       .slice(0, 255);
     if (extension === '.csv')
       return { fileName, format: 'CSV', ...parseAssignmentCsv(file.buffer), usedAi: false };
+    const isImage = ['.png', '.jpg', '.jpeg'].includes(extension);
+    if (isImage) validateAcademicSubmissionFile(file, ASSIGNMENT_IMPORT_MAX_BYTES);
     const isPdf = extension === '.pdf' && file.buffer.subarray(0, 5).toString() === '%PDF-';
     const isDocx =
       extension === '.docx' && file.buffer.subarray(0, 4).equals(Buffer.from([80, 75, 3, 4]));
     assertRule(
-      isPdf || isDocx,
+      isPdf || isDocx || isImage,
       'ASSIGNMENT_IMPORT_INVALID_FILE_TYPE',
-      'Chỉ nhận CSV UTF-8, DOCX hoặc PDF có chữ.',
+      'Chỉ nhận CSV UTF-8, DOCX, PDF, JPG hoặc PNG.',
       HttpStatus.BAD_REQUEST,
     );
     assertRule(
@@ -85,10 +88,31 @@ export class AssignmentImportService {
     );
     let source: string;
     try {
-      source = isPdf
-        ? await this.pdfText(file.buffer)
-        : (await this.withExtractionDeadline(mammoth.extractRawText({ buffer: file.buffer })))
-            .value;
+      source = isImage
+        ? await this.imageText([`data:${file.mimetype};base64,${file.buffer.toString('base64')}`])
+        : isPdf
+          ? await this.pdfText(file.buffer)
+          : (await this.withExtractionDeadline(mammoth.extractRawText({ buffer: file.buffer })))
+              .value;
+      if (isPdf && (this.ai.visionAvailable() || !source.trim())) {
+        assertRule(
+          this.ai.visionAvailable(),
+          'AI_VISION_UNAVAILABLE',
+          'Chưa cấu hình AI đọc ảnh/PDF scan.',
+        );
+        const parser = new PDFParse({ data: file.buffer });
+        try {
+          const info = await this.withExtractionDeadline(parser.getInfo(), () => parser.destroy());
+          assertRule(info.total <= 10, 'AI_PAGE_LIMIT', 'PDF scan tối đa 10 trang.');
+          const rendered = await this.withExtractionDeadline(
+            parser.getScreenshot({ desiredWidth: 1400, first: info.total }),
+            () => parser.destroy(),
+          );
+          source = await this.imageText(rendered.pages.map((p) => p.dataUrl));
+        } finally {
+          await parser.destroy();
+        }
+      }
     } catch (error) {
       if (error instanceof AppError) throw error;
       if (error instanceof Error && /password|encrypt/i.test(`${error.name} ${error.message}`))
@@ -157,7 +181,7 @@ export class AssignmentImportService {
     const validated = validateImportedQuestions(rawQuestions);
     return {
       fileName,
-      format: isPdf ? 'PDF' : 'DOCX',
+      format: isImage ? 'IMAGE' : isPdf ? 'PDF' : 'DOCX',
       ...(typeof proposed.title === 'string' && proposed.title.trim()
         ? { title: proposed.title.slice(0, 255) }
         : {}),
@@ -166,12 +190,33 @@ export class AssignmentImportService {
         : {}),
       ...validated,
       warnings: [
-        'Nội dung do AI trích xuất; hãy đọc và chỉnh sửa từng câu trước khi lưu bản nháp.',
+        'Nội dung do AI trích xuất; đối chiếu tệp gốc, đặc biệt chữ viết tay, công thức và vùng [không đọc rõ], trước khi giao bài.',
         ...validated.warnings,
         ...evidenceWarnings,
       ].slice(0, 300),
       usedAi: true,
     };
+  }
+
+  private async imageText(images: string[]): Promise<string> {
+    assertRule(
+      this.ai.visionAvailable(),
+      'AI_VISION_UNAVAILABLE',
+      'Chưa cấu hình AI đọc ảnh/PDF scan.',
+    );
+    const result = await this.ai.json(
+      'Transcribe the complete assignment document, preserving question numbers, maths, choices and any explicitly written answer key or rubric. Never solve questions or invent text. Return {text:string}. Mark unreadable sections as [không đọc rõ].',
+      {},
+      images,
+    );
+    assertRule(
+      isRecord(result) &&
+        typeof result.text === 'string' &&
+        result.text.length <= ASSIGNMENT_IMPORT_MAX_TEXT,
+      'AI_READING_INVALID',
+      'Không đọc được nội dung đề.',
+    );
+    return result.text;
   }
 
   private async pdfText(buffer: Buffer): Promise<string> {

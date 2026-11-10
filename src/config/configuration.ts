@@ -17,6 +17,9 @@ export interface AppConfiguration {
     aiUrl: string;
     aiKey: string;
     aiModel: string;
+    visionUrl?: string;
+    visionKey?: string;
+    visionModel?: string;
     storageEndpoint: string;
     storageRegion: string;
     storageBucket: string;
@@ -134,6 +137,9 @@ export function validateEnvironment(environment: Environment): AppConfiguration 
       aiUrl,
       aiKey,
       aiModel,
+      visionUrl: environment.AI_VISION_CHAT_URL?.trim() || '',
+      visionKey: environment.AI_VISION_API_KEY?.trim() || '',
+      visionModel: environment.AI_VISION_MODEL?.trim() || '',
       storageEndpoint: environment.STORAGE_ENDPOINT?.trim() || '',
       storageRegion: environment.STORAGE_REGION?.trim() || 'us-east-1',
       storageBucket: environment.STORAGE_BUCKET?.trim() || '',

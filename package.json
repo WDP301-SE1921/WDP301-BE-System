@@ -34,6 +34,7 @@
         "reseed:dashboard": "pnpm run db:reseed && pnpm run seed:dashboard",
         "db:seed:prod": "node dist/database/seed.js",
         "test:ai": "ts-node --transpile-only scripts/test-ai-grading.ts",
+        "test:ai:file": "node --env-file=.env -r ts-node/register/transpile-only scripts/test-ai-file-grading.ts",
         "push:generate-keys": "web-push generate-vapid-keys"
     },
     "dependencies": {

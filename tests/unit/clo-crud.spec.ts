@@ -7,9 +7,13 @@ describe('CLO CRUD operations', () => {
   const otherDesigner = { id: 'designer-2', role: 'CURRICULUM_DESIGNER' } as AuthenticatedUser;
 
   function outcomeService(db: unknown): OutcomeService {
+    const client = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      ...(db as Record<string, unknown>),
+    };
     return new OutcomeService({
-      db: db as unknown as never,
-      transaction: (callback: (tx: unknown) => Promise<unknown>) => callback(db),
+      db: client as unknown as never,
+      transaction: (callback: (tx: unknown) => Promise<unknown>) => callback(client),
     } as unknown as never);
   }
 
@@ -158,9 +162,9 @@ describe('CLO CRUD operations', () => {
         },
       };
 
-      await expect(outcomeService(db).deleteOutcome(otherDesigner, 'set-1', 'clo-1')).rejects.toThrow(
-        'Only the set designer',
-      );
+      await expect(
+        outcomeService(db).deleteOutcome(otherDesigner, 'set-1', 'clo-1'),
+      ).rejects.toThrow('Only the set designer');
     });
 
     it('blocks deletion if outcome is in use in assignments', async () => {

@@ -1,10 +1,23 @@
+import type { AuthenticatedUser } from '../../src/common/types/authenticated-user';
+import type { ObjectStorageService } from '../../src/integrations/object-storage.service';
+import type { AcademicRepository } from '../../src/modules/academic/academic.repository';
 import { AcademicStorageService } from '../../src/integrations/academic-storage.service';
 import { AppError } from '../../src/common/errors/app.error';
 
 describe('AcademicStorageService Unit Tests', () => {
   let service: AcademicStorageService;
-  let mockObjectStorage: any;
-  let mockRepo: any;
+  let mockObjectStorage: {
+    putObject: jest.Mock;
+    deleteObject: jest.Mock;
+    createSignedGetUrl: jest.Mock;
+  };
+  let mockRepo: {
+    db: {
+      fileAsset: { create: jest.Mock; findUniqueOrThrow: jest.Mock };
+      assignmentFile: { count: jest.Mock };
+      submissionFile: { count: jest.Mock };
+    };
+  };
 
   beforeEach(() => {
     mockObjectStorage = {
@@ -19,18 +32,22 @@ describe('AcademicStorageService Unit Tests', () => {
           create: jest.fn(),
           findUniqueOrThrow: jest.fn(),
         },
+        assignmentFile: { count: jest.fn().mockResolvedValue(0) },
         submissionFile: {
           count: jest.fn(),
         },
       },
     };
 
-    service = new AcademicStorageService(mockObjectStorage as any, mockRepo as any);
+    service = new AcademicStorageService(
+      mockObjectStorage as unknown as ObjectStorageService,
+      mockRepo as unknown as AcademicRepository,
+    );
   });
 
-  const parentUser: any = { id: 'parent-1', role: 'PARENT' };
-  const teacherUser: any = { id: 'teacher-1', role: 'TEACHER' };
-  const strangerUser: any = { id: 'other-user', role: 'PARENT' };
+  const parentUser = { id: 'parent-1', role: 'PARENT' } as AuthenticatedUser;
+  const teacherUser = { id: 'teacher-1', role: 'TEACHER' } as AuthenticatedUser;
+  const strangerUser = { id: 'other-user', role: 'PARENT' } as AuthenticatedUser;
 
   it('preview should sign inline URL with 300 seconds TTL for image file', async () => {
     mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
@@ -57,7 +74,7 @@ describe('AcademicStorageService Unit Tests', () => {
     );
   });
 
-  it('preview should sign attachment/non-inline for PDF', async () => {
+  it('preview should sign inline for PDF', async () => {
     mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
       id: 'file-2',
       ownerId: 'parent-1',
@@ -74,7 +91,7 @@ describe('AcademicStorageService Unit Tests', () => {
       'submissions/parent-1/doc.pdf',
       {
         expiresInSeconds: 300,
-        inline: false,
+        inline: true,
         contentType: 'application/pdf',
       },
     );
@@ -108,14 +125,55 @@ describe('AcademicStorageService Unit Tests', () => {
     expect(res.url).toBe('http://teacher-preview-url');
   });
 
+  it('allows a parent recipient only through a published, student-visible assignment file', async () => {
+    mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
+      id: 'file-1',
+      ownerId: 'teacher-1',
+      storageKey: 'assignment/exam.pdf',
+      mimeType: 'application/pdf',
+    });
+    mockRepo.db.assignmentFile.count.mockResolvedValue(1);
+    await service.preview(parentUser, 'file-1');
+    expect(mockRepo.db.assignmentFile.count).toHaveBeenCalledWith({
+      where: {
+        fileId: 'file-1',
+        teacherOnly: false,
+        assignment: {
+          status: { not: 'DRAFT' },
+          recipients: {
+            some: {
+              enrollment: {
+                status: { not: 'PENDING_LINK' },
+                studentProfile: { parentProfile: { userId: 'parent-1' } },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('does not sign a teacher-only file for a parent without recipient access', async () => {
+    mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
+      id: 'answers',
+      ownerId: 'teacher-1',
+      storageKey: 'private/answers.pdf',
+      mimeType: 'application/pdf',
+    });
+    await expect(service.preview(parentUser, 'answers')).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(mockObjectStorage.createSignedGetUrl).not.toHaveBeenCalled();
+  });
+
   it('upload should rollback and delete object if database record creation fails', async () => {
     const validPdf = Buffer.from('%PDF-1.4 sample content');
-    const file: any = {
+    const file = {
       originalname: 'homework.pdf',
       mimetype: 'application/pdf',
       size: validPdf.length,
       buffer: validPdf,
-    };
+    } as Express.Multer.File;
 
     mockRepo.db.fileAsset.create.mockRejectedValue(new Error('DB failure'));
 

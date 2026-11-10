@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SubmissionReaderService } from './submission-reader.service';
 import { AcademicAiService } from '../../integrations/academic-ai.service';
 import { AcademicStorageService } from '../../integrations/academic-storage.service';
 import { AcademicController } from './academic.controller';
@@ -26,6 +27,7 @@ import { AnalyticsService } from './analytics.service';
     OutcomeService,
     AssignmentImportService,
     GradingWorkerService,
+    SubmissionReaderService,
     ReportsService,
     AnnouncementsService,
     EmailDeliveriesService,
