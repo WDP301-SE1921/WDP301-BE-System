@@ -300,6 +300,31 @@ describe('CLO CRUD operations', () => {
     });
   });
 
+  describe('ADMIN through roles()', () => {
+    const admin = { id: 'admin-1', role: 'ADMIN' } as AuthenticatedUser;
+
+    it('lets the ADMIN do what a manager does on CLO sets', async () => {
+      const db = {
+        $queryRaw: lockedDraft(),
+        outcomeSet: { delete: jest.fn() },
+        assignment: { count: jest.fn().mockResolvedValue(0) },
+        auditLog: { create: jest.fn() },
+      };
+      await expect(outcomeService(db).deleteSet(admin, 'set-1')).resolves.toMatchObject({
+        deleted: true,
+      });
+    });
+
+    it('keeps designer and teacher work for those roles, as role-access.ts says', async () => {
+      const service = outcomeService({});
+      const forbidden = { code: 'FORBIDDEN', statusCode: 403 };
+      await expect(service.createSet(admin, 'program-1', 'Lớp 8')).rejects.toMatchObject(forbidden);
+      await expect(
+        service.verifySource(admin, 'clo-1', 'Trang 45', 'Khớp ý'),
+      ).rejects.toMatchObject(forbidden);
+    });
+  });
+
   describe('setLessonOutcomes', () => {
     interface RemapDb {
       $queryRaw: jest.Mock;
@@ -704,6 +729,32 @@ describe('CLO CRUD operations', () => {
       await expect(
         outcomeService(
           createDb({ id: 'p', isActive: true, subjectId: 's', subjectRecord: { isActive: false } }),
+        ).createSet(designer, 'p', 'Lớp 8'),
+      ).rejects.toMatchObject({ code: 'SUBJECT_INACTIVE', statusCode: 409 });
+    });
+
+    it('treats a program the ADMIN soft-deleted as missing, even while isActive stays true', async () => {
+      const db = createDb({
+        id: 'p',
+        isActive: true,
+        deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+        subjectId: null,
+        subjectRecord: null,
+      });
+      await expect(outcomeService(db).createSet(designer, 'p', 'Lớp 8')).rejects.toMatchObject({
+        code: 'PROGRAM_NOT_FOUND',
+        statusCode: 404,
+      });
+      expect(db.outcomeSet.create).not.toHaveBeenCalled();
+      await expect(
+        outcomeService(
+          createDb({
+            id: 'p',
+            isActive: true,
+            deletedAt: null,
+            subjectId: 's',
+            subjectRecord: { isActive: true, deletedAt: new Date('2026-11-01T00:00:00.000Z') },
+          }),
         ).createSet(designer, 'p', 'Lớp 8'),
       ).rejects.toMatchObject({ code: 'SUBJECT_INACTIVE', statusCode: 409 });
     });

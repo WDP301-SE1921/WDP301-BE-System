@@ -645,16 +645,25 @@ export class OutcomeService {
     );
   }
 
-  /** CLO sets no longer wait for a curriculum (Q2): the program only has to be in use. */
+  /**
+   * CLO sets no longer wait for a curriculum (Q2): the program only has to be in use. A program
+   * the ADMIN soft-deleted keeps `isActive`, so `deletedAt` is checked too and reads as not found,
+   * like the program list that hides it.
+   */
   private async assertWritableProgram(programId: string): Promise<void> {
     const program = await this.repo.db.program.findUnique({
       where: { id: programId },
-      include: { subjectRecord: { select: { isActive: true } } },
+      include: { subjectRecord: { select: { isActive: true, deletedAt: true } } },
     });
-    assertRule(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    assertRule(
+      program && !program.deletedAt,
+      'PROGRAM_NOT_FOUND',
+      'Program not found',
+      HttpStatus.NOT_FOUND,
+    );
     assertRule(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
     assertRule(
-      !program.subjectId || program.subjectRecord?.isActive,
+      !program.subjectId || (program.subjectRecord?.isActive && !program.subjectRecord.deletedAt),
       'SUBJECT_INACTIVE',
       'Subject is inactive',
     );

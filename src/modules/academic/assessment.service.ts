@@ -909,7 +909,13 @@ export class AssessmentService {
           attemptNo: true,
           answers: true,
           submittedAt: true,
-          files: { select: { fileId: true } },
+          // `file` cho client biet anh hay PDF ma khong phai xin link xem truoc (them sau, giu `fileId`)
+          files: {
+            select: {
+              fileId: true,
+              file: { select: { name: true, mimeType: true, size: true } },
+            },
+          },
           grades: {
             where: user.role === 'PARENT' ? { status: 'PUBLISHED' } : {},
             select: {

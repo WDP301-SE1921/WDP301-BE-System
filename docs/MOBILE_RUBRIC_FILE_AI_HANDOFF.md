@@ -16,7 +16,7 @@ Ngày 10/11/2026. Giao diện mobile do nhóm khác triển khai. Base API: `/ap
 | Chi tiết | `GET /academic/assignments/{assignmentId}` | Có questions, recipients, files. Chọn recipient khớp enrollment của học sinh đang thao tác. Tệp teacherOnly bị lọc phía server. |
 | Upload mỗi tệp | `POST /academic/files` | `multipart/form-data`, đúng một field `file`. PDF/JPG/PNG, >0 và ≤10 MB. Trả `{id,name,mimeType,size}`; giữ id, không giữ signed URL như định danh. |
 | Nộp | `POST /academic/submissions` | JSON mẫu bên dưới. Tối đa 5 fileIds, không trùng. Chờ upload xong trước khi gọi. |
-| Xem lần nộp/điểm | `GET /academic/assignments/{assignmentId}/submissions` | PARENT chỉ nhận bài thuộc tài khoản và điểm PUBLISHED. |
+| Xem lần nộp/điểm | `GET /academic/assignments/{assignmentId}/submissions` | PARENT chỉ nhận bài thuộc tài khoản và điểm PUBLISHED. Từ 10/11 mỗi `files[]` có thêm `file: {name,mimeType,size}` để biết ảnh hay PDF; `answers[].fileIds` trả lại đúng mapping đã gửi. |
 | Xem tệp | `GET /academic/files/{fileId}/preview` | `{url,expiresIn}`, link có hạn. Ảnh/PDF hỗ trợ inline; không dùng WebView cho URL không do API cấp. |
 | Tải tệp | `GET /academic/files/{fileId}/download` | Xin URL mới khi cần tải. Server kiểm tra quyền trước khi ký URL. |
 

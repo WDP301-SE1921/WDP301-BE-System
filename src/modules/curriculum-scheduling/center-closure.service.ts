@@ -5,6 +5,7 @@ import { AppError } from '../../common/errors/app.error';
 import { pageResult } from '../../common/pagination';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
+import { isRetryableDeadlock } from '../../database/orm/transaction-retry';
 import type {
   CenterClosureDto,
   CenterClosureQueryDto,
@@ -78,7 +79,7 @@ export class CenterClosureService {
   async create(user: AuthenticatedUser, input: CenterClosureDto): Promise<unknown> {
     this.requireRole(user, 'MANAGER');
     this.assertRange(input.fromDate, input.toDate);
-    return this.db.$transaction(async (tx) => {
+    return this.transaction(async (tx) => {
       await this.assertNoOverlap(tx, input.fromDate, input.toDate);
       const closure = await tx.centerClosure.create({
         data: {
@@ -107,7 +108,7 @@ export class CenterClosureService {
     input: UpdateCenterClosureDto,
   ): Promise<unknown> {
     this.requireRole(user, 'MANAGER');
-    return this.db.$transaction(async (tx) => {
+    return this.transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM center_closures WHERE id = ${id} FOR UPDATE`;
       const current = await tx.centerClosure.findUnique({ where: { id } });
       this.assert(
@@ -208,20 +209,28 @@ export class CenterClosureService {
     };
   }
 
+  /**
+   * Locking read: it sees the latest committed closures and locks the rows and gaps it scans, so
+   * two managers saving overlapping dates at once cannot both pass. When neither row exists yet,
+   * InnoDB rolls one of the two inserts back as a deadlock and `transaction` retries it, and the
+   * retry then finds the other closure.
+   */
   private async assertNoOverlap(
     tx: Prisma.TransactionClient,
     fromDate: string,
     toDate: string,
     exceptId?: string,
   ): Promise<void> {
-    const overlap = await tx.centerClosure.findFirst({
-      where: {
-        fromDate: { lte: localDate(toDate) },
-        toDate: { gte: localDate(fromDate) },
-        ...(exceptId ? { id: { not: exceptId } } : {}),
-      },
-      orderBy: { fromDate: 'asc' },
-    });
+    type LockedRow = Omit<ClosureRow, 'revision'> & { revision: number | bigint };
+    const rows = await tx.$queryRaw<LockedRow[]>(Prisma.sql`
+      SELECT id, fromDate, toDate, reason, createdById, revision, createdAt, updatedAt
+      FROM center_closures
+      WHERE fromDate <= ${toDate} AND toDate >= ${fromDate}
+      ${exceptId ? Prisma.sql`AND id <> ${exceptId}` : Prisma.empty}
+      ORDER BY fromDate ASC, id ASC
+      LIMIT 1
+      FOR UPDATE`);
+    const overlap = rows[0] && { ...rows[0], revision: Number(rows[0].revision) };
     this.assert(
       !overlap,
       'CENTER_CLOSURE_OVERLAP',
@@ -250,6 +259,21 @@ export class CenterClosureService {
       'fromDate must be on or before toDate',
       HttpStatus.BAD_REQUEST,
     );
+  }
+
+  /**
+   * Retries a deadlock from the overlap check twice. Two concurrent updates deadlock inside the
+   * locking read itself, which Prisma reports as P2010, so P2034 alone is not enough.
+   */
+  private async transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.db.$transaction(work, { isolationLevel: 'RepeatableRead' });
+      } catch (error) {
+        if (isRetryableDeadlock(error) && attempt < 2) continue;
+        throw error;
+      }
+    }
   }
 
   private requireRole(user: AuthenticatedUser, ...roles: AuthenticatedUser['role'][]): void {

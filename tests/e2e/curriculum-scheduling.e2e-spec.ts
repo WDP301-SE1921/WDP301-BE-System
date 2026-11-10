@@ -317,13 +317,20 @@ describe('Shared curriculum and generated sessions', () => {
       .send(body)
       .expect(409);
     expect((otherProgram.body as Envelope<never>).error?.code).toBe('CURRICULUM_MISMATCH');
-    const aPreview = await call('MANAGER', 'post', `classes/${ids.A}/session-preview`)
+    // C4: once A has sessions in the range, a new plan only continues after its last session.
+    const aAgain = await call('MANAGER', 'post', `classes/${ids.A}/session-preview`)
+      .send(body)
+      .expect(409);
+    expect((aAgain.body as Envelope<never>).error?.code).toBe('SESSIONS_AFTER_RANGE_EXIST');
+    // C has A's weekdays and no sessions yet: B's later session of lesson 1 is its makeup option
+    // (A's session at the same time is not later, so it is not offered).
+    const cPreview = await call('MANAGER', 'post', `classes/${ids.C}/session-preview`)
       .send(body)
       .expect(201);
-    const aPreviewSlots = (
-      aPreview.body as Envelope<{ slots: Array<{ makeupCandidates: unknown[] }> }>
+    const cPreviewSlots = (
+      cPreview.body as Envelope<{ slots: Array<{ makeupCandidates: Array<{ classId: string }> }> }>
     ).data.slots;
-    expect(aPreviewSlots[0].makeupCandidates).toHaveLength(1);
+    expect(cPreviewSlots[0].makeupCandidates.map((item) => item.classId)).toEqual([ids.B]);
     const scheduleChange = await request(server)
       .post(`/api/v1/classes/${ids.B}/schedules`)
       .set('Authorization', `Bearer ${tokens.MANAGER}`)

@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import type { CenterClosure } from '@prisma/client';
+import { Prisma, type CenterClosure } from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { AppError } from '../../src/common/errors/app.error';
@@ -53,7 +53,6 @@ function setup(existing: CenterClosure[] = []): { service: CenterClosureService;
     centerClosure: {
       findMany: jest.fn().mockResolvedValue(existing),
       count: jest.fn().mockResolvedValue(existing.length),
-      findFirst: jest.fn().mockResolvedValue(null),
       findUnique: jest.fn(({ where }: { where: { id: string } }) =>
         Promise.resolve(existing.find((item) => item.id === where.id) ?? null),
       ),
@@ -203,13 +202,73 @@ describe('center closure routes', () => {
         service.create(manager, { fromDate: '2030-01-01', toDate: '2030-04-30', reason: 'x' }),
       ),
     ).toMatchObject({ code: 'CLOSURE_TOO_LONG', statusCode: 400 });
-    db.centerClosure.findFirst.mockResolvedValue(row('c9', '2030-02-01', '2030-02-05'));
+    db.$queryRaw.mockResolvedValueOnce([row('c9', '2030-02-01', '2030-02-05')]);
     const overlap = await rejection(
       service.create(manager, { fromDate: '2030-02-04', toDate: '2030-02-08', reason: 'x' }),
     );
     expect(overlap).toMatchObject({ code: 'CENTER_CLOSURE_OVERLAP', statusCode: 409 });
-    expect(overlap.details).toMatchObject({ id: 'c9', fromDate: '2030-02-01' });
+    expect(overlap.details).toMatchObject({ id: 'c9', fromDate: '2030-02-01', revision: 1 });
     expect(db.centerClosure.create).not.toHaveBeenCalled();
+  });
+
+  it('checks overlaps with a locking read so two managers cannot both pass', async () => {
+    const { service, db } = setup();
+    await service.create(manager, { fromDate: '2030-02-04', toDate: '2030-02-08', reason: 'Lễ' });
+    const query = call(db.$queryRaw, 0)[0] as Prisma.Sql;
+    expect(query.sql).toMatch(/FROM center_closures[\s\S]*FOR UPDATE/);
+    expect(query.values).toEqual(['2030-02-08', '2030-02-04']);
+    expect(call(db.$transaction, 0)[1]).toEqual({ isolationLevel: 'RepeatableRead' });
+  });
+
+  it('retries a deadlock between two concurrent saves, and the retry sees the other closure', async () => {
+    const { service, db } = setup();
+    const deadlock = new Prisma.PrismaClientKnownRequestError('deadlock', {
+      code: 'P2034',
+      clientVersion: '6.16.2',
+    });
+    db.$transaction.mockRejectedValueOnce(deadlock);
+    db.$queryRaw.mockResolvedValueOnce([row('c9', '2030-02-01', '2030-02-05')]);
+    expect(
+      await rejection(
+        service.create(manager, { fromDate: '2030-02-04', toDate: '2030-02-08', reason: 'x' }),
+      ),
+    ).toMatchObject({ code: 'CENTER_CLOSURE_OVERLAP', statusCode: 409 });
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+
+    db.$transaction.mockClear();
+    db.$transaction.mockRejectedValue(deadlock);
+    expect(
+      await rejection(
+        service.create(manager, { fromDate: '2030-02-04', toDate: '2030-02-08', reason: 'x' }),
+      ),
+    ).toBe(deadlock);
+    expect(db.$transaction).toHaveBeenCalledTimes(3);
+  });
+
+  it('also retries a deadlock raised inside the locking read (P2010 with MySQL 1213)', async () => {
+    const { service, db } = setup([row('c1', '2030-02-06', '2030-02-11')]);
+    const rawDeadlock = new Prisma.PrismaClientKnownRequestError('raw query failed', {
+      code: 'P2010',
+      clientVersion: '6.16.2',
+      meta: { code: '1213', message: 'Deadlock found when trying to get lock' },
+    });
+    db.$transaction.mockRejectedValueOnce(rawDeadlock);
+    await expect(
+      service.update(manager, 'c1', { toDate: '2030-02-12', expectedRevision: 1 }),
+    ).resolves.toMatchObject({ toDate: '2030-02-12' });
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+
+    const otherRawError = new Prisma.PrismaClientKnownRequestError('raw query failed', {
+      code: 'P2010',
+      clientVersion: '6.16.2',
+      meta: { code: '1064', message: 'syntax error' },
+    });
+    db.$transaction.mockClear();
+    db.$transaction.mockRejectedValueOnce(otherRawError);
+    expect(await rejection(service.update(manager, 'c1', { expectedRevision: 1 }))).toBe(
+      otherRawError,
+    );
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it('updates with the expected revision and ignores itself in the overlap check', async () => {
@@ -223,9 +282,9 @@ describe('center closure routes', () => {
       expectedRevision: 1,
     })) as Record<string, unknown>;
     expect(result).toMatchObject({ fromDate: '2030-02-06', toDate: '2030-02-12', revision: 2 });
-    expect(
-      (call(db.centerClosure.findFirst, -1)[0] as { where: { id: unknown } }).where.id,
-    ).toEqual({ not: 'c1' });
+    const query = call(db.$queryRaw, -1)[0] as Prisma.Sql;
+    expect(query.sql).toMatch(/AND id <> \?[\s\S]*FOR UPDATE/);
+    expect(query.values).toEqual(['2030-02-12', '2030-02-06', 'c1']);
     expect(auditAction(db.auditLog.create, -1)).toBe('CENTER_CLOSURE_UPDATED');
   });
 

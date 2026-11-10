@@ -616,13 +616,17 @@ export class EnrollmentWorkflowsService {
 
   async bookMakeup(user: AuthenticatedUser, input: MakeupDto): Promise<unknown> {
     roles(user, 'STAFF');
+    // Read outside the transaction: a seat never changes session, and a plain read inside a
+    // RepeatableRead transaction would fix its snapshot before the lock below. Two bookings for
+    // the last seat would then both count seats from that older snapshot and both succeed.
+    const sourceSeat = await this.repo.db.sessionParticipant.findUnique({
+      where: { id: input.originalParticipantId },
+      select: { sessionId: true },
+    });
     return this.repo.transaction(async (tx) => {
       // Lock both sessions before checking their lessons: cancelling with lesson shift (B6)
-      // locks the same rows, so a booking cannot land on a lesson that is being moved.
-      const sourceSeat = await tx.sessionParticipant.findUnique({
-        where: { id: input.originalParticipantId },
-        select: { sessionId: true },
-      });
+      // locks the same rows, so a booking cannot land on a lesson that is being moved. This is
+      // the first statement, so every read below sees what the previous holder committed.
       const locked = sourceSeat
         ? await tx.$queryRaw<Array<{ id: string; lessonId: string }>>`
             SELECT id, lessonId FROM class_sessions

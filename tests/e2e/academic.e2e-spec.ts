@@ -291,18 +291,19 @@ describe('Academic workflows (database + HTTP)', () => {
       10,
     );
     await call('parent', 'get', `grading-jobs/${jobId}`).expect(403);
+    // Since PR #12 a multiple-choice question is scored from the answer key, so a wild model score
+    // is ignored rather than failing the job. Out-of-range essay scores still fail the job
+    // (tests/unit/structured-grading-worker.spec.ts).
     ai.json.mockResolvedValueOnce({
       scores: [{ questionId: ids.question, score: 999, feedback: 'Bad' }],
     });
     const bad = await call('teacher', 'post', `submissions/${ids.submission}/grade-ai`).expect(201);
     await app.get(GradingWorkerService).tick();
-    expect(
-      (
-        await db.gradingJob.findUniqueOrThrow({
-          where: { id: (bad.body as Envelope<WithId>).data.id },
-        })
-      ).status,
-    ).toBe('FAILED');
+    const badJob = await db.gradingJob.findUniqueOrThrow({
+      where: { id: (bad.body as Envelope<WithId>).data.id },
+    });
+    expect(badJob.status).toBe('SUCCEEDED');
+    expect(badJob.result).toMatchObject({ scores: [{ questionId: ids.question, score: 10 }] });
   });
 
   it('books makeup once, finalizes it and counts the original obligation once', async () => {

@@ -102,11 +102,21 @@ export class CurriculumSchedulingService {
     this.requireRole(user, 'CURRICULUM_DESIGNER');
     this.assertRange(input.fromDate, input.toDate);
     const program = await this.db.program.findUnique({ where: { id: input.programId } });
-    this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
+    // A program the ADMIN soft-deleted keeps `isActive`: it reads as not found, like in the list.
+    this.assert(
+      program && !program.deletedAt,
+      'PROGRAM_NOT_FOUND',
+      'Program not found',
+      HttpStatus.NOT_FOUND,
+    );
     this.assert(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
     if (program.subjectId) {
       const subject = await this.db.subject.findUnique({ where: { id: program.subjectId } });
-      this.assert(subject?.isActive, 'SUBJECT_INACTIVE', 'Subject is inactive');
+      this.assert(
+        subject?.isActive && !subject.deletedAt,
+        'SUBJECT_INACTIVE',
+        'Subject is inactive',
+      );
     }
     const key = subjectKey(program.subject);
     const track = await this.db.curriculumTrack.upsert({

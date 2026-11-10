@@ -11,13 +11,22 @@ type LockSetup = {
 
 function setup(lessons: string[]): LockSetup {
   const order: string[] = [];
+  // The seat's session is read outside the transaction (it never changes).
+  const db = {
+    sessionParticipant: {
+      findUnique: jest.fn(() => {
+        order.push('seat');
+        return Promise.resolve({ sessionId: 'source-1' });
+      }),
+    },
+  };
   const tx = {
     sessionParticipant: {
-      findUnique: jest
-        .fn()
-        .mockResolvedValueOnce({ sessionId: 'source-1' })
+      findUnique: jest.fn(() => {
+        order.push('read');
         // The step after the guard: reaching it means the guard let the booking through.
-        .mockRejectedValueOnce(new Error('next step')),
+        return Promise.reject(new Error('next step'));
+      }),
     },
     $queryRaw: jest.fn(() => {
       order.push('lock');
@@ -26,7 +35,13 @@ function setup(lessons: string[]): LockSetup {
       );
     }),
   };
-  const repo = { transaction: jest.fn((work: (value: unknown) => unknown) => work(tx)) };
+  const repo = {
+    db,
+    transaction: jest.fn((work: (value: unknown) => unknown) => {
+      order.push('begin');
+      return work(tx);
+    }),
+  };
   const service = new EnrollmentWorkflowsService(repo as never, {} as never, {} as never);
   jest
     .spyOn(service as unknown as { makeupTargetState: () => Promise<unknown> }, 'makeupTargetState')
@@ -41,7 +56,9 @@ describe('makeup booking locks both sessions', () => {
   it('locks the source and target sessions before checking the makeup', async () => {
     const { service, tx, order } = setup(['L1', 'L1']);
     await expect(service.bookMakeup(staff, input)).rejects.toThrow('next step');
-    expect(order).toEqual(['lock', 'check']);
+    // The lock is the first statement of the transaction: a plain read before it would fix the
+    // RepeatableRead snapshot early, and two bookings for the last seat would both pass (e2e).
+    expect(order).toEqual(['seat', 'begin', 'lock', 'check', 'read']);
     const sql = (tx.$queryRaw.mock.calls[0] as unknown as [TemplateStringsArray])[0].join('?');
     expect(sql).toContain('FOR UPDATE');
   });
