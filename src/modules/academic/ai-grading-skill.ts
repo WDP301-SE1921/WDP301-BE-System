@@ -14,6 +14,7 @@ export const GRADING_SKILL_INSTRUCTION = [
   '4. Write concise, constructive Vietnamese feedback explaining which rubric criteria were met, which steps were missing or inaccurate according to the curriculum lesson, and why the score was awarded.',
   '5. Feedback is shown to the student and parent once the teacher publishes the grade: address the student only, never add notes for the teacher and never mention attached files.',
   '6. Do not publish results or invent criteria outside the provided rubric and curriculum.',
+  '7. When a question includes criteria, return criteria:[{criterionId,score,feedback}] for EVERY criterion with its exact id. Explain evidence from the answer for each score. Do not change maxima. The server calculates totals.',
 ].join('\n');
 
 export interface GradingCurriculumLessonInput {
@@ -29,6 +30,7 @@ export interface GradingQuestionInput {
   prompt: string;
   choices?: unknown;
   rubric: string | null;
+  criteria?: unknown;
   correctAnswer: string | null;
   maxScore: number;
   outcome?: {
@@ -64,9 +66,8 @@ function isTextAnswer(value: unknown): value is { questionId: string; answer: st
 }
 
 /**
- * Essay questions left blank on a submission with files. The work is in the files, which the AI
- * cannot read, so its suggestion would be 0 points for missing steps; the teacher grades these
- * from the files instead.
+ * File-only essays require transcription before scoring. Keep them for manual review until
+ * the reader supplies evidence or the teacher provides a verified correction.
  */
 export function essaysAnsweredInFiles(
   questions: readonly Pick<GradingQuestionInput, 'id' | 'kind'>[],
@@ -92,7 +93,35 @@ function truncateText(value: string, maxLength: number): string {
   return `${normalized.slice(0, maxLength)}...`;
 }
 
-export function buildGradingSkillPayload(input: BuildGradingSkillPayloadInput) {
+export interface GradingSkillPayload {
+  curriculum: {
+    program: { name: string; subject: string; grade: number } | null;
+    sessionLesson: GradingCurriculumLessonInput | null;
+    programLessons: GradingCurriculumLessonInput[];
+  };
+  assignment: {
+    id: string;
+    title: string;
+    instructions: string;
+    kind: AssignmentKind;
+    testType: TestType | null;
+  };
+  questions: {
+    id: string;
+    kind: QuestionKind;
+    prompt: string;
+    choices?: unknown[];
+    rubric: string | null;
+    criteria: unknown;
+    correctAnswer: string | null;
+    maxScore: number;
+    learningOutcome?: { code: string; title: string; statement: string };
+  }[];
+  answers: unknown;
+}
+export function buildGradingSkillPayload(
+  input: BuildGradingSkillPayloadInput,
+): GradingSkillPayload {
   const sessionLesson = input.assignment.sessionLesson
     ? {
         id: input.assignment.sessionLesson.id,
@@ -136,6 +165,7 @@ export function buildGradingSkillPayload(input: BuildGradingSkillPayloadInput) {
       prompt: q.prompt,
       ...(Array.isArray(q.choices) ? { choices: q.choices } : {}),
       rubric: q.rubric,
+      criteria: q.criteria ?? [],
       correctAnswer: q.correctAnswer,
       maxScore: q.maxScore,
       ...(q.outcome

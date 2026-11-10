@@ -31,7 +31,7 @@ describe('assignment import preview', () => {
       .mockResolvedValue({ questions: [{ kind: 'ESSAY', prompt: 'Giải thích' }] });
     service = new AssignmentImportService(
       { classroom } as unknown as AcademicAccessService,
-      { available, json } as unknown as AcademicAiService,
+      { available, json, visionAvailable: () => false } as unknown as AcademicAiService,
     );
   });
 
@@ -123,7 +123,7 @@ describe('assignment import preview', () => {
     });
   });
 
-  it('rejects empty/scanned PDFs and releases the parser', async () => {
+  it('rejects scanned PDFs without vision configuration and releases the parser', async () => {
     const destroy = jest.fn().mockResolvedValue(undefined);
     jest.mocked(PDFParse).mockImplementation(
       () =>
@@ -134,7 +134,7 @@ describe('assignment import preview', () => {
     );
     await expect(
       service.preview(teacher, 'class', upload('test.pdf', Buffer.from('%PDF-1.7'))),
-    ).rejects.toMatchObject({ code: 'ASSIGNMENT_IMPORT_EMPTY_DOCUMENT' });
+    ).rejects.toMatchObject({ code: 'AI_VISION_UNAVAILABLE' });
     expect(destroy).toHaveBeenCalled();
     expect(json).not.toHaveBeenCalled();
   });

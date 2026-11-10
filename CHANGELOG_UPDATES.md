@@ -42,7 +42,7 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 
 ### 1.5. Gắn CLO vào bài của giáo trình đang áp dụng (`PATCH /api/v1/academic/lessons/:id/outcomes`, 09/11)
 - Trước đây chỉ bài nháp gắn được CLO, nên CLO thêm sau khi Quản lý áp dụng giáo trình không bao giờ có bài và bộ CLO không duyệt chuyên môn được.
-- Bài của giáo trình `APPROVED` (kể cả bài kiểm tra tháng còn nháp) giờ thêm hoặc bỏ được CLO của **bộ `DRAFT`**. Liên kết tới bộ `TECHNICALLY_APPROVED` hoặc `APPROVED` được giữ nguyên kể cả khi request không gửi; thêm CLO của bộ đó trả 409 `OUTCOME_SET_LOCKED` với `details.outcomeIds`.
+- Bài của giáo trình `APPROVED` (kể cả bài kiểm tra tháng còn nháp) giờ thêm hoặc bỏ được CLO của **bộ `DRAFT`**. Liên kết tới bộ `APPROVED` được giữ nguyên kể cả khi request không gửi; thêm CLO của bộ đó trả 409 `OUTCOME_SET_LOCKED` với `details.outcomeIds`.
 - Bài nháp của giáo trình nháp hoặc chờ thẩm định: không đổi. Bài của giáo trình `ARCHIVED`, hoặc bài đã duyệt không thuộc giáo trình đang áp dụng: 409 `LESSON_LOCKED`.
 - Response vẫn là `{ lessonId, outcomeIds }`; `outcomeIds` là các liên kết sau khi ghi, gồm cả liên kết được giữ. Ghi theo phần chênh lệch, khóa dòng bài rồi mọi bộ CLO có liên kết thêm hoặc bớt (kể cả khi bài còn nháp); `technical-approve` khóa dòng bộ trước khi đọc liên kết, nên không duyệt bộ dựa trên liên kết đang bị gỡ.
 - Nhập `REPLACE` gỡ mọi liên kết mục tiêu của các bài bị thay; cần gắn lại.
@@ -96,6 +96,12 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 ### 1.13. Hạ ngưỡng nhập mục tiêu và `expectedRevision` cho `verify-source` (10/11)
 - Chỉ nới, không phá contract: Ngưỡng độ dài (C29): `title` 2–255, `statement` 2–5000 (bắt buộc, không null), `sourceTitle` 2–255, `sourceLocator` 2–255, `sourceUrl` không có độ dài tối thiểu nhưng phải là URL http/https, `sourceNote` tối đa 5000. `POST outcomes/:id/verify-source` nhận `sourceLocator` 2–255, `sourceNote` 5–5000 và `expectedRevision` tùy chọn (cũ hơn `revision` hiện tại thì 409 `REVISION_CONFLICT`, so sau khi khóa dòng).
 - Người dùng ít rành công nghệ có thể ghi nguồn ngắn như "Trang 45" và mô tả ngắn như "Đọc hiểu".
+
+### 1.14. Gộp với PR #12 (rubric, tệp bài tập, chấm AI ảnh/PDF, giáo viên duyệt CLO là xong; 10/11)
+- **Duyệt bộ CLO còn một cấp, theo PR #12.** `technical-approve` chuyển bộ thẳng sang `APPROVED`, ghi giáo viên vào cả `reviewerId` lẫn `approvedById`, xóa `reviewNote`. Route `POST outcome-sets/:id/approve` của Quản lý đã bỏ; enum `OutcomeSetStatus` chỉ còn `DRAFT`, `APPROVED` (migration `20261110000000_teacher_final_clo_approval`). `request-changes` chỉ nhận bộ `APPROVED` và chỉ lưu `reviewNote`, không đổi trạng thái. Lọc `status=TECHNICALLY_APPROVED` ở `GET programs/:id/outcome-sets` giờ trả 400.
+- **Điều kiện duyệt giữ theo CLO bản nhẹ (mục 1.9):** bộ có ít nhất một CLO, mỗi CLO có ít nhất một bài, không đòi xác minh nguồn; đọc bằng câu có khóa; sai thì 409 `OUTCOME_SET_INCOMPLETE` kèm `details: { outcomeIds, codes }`. Người duyệt theo mục 1.8.
+- **Giao bài (`publish`):** kiểm barem/tiêu chí và đáp án của từng câu như PR #12 (`RUBRIC_REQUIRED`, `RUBRIC_TOTAL_MISMATCH`, `INVALID_ANSWER_KEY`). Chọn bộ CLO vẫn tùy chọn như mục 1.9 (Q2): không còn 400 `OUTCOME_SET_REQUIRED` lúc giao khi khóa đã có bộ được duyệt. CLO gắn sai bộ vẫn trả 409 `OUTCOME_MAPPING_INCOMPLETE` với `details.reason: "WRONG_SET"`.
+- Ghi, xóa CLO và xóa bộ giữ luật mục 1.7: mọi Thiết kế GT sửa được bộ nháp, không còn kiểm người tạo bộ.
 
 ---
 

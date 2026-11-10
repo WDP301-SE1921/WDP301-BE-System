@@ -137,7 +137,13 @@ describe('CLO source safeguards', () => {
     });
     expect(db.outcomeSet.update).toHaveBeenCalledWith({
       where: { id: 'set' },
-      data: expect.objectContaining({ status: 'TECHNICALLY_APPROVED', reviewerId: 'teacher' }) as unknown,
+      // Teacher review is the final approval (BE PR #12): no manager step after it.
+      data: expect.objectContaining({
+        status: 'APPROVED',
+        reviewerId: 'teacher',
+        approvedById: 'teacher',
+        reviewNote: null,
+      }) as unknown,
     });
     // A plain read would use the TiDB snapshot taken before the lock wait.
     expect(db.outcomeSet.findUnique).not.toHaveBeenCalled();

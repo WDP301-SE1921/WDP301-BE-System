@@ -1,3 +1,5 @@
+import type { FileAsset } from '@prisma/client';
+import { assignedTeacherWhere } from '../modules/registration-flow/class-teacher';
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
@@ -16,7 +18,7 @@ export class AcademicStorageService {
   ) {}
 
   async upload(user: AuthenticatedUser, file?: Express.Multer.File): Promise<unknown> {
-    roles(user, 'PARENT');
+    roles(user, 'PARENT', 'TEACHER');
     const { extension, mimeType } = validateAcademicSubmissionFile(file);
     const nonNullFile = file!;
 
@@ -54,17 +56,40 @@ export class AcademicStorageService {
     }
   }
 
-  private async checkFileAccess(user: AuthenticatedUser, id: string) {
+  private async checkFileAccess(user: AuthenticatedUser, id: string): Promise<FileAsset> {
     roles(user, 'PARENT', 'TEACHER');
     const file = await this.repo.db.fileAsset.findUniqueOrThrow({ where: { id } });
+    if (file.ownerId === user.id) return file;
+    const assignmentAccess = await this.repo.db.assignmentFile.count({
+      where: {
+        fileId: id,
+        ...(user.role === 'PARENT'
+          ? {
+              teacherOnly: false,
+              assignment: {
+                status: { not: 'DRAFT' },
+                recipients: {
+                  some: {
+                    enrollment: {
+                      status: { not: 'PENDING_LINK' },
+                      studentProfile: { parentProfile: { userId: user.id } },
+                    },
+                  },
+                },
+              },
+            }
+          : { assignment: { class: assignedTeacherWhere(user.id, new Date()) } }),
+      },
+    });
     const permitted =
+      assignmentAccess > 0 ||
       file.ownerId === user.id ||
       (user.role === 'TEACHER' &&
         (await this.repo.db.submissionFile.count({
           where: {
             fileId: id,
             submission: {
-              recipient: { assignment: { teacherId: user.id, class: { teacherId: user.id } } },
+              recipient: { assignment: { class: assignedTeacherWhere(user.id, new Date()) } },
             },
           },
         })) > 0);
@@ -85,7 +110,7 @@ export class AcademicStorageService {
     const isImage = file.mimeType === 'image/png' || file.mimeType === 'image/jpeg';
     return this.objectStorage.createSignedGetUrl(file.storageKey, {
       expiresInSeconds: 300,
-      inline: isImage,
+      inline: isImage || file.mimeType === 'application/pdf',
       contentType: file.mimeType,
     });
   }

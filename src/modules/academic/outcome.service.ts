@@ -299,16 +299,17 @@ export class OutcomeService {
   async requestChanges(user: AuthenticatedUser, setId: string, reason: string): Promise<unknown> {
     roles(user, 'MANAGER');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
       const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
       assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
       assertRule(
-        set.status === 'TECHNICALLY_APPROVED',
+        set.status === 'APPROVED',
         'OUTCOME_SET_NOT_REVIEWED',
-        'Only a teacher-reviewed set can be sent back to draft',
+        'Only an approved set can receive a revision request',
       );
       const result = await tx.outcomeSet.update({
         where: { id: setId },
-        data: { status: 'DRAFT', reviewNote: reason.trim(), reviewerId: null, reviewedAt: null },
+        data: { reviewNote: reason.trim() },
       });
       await tx.auditLog.create({
         data: {
@@ -373,11 +374,7 @@ export class OutcomeService {
     });
   }
 
-  async deleteOutcome(
-    user: AuthenticatedUser,
-    setId: string,
-    outcomeId: string,
-  ): Promise<unknown> {
+  async deleteOutcome(user: AuthenticatedUser, setId: string, outcomeId: string): Promise<unknown> {
     roles(user, 'CURRICULUM_DESIGNER');
     return this.repo.transaction(async (tx) => {
       await this.lockDraftSet(tx, setId, 'Only draft outcomes can be deleted');
@@ -530,6 +527,7 @@ export class OutcomeService {
       HttpStatus.BAD_REQUEST,
     );
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT s.id FROM outcome_sets AS s INNER JOIN learning_outcomes AS o ON o.outcomeSetId = s.id WHERE o.id = ${outcomeId} FOR UPDATE`;
       const outcome = await tx.learningOutcome.findUnique({
         where: { id: outcomeId },
         include: { outcomeSet: true },
@@ -604,26 +602,17 @@ export class OutcomeService {
           revision: { increment: 1 },
         },
       });
+      // Teacher review is the final approval: the set is usable in assignments right away.
       return tx.outcomeSet.update({
         where: { id: setId },
-        data: { status: 'TECHNICALLY_APPROVED', reviewerId: user.id, reviewedAt: now },
-      });
-    });
-  }
-
-  async approve(user: AuthenticatedUser, setId: string): Promise<unknown> {
-    roles(user, 'MANAGER');
-    return this.repo.transaction(async (tx) => {
-      const set = await tx.outcomeSet.findUnique({ where: { id: setId } });
-      assertRule(set, 'OUTCOME_SET_NOT_FOUND', 'Outcome set not found', HttpStatus.NOT_FOUND);
-      assertRule(
-        set.status === 'TECHNICALLY_APPROVED' && set.reviewerId,
-        'TECHNICAL_REVIEW_REQUIRED',
-        'Teacher review is required before approval',
-      );
-      return tx.outcomeSet.update({
-        where: { id: setId },
-        data: { status: 'APPROVED', approvedById: user.id, approvedAt: new Date() },
+        data: {
+          status: 'APPROVED',
+          reviewerId: user.id,
+          reviewedAt: now,
+          approvedById: user.id,
+          approvedAt: now,
+          reviewNote: null,
+        },
       });
     });
   }

@@ -27,6 +27,8 @@ describe('assignment session and type rules', () => {
   const findClass = jest.fn();
   const findSet = jest.fn();
   const countSets = jest.fn();
+  // publish() checks the answer keys and rubrics of the stored questions before the CLO rules.
+  const findQuestions = jest.fn();
   let service: AssessmentService;
 
   beforeEach(() => {
@@ -48,9 +50,19 @@ describe('assignment session and type rules', () => {
       outcomes: [{ id: 'clo-1' }, { id: 'clo-2' }],
     });
     countSets.mockResolvedValue(1);
+    findQuestions.mockResolvedValue(
+      definition.questions.map((question, position) => ({
+        id: `q${position}`,
+        criteria: null,
+        rubric: null,
+        ...question,
+      })),
+    );
     findEnrollments.mockResolvedValue([]);
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       assignment: { create, findUniqueOrThrow: findAssignment },
+      assignmentQuestion: { findMany: findQuestions },
       classSession: { findUnique: findSession },
       enrollment: { findMany: findEnrollments },
       class: { findUniqueOrThrow: findClass },

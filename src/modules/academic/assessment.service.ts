@@ -1,3 +1,4 @@
+import { rubricCriteria, validateRubric, criterionTotal } from './rubric';
 import { randomUUID } from 'node:crypto';
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import type { ParentGradesResponseDto } from './parent-learning-response.dto';
@@ -33,18 +34,22 @@ export class AssessmentService {
     this.validateDefinition(input);
     await this.validateSession(user, input);
     await this.validateOutcomeMapping(input);
-    const { questions, dueAt, ...data } = input;
+    const { questions, dueAt, files, ...data } = input;
+    await this.validateFiles(user, files ?? []);
     return this.repo.db.assignment.create({
       data: {
         ...data,
+        outcomeSetId: input.outcomeSetId ?? null,
         kind: input.kind ?? 'HOMEWORK',
         sessionId: input.sessionId ?? null,
         testType: input.testType ?? null,
         teacherId: user.id,
         dueAt: new Date(dueAt),
+        ...(files ? { files: { create: files } } : {}),
         questions: {
           create: questions.map((q, position) => ({
             ...q,
+            criteria: q.criteria?.map((c) => ({ ...c })) ?? Prisma.JsonNull,
             choices: q.choices ?? Prisma.JsonNull,
             position,
           })),
@@ -57,6 +62,7 @@ export class AssessmentService {
   async updateDraft(user: AuthenticatedUser, id: string, input: AssignmentDto): Promise<unknown> {
     this.validateDefinition(input);
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignments WHERE id = ${id} FOR UPDATE`;
       const assignment = await this.teacher(user, id, tx);
       assertRule(
         assignment.status === 'DRAFT' && assignment.classId === input.classId,
@@ -66,18 +72,22 @@ export class AssessmentService {
       await this.validateSession(user, input, tx);
       await this.validateOutcomeMapping(input, tx);
       await tx.assignmentQuestion.deleteMany({ where: { assignmentId: id } });
-      const { questions, dueAt, ...data } = input;
+      const { questions, dueAt, files, ...data } = input;
+      await this.validateFiles(user, files ?? [], tx, id);
       return tx.assignment.update({
         where: { id },
         data: {
           ...data,
+          outcomeSetId: input.outcomeSetId ?? null,
           kind: input.kind ?? 'HOMEWORK',
           sessionId: input.sessionId ?? null,
           testType: input.testType ?? null,
           dueAt: new Date(dueAt),
+          ...(files ? { files: { deleteMany: {}, create: files } } : {}),
           questions: {
             create: questions.map((q, position) => ({
               ...q,
+              criteria: q.criteria?.map((c) => ({ ...c })) ?? Prisma.JsonNull,
               choices: q.choices ?? Prisma.JsonNull,
               position,
             })),
@@ -86,6 +96,30 @@ export class AssessmentService {
         include: { questions: true },
       });
     });
+  }
+
+  private async validateFiles(
+    user: AuthenticatedUser,
+    files: { fileId: string }[],
+    tx: Prisma.TransactionClient = this.repo.db,
+    assignmentId?: string,
+  ): Promise<void> {
+    const ids = files.map((f) => f.fileId);
+    if (!ids.length) return;
+    assertRule(
+      new Set(ids).size === ids.length &&
+        (await tx.fileAsset.count({
+          where: {
+            id: { in: ids },
+            OR: [
+              { ownerId: user.id },
+              ...(assignmentId ? [{ assignments: { some: { assignmentId } } }] : []),
+            ],
+          },
+        })) === ids.length,
+      'INVALID_FILES',
+      'New files must belong to the uploading teacher; existing assignment attachments may be retained',
+    );
   }
 
   private async validateSession(
@@ -152,18 +186,25 @@ export class AssessmentService {
       'INVALID_DUE_DATE',
       'Due date must be in the future',
     );
+    assertRule(
+      (input.files ?? []).every(
+        (f) => f.questionPosition == null || f.questionPosition < input.questions.length,
+      ),
+      'INVALID_FILE_QUESTION',
+      'File question does not exist',
+    );
     for (const question of input.questions) {
-      if (question.kind === 'MULTIPLE_CHOICE')
+      validateRubric(question.criteria, question.maxScore, false);
+      assertRule(
+        question.kind === 'ESSAY' || !question.criteria?.length,
+        'INVALID_RUBRIC',
+        'Criteria are only for essay questions',
+      );
+      if (question.kind === 'MULTIPLE_CHOICE' && question.correctAnswer)
         assertRule(
-          question.choices?.includes(question.correctAnswer ?? ''),
+          question.choices?.includes(question.correctAnswer),
           'INVALID_ANSWER_KEY',
-          'Choice questions require a correct answer contained in choices',
-        );
-      else
-        assertRule(
-          question.rubric?.trim(),
-          'RUBRIC_REQUIRED',
-          'Essay questions require a grading rubric',
+          'Answer must match a choice',
         );
     }
   }
@@ -230,15 +271,17 @@ export class AssessmentService {
             ...(page.studentId ? { recipients: { some: recipientWhere } } : {}),
           }
         : { status: { not: 'DRAFT' }, recipients: { some: recipientWhere } };
-    where.AND = [{
-      ...(page.classId ? { classId: page.classId } : {}),
-      ...(page.sessionId ? { sessionId: page.sessionId } : {}),
-      ...(page.status ? { status: page.status } : {}),
-      ...(page.kind ? { kind: page.kind } : {}),
-      ...(page.testType ? { testType: page.testType } : {}),
-      ...(page.search ? { title: { contains: page.search } } : {}),
-      dueAt: dateTimeRange(page.fromDate, page.toDate),
-    }];
+    where.AND = [
+      {
+        ...(page.classId ? { classId: page.classId } : {}),
+        ...(page.sessionId ? { sessionId: page.sessionId } : {}),
+        ...(page.status ? { status: page.status } : {}),
+        ...(page.kind ? { kind: page.kind } : {}),
+        ...(page.testType ? { testType: page.testType } : {}),
+        ...(page.search ? { title: { contains: page.search } } : {}),
+        dueAt: dateTimeRange(page.fromDate, page.toDate),
+      },
+    ];
     const items = this.repo.db.assignment
       .findMany({
         where,
@@ -372,7 +415,13 @@ export class AssessmentService {
       .flatMap((recipient) => {
         const submission = recipient.submissions[0];
         const grade = submission?.grades[0];
-        if (!grade || !grade.publishedAt || (publishedRange.gte && grade.publishedAt < publishedRange.gte) || (publishedRange.lte && grade.publishedAt > publishedRange.lte)) return [];
+        if (
+          !grade ||
+          !grade.publishedAt ||
+          (publishedRange.gte && grade.publishedAt < publishedRange.gte) ||
+          (publishedRange.lte && grade.publishedAt > publishedRange.lte)
+        )
+          return [];
         const { questions, ...assignment } = recipient.assignment;
         const maxScore = questions.reduce((sum, question) => sum + question.maxScore, 0);
         return [
@@ -387,7 +436,11 @@ export class AssessmentService {
           },
         ];
       })
-      .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0) || a.recipientId.localeCompare(b.recipientId));
+      .sort(
+        (a, b) =>
+          (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0) ||
+          a.recipientId.localeCompare(b.recipientId),
+      );
     const subjects = [...new Set(history.map((row) => row.assignment.class.program.subject))].map(
       (subject) => {
         const scores = history.filter(
@@ -414,7 +467,11 @@ export class AssessmentService {
     };
   }
 
-  async backOfficeStudentGrades(user: AuthenticatedUser, studentId: string, query = new StudentGradeQueryDto()): Promise<unknown> {
+  async backOfficeStudentGrades(
+    user: AuthenticatedUser,
+    studentId: string,
+    query = new StudentGradeQueryDto(),
+  ): Promise<unknown> {
     roles(user, 'MANAGER', 'STAFF');
     const student = await this.repo.db.studentProfile.findUnique({
       where: { id: studentId },
@@ -422,15 +479,15 @@ export class AssessmentService {
     });
     assertRule(student, 'STUDENT_NOT_FOUND', 'Student not found', HttpStatus.NOT_FOUND);
     const where: Prisma.AssignmentRecipientWhereInput = {
-        enrollment: { studentProfileId: studentId },
-        assignment: {
-          status: { not: 'DRAFT' },
-          ...(query.classId ? { classId: query.classId } : {}),
-          ...(query.kind ? { kind: query.kind } : {}),
-          ...(query.subject ? { class: { program: { subject: query.subject } } } : {}),
-          ...(query.search ? { title: { contains: query.search } } : {}),
-          dueAt: dateTimeRange(query.fromDate, query.toDate),
-        },
+      enrollment: { studentProfileId: studentId },
+      assignment: {
+        status: { not: 'DRAFT' },
+        ...(query.classId ? { classId: query.classId } : {}),
+        ...(query.kind ? { kind: query.kind } : {}),
+        ...(query.subject ? { class: { program: { subject: query.subject } } } : {}),
+        ...(query.search ? { title: { contains: query.search } } : {}),
+        dueAt: dateTimeRange(query.fromDate, query.toDate),
+      },
     };
     const recipients = await this.repo.db.assignmentRecipient.findMany({
       where,
@@ -480,7 +537,9 @@ export class AssessmentService {
         grade: latest?.grades[0] ?? null,
       };
     });
-    return pageResult(query, Promise.resolve(items), () => this.repo.db.assignmentRecipient.count({ where }));
+    return pageResult(query, Promise.resolve(items), () =>
+      this.repo.db.assignmentRecipient.count({ where }),
+    );
   }
 
   async detail(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -489,6 +548,10 @@ export class AssessmentService {
       where: { id },
       include: {
         session: { select: { id: true, startsAt: true, endsAt: true } },
+        files: {
+          where: user.role === 'TEACHER' ? {} : { teacherOnly: false },
+          include: { file: { select: { name: true, mimeType: true, size: true } } },
+        },
         outcomeSet: {
           include: {
             outcomes: {
@@ -532,6 +595,7 @@ export class AssessmentService {
       learningTargets: assignment.outcomeSet?.outcomes ?? [],
       title: assignment.title,
       instructions: assignment.instructions,
+      files: assignment.files,
       dueAt: assignment.dueAt,
       status: assignment.status,
       maxAttempts: assignment.maxAttempts,
@@ -544,13 +608,14 @@ export class AssessmentService {
         maxScore: q.maxScore,
         outcomeId: q.outcomeId,
         ...(showAnswers ? { correctAnswer: q.correctAnswer } : {}),
-        ...(user.role === 'TEACHER' ? { rubric: q.rubric } : {}),
+        ...(user.role === 'TEACHER' ? { rubric: q.rubric, criteria: q.criteria } : {}),
       })),
     };
   }
 
   async publish(user: AuthenticatedUser, id: string, input: RecipientsDto): Promise<unknown> {
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignments WHERE id = ${id} FOR UPDATE`;
       const assignment = await this.teacher(user, id, tx);
       assertRule(
         assignment.status === 'DRAFT' && assignment.dueAt > new Date(),
@@ -558,6 +623,23 @@ export class AssessmentService {
         'Only an unexpired draft can be published',
       );
       await this.validateSession(user, assignment, tx);
+      const questions = await tx.assignmentQuestion.findMany({ where: { assignmentId: id } });
+      for (const question of questions) {
+        validateRubric(question.criteria, question.maxScore);
+        if (question.kind === 'ESSAY')
+          assertRule(
+            rubricCriteria(question.criteria).length || question.rubric?.trim(),
+            'RUBRIC_REQUIRED',
+            'Complete the rubric before publishing',
+          );
+        else
+          assertRule(
+            Array.isArray(question.choices) &&
+              question.choices.includes(question.correctAnswer ?? ''),
+            'INVALID_ANSWER_KEY',
+            'Complete the answer key before publishing',
+          );
+      }
       // Light CLOs (Q2): a CLO set is optional; a chosen set must still be approved for the program.
       if (assignment.outcomeSetId) {
         const classProgram = await tx.class.findUniqueOrThrow({ where: { id: assignment.classId } });
@@ -683,6 +765,7 @@ export class AssessmentService {
   async submit(user: AuthenticatedUser, input: SubmissionDto): Promise<unknown> {
     roles(user, 'PARENT');
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignment_recipients WHERE id = ${input.recipientId} FOR UPDATE`;
       const recipient = await tx.assignmentRecipient.findUniqueOrThrow({
         where: { id: input.recipientId },
         include: { enrollment: true, assignment: { include: { questions: true } } },
@@ -714,12 +797,18 @@ export class AssessmentService {
         const answer = input.answers.find((a) => a.questionId === question.id)!;
         if (question.kind === 'MULTIPLE_CHOICE')
           assertRule(
-            Array.isArray(question.choices) && question.choices.includes(answer.answer),
+            (Array.isArray(question.choices) && question.choices.includes(answer.answer)) ||
+              (!answer.answer.trim() && !!(answer.fileIds?.length || input.fileIds?.length)),
             'INVALID_CHOICE',
             'Answer must match an available choice',
           );
       }
       const fileIds = input.fileIds ?? [];
+      assertRule(
+        input.answers.every((a) => (a.fileIds ?? []).every((id) => fileIds.includes(id))),
+        'INVALID_FILE_QUESTION',
+        'Mapped files must be included in this submission',
+      );
       const files = await tx.fileAsset.count({ where: { id: { in: fileIds }, ownerId: user.id } });
       assertRule(
         files === fileIds.length,
@@ -730,7 +819,11 @@ export class AssessmentService {
         data: {
           recipientId: recipient.id,
           attemptNo: attempts + 1,
-          answers: input.answers.map((a) => ({ questionId: a.questionId, answer: a.answer })),
+          answers: input.answers.map((a) => ({
+            questionId: a.questionId,
+            answer: a.answer,
+            ...(a.fileIds?.length ? { fileIds: a.fileIds } : {}),
+          })),
           files: { create: fileIds.map((fileId) => ({ fileId })) },
         },
         select: { id: true, recipientId: true, attemptNo: true, submittedAt: true },
@@ -772,10 +865,18 @@ export class AssessmentService {
     const where: Prisma.SubmissionWhereInput = {
       submittedAt: dateTimeRange(page.fromDate, page.toDate),
       ...(page.recipientId ? { recipientId: page.recipientId } : {}),
-      ...(page.gradeStatus ? { grades: { some: { AND: [
-        { status: page.gradeStatus },
-        ...(user.role === 'PARENT' ? [{ status: 'PUBLISHED' as const }] : []),
-      ] } } } : {}),
+      ...(page.gradeStatus
+        ? {
+            grades: {
+              some: {
+                AND: [
+                  { status: page.gradeStatus },
+                  ...(user.role === 'PARENT' ? [{ status: 'PUBLISHED' as const }] : []),
+                ],
+              },
+            },
+          }
+        : {}),
       recipient: {
         assignmentId,
         ...(user.role === 'PARENT'
@@ -787,10 +888,16 @@ export class AssessmentService {
             }
           : {}),
       },
-      AND: [{ recipient: { enrollment: {
-        ...(page.studentId ? { studentProfileId: page.studentId } : {}),
-        ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
-      } } }],
+      AND: [
+        {
+          recipient: {
+            enrollment: {
+              ...(page.studentId ? { studentProfileId: page.studentId } : {}),
+              ...(page.search ? { studentProfile: { fullName: { contains: page.search } } } : {}),
+            },
+          },
+        },
+      ],
     };
     return pageResult(
       page,
@@ -810,6 +917,7 @@ export class AssessmentService {
               revision: true,
               status: true,
               scores: true,
+              rubricSnapshot: true,
               totalScore: true,
               feedback: true,
               publishedAt: true,
@@ -827,22 +935,53 @@ export class AssessmentService {
 
   async grade(user: AuthenticatedUser, submissionId: string, input: GradeDto): Promise<unknown> {
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM submissions WHERE id = ${submissionId} FOR UPDATE`;
       const submission = await tx.submission.findUniqueOrThrow({
         where: { id: submissionId },
         include: { recipient: { include: { assignment: { include: { questions: true } } } } },
       });
       await this.teacher(user, submission.recipient.assignmentId, tx);
+      for (const question of submission.recipient.assignment.questions) {
+        const criteria = rubricCriteria(question.criteria);
+        const score = input.scores.find((s) => s.questionId === question.id);
+        if (criteria.length && score) score.score = criterionTotal(criteria, score.criteria);
+      }
       validateScores(submission.recipient.assignment.questions, input.scores);
       const latest = await tx.gradeReview.findFirst({
         where: { submissionId },
         orderBy: { revision: 'desc' },
       });
+      assertRule(
+        input.expectedRevision === undefined || input.expectedRevision === (latest?.revision ?? 0),
+        'GRADE_REVISION_CONFLICT',
+        'Grade changed in another session; reload before saving',
+      );
       return tx.gradeReview.create({
         data: {
           submissionId,
           revision: (latest?.revision ?? 0) + 1,
           reviewerId: user.id,
-          scores: input.scores.map((s) => ({ ...s })),
+          rubricSnapshot: submission.recipient.assignment.questions.map((q) => ({
+            questionId: q.id,
+            outcomeId: q.outcomeId,
+            maxScore: q.maxScore,
+            rubric: q.rubric,
+            criteria: q.criteria,
+          })),
+          scores: input.scores.map((s) => ({
+            questionId: s.questionId,
+            score: s.score,
+            feedback: s.feedback,
+            ...(s.criteria
+              ? {
+                  criteria: s.criteria.map((c) => ({
+                    criterionId: c.criterionId,
+                    score: c.score,
+                    feedback: c.feedback,
+                  })),
+                }
+              : {}),
+          })),
           totalScore: roundedTotal(input.scores),
           feedback: input.feedback,
         },
@@ -862,6 +1001,15 @@ export class AssessmentService {
       'Use manual or AI grading for essay questions',
     );
     const answers = submission.answers as unknown as { questionId: string; answer: string }[];
+    assertRule(
+      submission.recipient.assignment.questions.every((q) =>
+        answers.some(
+          (a) => a.questionId === q.id && Array.isArray(q.choices) && q.choices.includes(a.answer),
+        ),
+      ),
+      'OBJECTIVE_FILE_REVIEW_REQUIRED',
+      'Read the attached work before grading file-only choices',
+    );
     return this.grade(user, id, {
       feedback: '',
       scores: submission.recipient.assignment.questions.map((q) => ({
@@ -875,11 +1023,7 @@ export class AssessmentService {
 
   async approveGrade(user: AuthenticatedUser, id: string): Promise<unknown> {
     return this.repo.transaction(async (tx) => {
-      const grade = await tx.gradeReview.findUniqueOrThrow({
-        where: { id },
-        include: { submission: { include: { recipient: true } } },
-      });
-      await this.teacher(user, grade.submission.recipient.assignmentId, tx);
+      const grade = await this.lockLatestGrade(user, id, tx);
       assertRule(grade.status === 'DRAFT', 'INVALID_GRADE_STATE', 'Grade must be a draft');
       return tx.gradeReview.update({ where: { id }, data: { status: 'APPROVED' } });
     });
@@ -887,11 +1031,7 @@ export class AssessmentService {
 
   async publishGrade(user: AuthenticatedUser, id: string): Promise<unknown> {
     return this.repo.transaction(async (tx) => {
-      const grade = await tx.gradeReview.findUniqueOrThrow({
-        where: { id },
-        include: { submission: { include: { recipient: true } } },
-      });
-      await this.teacher(user, grade.submission.recipient.assignmentId, tx);
+      const grade = await this.lockLatestGrade(user, id, tx);
       assertRule(
         grade.status === 'APPROVED',
         'GRADE_NOT_APPROVED',
@@ -918,6 +1058,33 @@ export class AssessmentService {
       );
       return published;
     });
+  }
+
+  private async lockLatestGrade(
+    user: AuthenticatedUser,
+    id: string,
+    tx: Prisma.TransactionClient,
+  ): Promise<
+    Prisma.GradeReviewGetPayload<{ include: { submission: { include: { recipient: true } } } }>
+  > {
+    // Share the submission lock used by grade() before establishing a read snapshot.
+    await tx.$queryRaw`SELECT s.id FROM submissions AS s INNER JOIN grade_reviews AS g ON g.submissionId = s.id WHERE g.id = ${id} FOR UPDATE`;
+    const grade = await tx.gradeReview.findUniqueOrThrow({
+      where: { id },
+      include: { submission: { include: { recipient: true } } },
+    });
+    await this.teacher(user, grade.submission.recipient.assignmentId, tx);
+    const latest = await tx.gradeReview.findFirst({
+      where: { submissionId: grade.submissionId },
+      orderBy: { revision: 'desc' },
+      select: { id: true },
+    });
+    assertRule(
+      latest?.id === id,
+      'GRADE_REVISION_CONFLICT',
+      'Only the latest grade revision can be approved or published',
+    );
+    return grade;
   }
 
   async teacher(
