@@ -24,7 +24,11 @@ import {
 import type { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
 import { pageResult } from '../../common/pagination';
 import { dateTimeRange } from '../../common/list-query';
-import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '../academic/academic-list.dto';
+import {
+  SearchPageDto,
+  ClassContentQueryDto,
+  ParentCurriculumQueryDto,
+} from '../academic/academic-list.dto';
 import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
 import { parseCurriculumCsv } from './curriculum-csv';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
@@ -34,6 +38,7 @@ import {
   lockCurriculumProgram,
   publishedCurriculumWhere,
 } from './curriculum-lifecycle';
+import { roleAllowed } from '../../common/auth/role-access';
 
 const DAY_MS = 86_400_000;
 const HCM_OFFSET_MS = 7 * 3_600_000;
@@ -161,7 +166,10 @@ export class CurriculumSchedulingService {
       ...(page.search ? { title: { contains: page.search } } : {}),
       ...(page.toDate ? { fromDate: { lte: new Date(page.toDate) } } : {}),
       ...(page.fromDate ? { toDate: { gte: new Date(page.fromDate) } } : {}),
-      program: { ...(page.subject ? { subject: page.subject } : {}), ...(page.grade ? { grade: page.grade } : {}) },
+      program: {
+        ...(page.subject ? { subject: page.subject } : {}),
+        ...(page.grade ? { grade: page.grade } : {}),
+      },
     };
     const [units, total] = await Promise.all([
       this.db.curriculumUnit.findMany({
@@ -728,7 +736,11 @@ export class CurriculumSchedulingService {
     });
   }
 
-  async reviewers(user: AuthenticatedUser, id: string, query = new SearchPageDto()): Promise<unknown> {
+  async reviewers(
+    user: AuthenticatedUser,
+    id: string,
+    query = new SearchPageDto(),
+  ): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'CURRICULUM_DESIGNER');
     const unit = await this.loadUnit(id);
     await this.canReadUnit(user, unit);
@@ -741,15 +753,30 @@ export class CurriculumSchedulingService {
       (teacherId): teacherId is string => !!teacherId,
     );
     const where: Prisma.UserWhereInput = {
-      id: { in: teacherIds }, role: 'TEACHER', status: 'ACTIVE',
-      ...(query.search ? { OR: [{ displayName: { contains: query.search } }, { email: { contains: query.search } }] } : {}),
+      id: { in: teacherIds },
+      role: 'TEACHER',
+      status: 'ACTIVE',
+      deletedAt: null,
+      ...(query.search
+        ? {
+            OR: [
+              { displayName: { contains: query.search } },
+              { email: { contains: query.search } },
+            ],
+          }
+        : {}),
     };
-    return pageResult(query, this.db.user.findMany({
-      where,
-      select: { id: true, email: true, displayName: true },
-      orderBy: [{ displayName: 'asc' }, { email: 'asc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.user.count({ where }));
+    return pageResult(
+      query,
+      this.db.user.findMany({
+        where,
+        select: { id: true, email: true, displayName: true },
+        orderBy: [{ displayName: 'asc' }, { email: 'asc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.user.count({ where }),
+    );
   }
 
   async technicalReview(
@@ -1334,7 +1361,14 @@ export class CurriculumSchedulingService {
           ...(query.teacherId ? { teacherId: query.teacherId } : {}),
           ...(query.roomId ? { roomId: query.roomId } : {}),
           ...(query.lessonId ? { lessonId: query.lessonId } : {}),
-          ...(query.search ? { OR: [{ lesson: { title: { contains: query.search.trim() } } }, { class: { name: { contains: query.search.trim() } } }] } : {}),
+          ...(query.search
+            ? {
+                OR: [
+                  { lesson: { title: { contains: query.search.trim() } } },
+                  { class: { name: { contains: query.search.trim() } } },
+                ],
+              }
+            : {}),
         },
         ...(parent ? [parentSessionWhere(enrollments)] : []),
         ...(query.classId ? [{ classId: query.classId }] : []),
@@ -1536,7 +1570,11 @@ export class CurriculumSchedulingService {
     return row;
   }
 
-  async generationList(user: AuthenticatedUser, classId: string, query = new ClassContentQueryDto()): Promise<unknown> {
+  async generationList(
+    user: AuthenticatedUser,
+    classId: string,
+    query = new ClassContentQueryDto(),
+  ): Promise<unknown> {
     this.requireRole(user, 'MANAGER', 'STAFF', 'TEACHER');
     if (user.role === 'TEACHER') {
       const classroom = await this.db.class.findUnique({ where: { id: classId } });
@@ -1547,20 +1585,30 @@ export class CurriculumSchedulingService {
         HttpStatus.FORBIDDEN,
       );
     }
-    const where: Prisma.ScheduleGenerationWhereInput = { AND: [{ classId }, {
-      ...(query.classId ? { classId: query.classId } : {}),
-      ...(query.search ? { unit: { title: { contains: query.search } } } : {}),
-      createdAt: dateTimeRange(query.fromDate, query.toDate),
-    }] };
-    return pageResult(query, this.db.scheduleGeneration.findMany({
-      where,
-      include: {
-        unit: { select: { id: true, title: true, version: true, status: true } },
-        _count: { select: { sessions: true } },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      take: query.limit, skip: (query.page - 1) * query.limit,
-    }), () => this.db.scheduleGeneration.count({ where }));
+    const where: Prisma.ScheduleGenerationWhereInput = {
+      AND: [
+        { classId },
+        {
+          ...(query.classId ? { classId: query.classId } : {}),
+          ...(query.search ? { unit: { title: { contains: query.search } } } : {}),
+          createdAt: dateTimeRange(query.fromDate, query.toDate),
+        },
+      ],
+    };
+    return pageResult(
+      query,
+      this.db.scheduleGeneration.findMany({
+        where,
+        include: {
+          unit: { select: { id: true, title: true, version: true, status: true } },
+          _count: { select: { sessions: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take: query.limit,
+        skip: (query.page - 1) * query.limit,
+      }),
+      () => this.db.scheduleGeneration.count({ where }),
+    );
   }
 
   async generationDetail(user: AuthenticatedUser, id: string): Promise<unknown> {
@@ -2204,7 +2252,7 @@ export class CurriculumSchedulingService {
 
   private requireRole(user: AuthenticatedUser, ...roles: AuthenticatedUser['role'][]): void {
     this.assert(
-      roles.includes(user.role),
+      roleAllowed(user.role, roles),
       'FORBIDDEN',
       'Role is not allowed',
       HttpStatus.FORBIDDEN,

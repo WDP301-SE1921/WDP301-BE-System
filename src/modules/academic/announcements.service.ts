@@ -10,6 +10,7 @@ import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { AcademicRepository } from './academic.repository';
 import { assertRule, roles, studyDate } from './academic-access.service';
 import { AnnouncementDto, ReminderDto } from './academic.dto';
+import { isManagerOrAdmin } from '../../common/auth/role-access';
 
 @Injectable()
 export class AnnouncementsService {
@@ -38,18 +39,30 @@ export class AnnouncementsService {
   }
   async list(user: AuthenticatedUser, page: ClassContentQueryDto): Promise<unknown> {
     roles(user, 'MANAGER', 'TEACHER', 'PARENT');
-    const where =
-      user.role === 'MANAGER'
-        ? {}
-        : user.role === 'TEACHER'
-          ? { class: assignedTeacherWhere(user.id, new Date()) }
-          : {
-              class: {
-                OR: [
-                  {
-                    enrollments: {
-                      some: {
-                        placements: { none: {} },
+    const where = isManagerOrAdmin(user.role)
+      ? {}
+      : user.role === 'TEACHER'
+        ? { class: assignedTeacherWhere(user.id, new Date()) }
+        : {
+            class: {
+              OR: [
+                {
+                  enrollments: {
+                    some: {
+                      placements: { none: {} },
+                      status: 'ACTIVE' as const,
+                      startDate: { lte: studyDate(new Date()) },
+                      endDate: { gte: studyDate(new Date()) },
+                      studentProfile: { parentProfile: { userId: user.id } },
+                    },
+                  },
+                },
+                {
+                  placements: {
+                    some: {
+                      effectiveFrom: { lte: new Date() },
+                      OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }],
+                      enrollment: {
                         status: 'ACTIVE' as const,
                         startDate: { lte: studyDate(new Date()) },
                         endDate: { gte: studyDate(new Date()) },
@@ -57,34 +70,32 @@ export class AnnouncementsService {
                       },
                     },
                   },
-                  {
-                    placements: {
-                      some: {
-                        effectiveFrom: { lte: new Date() },
-                        OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }],
-                        enrollment: {
-                          status: 'ACTIVE' as const,
-                          startDate: { lte: studyDate(new Date()) },
-                          endDate: { gte: studyDate(new Date()) },
-                          studentProfile: { parentProfile: { userId: user.id } },
-                        },
-                      },
-                    },
-                  },
-                ],
-              },
-            };
-    const filtered = { AND: [where, {
-      ...(page.classId ? { classId: page.classId } : {}),
-      ...(page.search ? { OR: [{ title: { contains: page.search } }, { body: { contains: page.search } }] } : {}),
-      createdAt: dateTimeRange(page.fromDate, page.toDate),
-    }] };
-    return pageResult(page, this.repo.db.announcement.findMany({
-      where: filtered,
-      take: page.limit,
-      skip: (page.page - 1) * page.limit,
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-    }), () => this.repo.db.announcement.count({ where: filtered }));
+                },
+              ],
+            },
+          };
+    const filtered = {
+      AND: [
+        where,
+        {
+          ...(page.classId ? { classId: page.classId } : {}),
+          ...(page.search
+            ? { OR: [{ title: { contains: page.search } }, { body: { contains: page.search } }] }
+            : {}),
+          createdAt: dateTimeRange(page.fromDate, page.toDate),
+        },
+      ],
+    };
+    return pageResult(
+      page,
+      this.repo.db.announcement.findMany({
+        where: filtered,
+        take: page.limit,
+        skip: (page.page - 1) * page.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+      () => this.repo.db.announcement.count({ where: filtered }),
+    );
   }
   async sendAnnouncement(user: AuthenticatedUser, id: string): Promise<unknown> {
     roles(user, 'MANAGER');
