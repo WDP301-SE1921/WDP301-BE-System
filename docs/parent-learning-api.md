@@ -74,6 +74,8 @@ History keeps the legacy participant ID and enrollment/student fields so existin
 
 `GET /me/students/:id/enrollments` adds `class.teacher { id, displayName }` and `class.room { id, name } | null`, also under placements, and `term { startDate, endDate, status, label }`. Term states use the existing receipt rules: ENDED takes precedence, then EXPIRED at the exclusive local end date, UPCOMING before start, otherwise ACTIVE. This does not mutate stored `Enrollment.status`.
 
+Since 2026-11-12 `class` and every `placements[].class` also carry `scheduledUntil: "YYYY-MM-DD" | null` (staff route `GET /students/:id/enrollments` too): the Vietnam date of the class's last non-cancelled session, `null` while the manager has not generated any session. Sessions are never generated automatically, so a child can be enrolled in a class with no sessions yet; a weekday of the fixed schedule after `scheduledUntil` means "not scheduled yet", not "no class".
+
 Email verification sends a 6-digit code (15 minutes, 5 wrong tries, newest code only); verify with `POST /auth/verify-email { email, code }`. Refresh slides the session by `JWT_REFRESH_TTL_SECONDS` up to `JWT_SESSION_MAX_AGE_SECONDS` (default 90 days) after login. See `PARENT_REGISTRATION_API_GUIDE.md` 4.2 and 4.3.
 
 ## Center contact
