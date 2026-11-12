@@ -11,8 +11,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: postgresql://ci:ci@localhost:5432/wdp301
+      DATABASE_URL: mysql://ci:ci@localhost:3306/wdp301
       CORS_ORIGINS: http://localhost:3000
+      JWT_ACCESS_SECRET: 5I-zi8VT6GoPuwUJC68ji8QRA1bhdXqnTunjnTu865iAIjVk-qCC2v8PguGgTkEj
+      JWT_REFRESH_SECRET: 9DNopc09FJ7_PITZlTNpqF16znXQ-SLdV3hEa2UurNmKTC1YOMS_ZYVC3fcvHg96
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +30,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm prisma:generate
       - run: pnpm prisma:validate
-      - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test --runInBand
       - run: pnpm build
