@@ -10,15 +10,24 @@ import { Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors/app.error';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherAt, assignedTeacherWhere } from '../registration-flow/class-teacher';
-import { AcademicAccessService, assertRule, inTerm, roles } from './academic-access.service';
+import {
+  AcademicAccessService,
+  assertRule,
+  inTerm,
+  roles,
+  studyDate,
+} from './academic-access.service';
+import { submissionWindow } from './submission-window';
 import { AcademicRepository } from './academic.repository';
 import {
   AssignmentDto,
   GradeDto,
   RecipientsDto,
+  SupplementalRecipientsDto,
   SubmissionDto,
   SubmissionWindowDto,
 } from './academic.dto';
+import { EligibleRecipientsQueryDto } from './academic-list.dto';
 
 @Injectable()
 export class AssessmentService {
@@ -256,6 +265,17 @@ export class AssessmentService {
     if (user.role === 'PARENT' && page.studentId)
       await this.assertOwnedStudent(user, page.studentId);
     const recipientWhere: Prisma.AssignmentRecipientWhereInput = {
+      ...(user.role === 'PARENT' && (page.fromDate || page.toDate)
+        ? {
+            OR: [
+              { dueAtOverride: dateTimeRange(page.fromDate, page.toDate) },
+              {
+                dueAtOverride: null,
+                assignment: { dueAt: dateTimeRange(page.fromDate, page.toDate) },
+              },
+            ],
+          }
+        : {}),
       enrollment: {
         status: { not: 'PENDING_LINK' },
         ...(page.studentId ? { studentProfileId: page.studentId } : {}),
@@ -279,7 +299,7 @@ export class AssessmentService {
         ...(page.kind ? { kind: page.kind } : {}),
         ...(page.testType ? { testType: page.testType } : {}),
         ...(page.search ? { title: { contains: page.search } } : {}),
-        dueAt: dateTimeRange(page.fromDate, page.toDate),
+        ...(user.role === 'TEACHER' ? { dueAt: dateTimeRange(page.fromDate, page.toDate) } : {}),
       },
     ];
     const items = this.repo.db.assignment
@@ -292,6 +312,7 @@ export class AssessmentService {
           dueAt: true,
           status: true,
           maxAttempts: true,
+          answersPublishedAt: true,
           kind: true,
           testType: true,
           session: { select: { id: true, startsAt: true, endsAt: true } },
@@ -304,7 +325,12 @@ export class AssessmentService {
             select: {
               id: true,
               enrollmentId: true,
-              enrollment: { select: { studentProfileId: true } },
+              assignedAt: true,
+              dueAtOverride: true,
+              enrollment: {
+                select: { studentProfileId: true, status: true, startDate: true, endDate: true },
+              },
+              _count: { select: { submissions: true } },
               submissions: {
                 orderBy: { attemptNo: 'desc' },
                 take: 1,
@@ -336,8 +362,9 @@ export class AssessmentService {
             total: questions.length,
           },
           maxScore: questions.reduce((sum, q) => sum + q.maxScore, 0),
-          recipients: recipients.map(({ enrollment, submissions, ...recipient }) => ({
+          recipients: recipients.map(({ enrollment, submissions, _count, ...recipient }) => ({
             ...recipient,
+            ...submissionWindow(assignment, { ...recipient, enrollment }, _count.submissions),
             studentId: enrollment.studentProfileId,
             latestSubmission: submissions[0]
               ? {
@@ -480,19 +507,24 @@ export class AssessmentService {
     assertRule(student, 'STUDENT_NOT_FOUND', 'Student not found', HttpStatus.NOT_FOUND);
     const where: Prisma.AssignmentRecipientWhereInput = {
       enrollment: { studentProfileId: studentId },
+      OR: [
+        { dueAtOverride: dateTimeRange(query.fromDate, query.toDate) },
+        { dueAtOverride: null, assignment: { dueAt: dateTimeRange(query.fromDate, query.toDate) } },
+      ],
       assignment: {
         status: { not: 'DRAFT' },
         ...(query.classId ? { classId: query.classId } : {}),
         ...(query.kind ? { kind: query.kind } : {}),
         ...(query.subject ? { class: { program: { subject: query.subject } } } : {}),
         ...(query.search ? { title: { contains: query.search } } : {}),
-        dueAt: dateTimeRange(query.fromDate, query.toDate),
       },
     };
     const recipients = await this.repo.db.assignmentRecipient.findMany({
       where,
       select: {
         id: true,
+        assignedAt: true,
+        dueAtOverride: true,
         assignment: {
           select: {
             id: true,
@@ -525,11 +557,15 @@ export class AssessmentService {
       take: query.limit,
       skip: (query.page - 1) * query.limit,
     });
-    const items = recipients.map(({ assignment, submissions }) => {
+    const items = recipients.map(({ assignment, submissions, assignedAt, dueAtOverride }) => {
       const { questions, ...rest } = assignment;
       const latest = submissions[0];
       return {
         ...rest,
+        assignedAt,
+        dueAtOverride,
+        effectiveDueAt: dueAtOverride ?? assignment.dueAt,
+        isSupplemental: !!dueAtOverride,
         maxScore: questions.reduce((sum, question) => sum + question.maxScore, 0),
         submission: latest
           ? { id: latest.id, attemptNo: latest.attemptNo, submittedAt: latest.submittedAt }
@@ -571,7 +607,14 @@ export class AssessmentService {
                   },
                 }
               : {},
-          select: { id: true, enrollmentId: true },
+          select: {
+            id: true,
+            enrollmentId: true,
+            assignedAt: true,
+            dueAtOverride: true,
+            enrollment: { select: { status: true, startDate: true, endDate: true } },
+            _count: { select: { submissions: true } },
+          },
         },
       },
     });
@@ -599,7 +642,22 @@ export class AssessmentService {
       dueAt: assignment.dueAt,
       status: assignment.status,
       maxAttempts: assignment.maxAttempts,
-      recipients: assignment.recipients,
+      ...(user.role === 'TEACHER'
+        ? {
+            canAssignSupplemental: assignment.status !== 'DRAFT' && !assignment.answersPublishedAt,
+            activeSupplementalRecipientCount: assignment.recipients.filter(
+              (r) => r.dueAtOverride && r.dueAtOverride >= new Date(),
+            ).length,
+            canPublishAnswers:
+              assignment.status === 'CLOSED' &&
+              !assignment.answersPublishedAt &&
+              !assignment.recipients.some((r) => r.dueAtOverride && r.dueAtOverride >= new Date()),
+          }
+        : {}),
+      recipients: assignment.recipients.map(({ enrollment, _count, ...recipient }) => ({
+        ...recipient,
+        ...submissionWindow(assignment, { ...recipient, enrollment }, _count.submissions),
+      })),
       questions: assignment.questions.map((q) => ({
         id: q.id,
         kind: q.kind,
@@ -611,6 +669,179 @@ export class AssessmentService {
         ...(user.role === 'TEACHER' ? { rubric: q.rubric, criteria: q.criteria } : {}),
       })),
     };
+  }
+
+  private currentRecipientWhere(classId: string, now: Date): Prisma.EnrollmentWhereInput {
+    return {
+      status: 'ACTIVE',
+      studentProfileId: { not: null },
+      startDate: { lte: studyDate(now) },
+      endDate: { gt: studyDate(now) },
+      OR: [
+        {
+          placements: {
+            some: {
+              classId,
+              effectiveFrom: { lte: now },
+              OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+            },
+          },
+        },
+        { placements: { none: {} }, classId },
+      ],
+    };
+  }
+
+  private async validateRecipients(
+    tx: Prisma.TransactionClient,
+    classId: string,
+    enrollmentIds: string[],
+    now: Date,
+  ): Promise<Prisma.EnrollmentGetPayload<{ include: { placements: true } }>[]> {
+    const enrollments = await tx.enrollment.findMany({
+      where: { AND: [this.currentRecipientWhere(classId, now), { id: { in: enrollmentIds } }] },
+      include: { placements: true },
+    });
+    assertRule(
+      enrollments.length === enrollmentIds.length &&
+        new Set(enrollments.map((e) => e.studentProfileId)).size === enrollments.length &&
+        enrollments.every((e) => {
+          const current = e.placements.find(
+            (p) => p.effectiveFrom <= now && (!p.effectiveTo || p.effectiveTo > now),
+          );
+          return (
+            e.studentProfileId &&
+            inTerm(e, now) &&
+            (e.placements.length ? current?.classId : e.classId) === classId
+          );
+        }),
+      'INVALID_RECIPIENTS',
+      'Recipients must be distinct, linked students currently enrolled in this class',
+    );
+    return enrollments;
+  }
+
+  async eligibleRecipients(
+    user: AuthenticatedUser,
+    id: string,
+    query: EligibleRecipientsQueryDto,
+  ): Promise<unknown> {
+    const assignment = await this.teacher(user, id);
+    const canAssignSupplemental = assignment.status !== 'DRAFT' && !assignment.answersPublishedAt;
+    const rows = canAssignSupplemental
+      ? await this.repo.db.enrollment.findMany({
+          where: {
+            AND: [
+              this.currentRecipientWhere(assignment.classId, new Date()),
+              {
+                studentProfile: {
+                  ...(query.search ? { fullName: { contains: query.search } } : {}),
+                  enrollments: { none: { recipients: { some: { assignmentId: id } } } },
+                },
+              },
+            ],
+          },
+          distinct: ['studentProfileId'],
+          select: {
+            id: true,
+            studentProfileId: true,
+            studentProfile: { select: { fullName: true } },
+          },
+          orderBy: { id: 'asc' },
+        })
+      : [];
+    return {
+      assignmentId: id,
+      status: assignment.status,
+      canAssignSupplemental,
+      blockReason:
+        assignment.status === 'DRAFT'
+          ? 'ASSIGNMENT_NOT_PUBLISHED'
+          : assignment.answersPublishedAt
+            ? 'ANSWERS_ALREADY_VISIBLE'
+            : null,
+      items: rows.slice((query.page - 1) * query.limit, query.page * query.limit).map((e) => ({
+        enrollmentId: e.id,
+        studentId: e.studentProfileId,
+        fullName: e.studentProfile!.fullName,
+      })),
+      page: query.page,
+      limit: query.limit,
+      total: rows.length,
+    };
+  }
+
+  async addRecipients(
+    user: AuthenticatedUser,
+    id: string,
+    input: SupplementalRecipientsDto,
+  ): Promise<unknown> {
+    return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignments WHERE id = ${id} FOR UPDATE`;
+      const assignment = await this.teacher(user, id, tx);
+      assertRule(
+        assignment.status !== 'DRAFT',
+        'ASSIGNMENT_NOT_PUBLISHED',
+        'Publish the assignment first',
+      );
+      assertRule(
+        !assignment.answersPublishedAt,
+        'ANSWERS_ALREADY_VISIBLE',
+        'Answers have already been published',
+      );
+      const now = new Date();
+      const dueAtOverride = new Date(input.dueAt);
+      assertRule(
+        Number.isFinite(dueAtOverride.getTime()) && dueAtOverride > now,
+        'INVALID_SUBMISSION_WINDOW',
+        'Choose a future recipient deadline',
+      );
+      const enrollments = await this.validateRecipients(
+        tx,
+        assignment.classId,
+        input.enrollmentIds,
+        now,
+      );
+      const existing = await tx.assignmentRecipient.findMany({
+        where: { assignmentId: id },
+        select: { enrollment: { select: { studentProfileId: true } } },
+      });
+      const assigned = new Set(existing.map((r) => r.enrollment.studentProfileId));
+      const addedRecipients: {
+        id: string;
+        enrollmentId: string;
+        assignedAt: Date | null;
+        dueAtOverride: Date | null;
+      }[] = [];
+      const skippedEnrollmentIds: string[] = [];
+      for (const enrollment of enrollments) {
+        if (assigned.has(enrollment.studentProfileId)) {
+          skippedEnrollmentIds.push(enrollment.id);
+          continue;
+        }
+        const recipient = await tx.assignmentRecipient.create({
+          data: {
+            assignmentId: id,
+            enrollmentId: enrollment.id,
+            assignedAt: now,
+            assignedById: user.id,
+            dueAtOverride,
+          },
+          select: { id: true, enrollmentId: true, assignedAt: true, dueAtOverride: true },
+        });
+        addedRecipients.push(recipient);
+        await this.notifications.assignment(
+          tx,
+          user.id,
+          id,
+          'ASSIGNMENT_PUBLISHED',
+          `Bài tập được giao bổ sung. Hạn nộp riêng: ${dueAtOverride.toISOString()}.`,
+          `assignment-supplemental:${recipient.id}`,
+          [enrollment.id],
+        );
+      }
+      return { assignmentId: id, addedRecipients, skippedEnrollmentIds };
+    });
   }
 
   async publish(user: AuthenticatedUser, id: string, input: RecipientsDto): Promise<unknown> {
@@ -642,7 +873,9 @@ export class AssessmentService {
       }
       // Light CLOs (Q2): a CLO set is optional; a chosen set must still be approved for the program.
       if (assignment.outcomeSetId) {
-        const classProgram = await tx.class.findUniqueOrThrow({ where: { id: assignment.classId } });
+        const classProgram = await tx.class.findUniqueOrThrow({
+          where: { id: assignment.classId },
+        });
         const set = await tx.outcomeSet.findUnique({ where: { id: assignment.outcomeSetId } });
         assertRule(
           set && set.status === 'APPROVED' && set.programId === classProgram.programId,
@@ -650,34 +883,15 @@ export class AssessmentService {
           'Assignment CLO set is no longer approved for this program',
         );
       }
-      const enrollments = await tx.enrollment.findMany({
-        where: { id: { in: input.enrollmentIds } },
-        include: { placements: true },
-      });
-      assertRule(
-        enrollments.length === input.enrollmentIds.length &&
-          new Set(enrollments.map((e) => e.studentProfileId)).size === enrollments.length,
-        'INVALID_RECIPIENTS',
-        'Recipients must exist and refer to distinct students',
-      );
       const now = new Date();
-      for (const enrollment of enrollments) {
-        assertRule(
-          enrollment.studentProfileId && inTerm(enrollment, now),
-          'INVALID_RECIPIENTS',
-          'Only linked, currently enrolled students can receive work',
-        );
-        const placement = enrollment.placements.find(
-          (p) => p.effectiveFrom <= now && (!p.effectiveTo || p.effectiveTo > now),
-        );
-        assertRule(
-          (placement?.classId ?? enrollment.classId) === assignment.classId,
-          'INVALID_RECIPIENTS',
-          'Enrollment belongs to another class',
-        );
-      }
+      await this.validateRecipients(tx, assignment.classId, input.enrollmentIds, now);
       await tx.assignmentRecipient.createMany({
-        data: input.enrollmentIds.map((enrollmentId) => ({ assignmentId: id, enrollmentId })),
+        data: input.enrollmentIds.map((enrollmentId) => ({
+          assignmentId: id,
+          enrollmentId,
+          assignedAt: now,
+          assignedById: user.id,
+        })),
       });
       const updated = await tx.assignment.update({ where: { id }, data: { status: 'PUBLISHED' } });
       await this.notifications.assignment(
@@ -693,18 +907,26 @@ export class AssessmentService {
   }
 
   async close(user: AuthenticatedUser, id: string): Promise<unknown> {
-    await this.teacher(user, id);
-    const result = await this.repo.db.assignment.updateMany({
-      where: { id, status: 'PUBLISHED' },
-      data: { status: 'CLOSED' },
+    return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignments WHERE id = ${id} FOR UPDATE`;
+      const assignment = await this.teacher(user, id, tx);
+      assertRule(
+        assignment.status === 'PUBLISHED',
+        'INVALID_ASSIGNMENT_STATE',
+        'Assignment must be published',
+      );
+      await tx.assignment.update({ where: { id }, data: { status: 'CLOSED' } });
+      const activeSupplementalRecipientCount = await tx.assignmentRecipient.count({
+        where: { assignmentId: id, dueAtOverride: { gte: new Date() } },
+      });
+      return { id, status: 'CLOSED', activeSupplementalRecipientCount };
     });
-    assertRule(result.count, 'INVALID_ASSIGNMENT_STATE', 'Assignment must be published');
-    return { id, status: 'CLOSED' };
   }
 
   async reopen(user: AuthenticatedUser, id: string, input: SubmissionWindowDto): Promise<unknown> {
     const notificationOperationId = randomUUID();
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignments WHERE id = ${id} FOR UPDATE`;
       const assignment = await this.teacher(user, id, tx);
       assertRule(
         assignment.status !== 'DRAFT' && !assignment.answersPublishedAt,
@@ -739,6 +961,7 @@ export class AssessmentService {
 
   async publishAnswers(user: AuthenticatedUser, id: string): Promise<unknown> {
     return this.repo.transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assignments WHERE id = ${id} FOR UPDATE`;
       const assignment = await this.teacher(user, id, tx);
       assertRule(
         assignment.status === 'CLOSED',
@@ -746,6 +969,18 @@ export class AssessmentService {
         'Close submissions before publishing answers',
       );
       if (assignment.answersPublishedAt) return assignment;
+      const activeSupplemental = await tx.assignmentRecipient.findFirst({
+        where: { assignmentId: id, dueAtOverride: { gte: new Date() } },
+        orderBy: { dueAtOverride: 'desc' },
+        select: { dueAtOverride: true },
+      });
+      if (activeSupplemental)
+        throw new AppError(
+          'SUPPLEMENTAL_WINDOW_OPEN',
+          'Wait for the supplemental submission window to close',
+          HttpStatus.CONFLICT,
+          { latestSupplementalDueAt: activeSupplemental.dueAtOverride },
+        );
       const updated = await tx.assignment.update({
         where: { id },
         data: { answersPublishedAt: new Date() },
@@ -765,6 +1000,8 @@ export class AssessmentService {
   async submit(user: AuthenticatedUser, input: SubmissionDto): Promise<unknown> {
     roles(user, 'PARENT');
     return this.repo.transaction(async (tx) => {
+      // Lock the assignment first, matching supplemental assignment / answer publication.
+      await tx.$queryRaw`SELECT a.id FROM assignments a INNER JOIN assignment_recipients r ON r.assignmentId = a.id WHERE r.id = ${input.recipientId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM assignment_recipients WHERE id = ${input.recipientId} FOR UPDATE`;
       const recipient = await tx.assignmentRecipient.findUniqueOrThrow({
         where: { id: input.recipientId },
@@ -772,18 +1009,14 @@ export class AssessmentService {
       });
       await this.access.enrollment(user, recipient.enrollmentId, tx);
       const assignment = recipient.assignment;
-      assertRule(
-        assignment.status === 'PUBLISHED' &&
-          assignment.dueAt >= new Date() &&
-          inTerm(recipient.enrollment, new Date()),
-        'SUBMISSION_CLOSED',
-        'Submission window or enrollment is closed',
-      );
       const attempts = await tx.submission.count({ where: { recipientId: recipient.id } });
+      const window = submissionWindow(assignment, recipient, attempts);
       assertRule(
-        attempts < assignment.maxAttempts,
-        'ATTEMPTS_EXHAUSTED',
-        'Maximum submission attempts reached',
+        window.canSubmit,
+        window.submissionBlockReason === 'ATTEMPTS_EXHAUSTED'
+          ? 'ATTEMPTS_EXHAUSTED'
+          : 'SUBMISSION_CLOSED',
+        window.submissionBlockReason ?? 'Submission window is closed',
       );
       const ids = new Set(input.answers.map((a) => a.questionId));
       assertRule(

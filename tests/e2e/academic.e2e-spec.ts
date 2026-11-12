@@ -275,6 +275,306 @@ describe('Academic workflows (database + HTTP)', () => {
     await call('teacher', 'post', `assignments/${ids.assignment}/publish-answers`).expect(201);
   });
 
+  it('assigns closed work to a newcomer without reopening the original recipients', async () => {
+    const created = await call('teacher', 'post', 'assignments')
+      .send({
+        classId: ids.classA,
+        title: 'Supplemental work',
+        instructions: 'Choose one',
+        dueAt: new Date(Date.now() + 86400000).toISOString(),
+        maxAttempts: 2,
+        questions: [
+          {
+            kind: 'MULTIPLE_CHOICE',
+            prompt: '2+2?',
+            choices: ['4', '5'],
+            correctAnswer: '4',
+            maxScore: 10,
+          },
+        ],
+      })
+      .expect(201);
+    const assignment = (created.body as Envelope<WithId & { questions: WithId[] }>).data;
+    const dueAt = new Date(Date.now() + 3 * 86400000).toISOString();
+    const parent = await db.parentProfile.findUniqueOrThrow({ where: { userId: ids.otherParent } });
+    const student = await db.studentProfile.create({
+      data: { parentProfileId: parent.id, fullName: 'New student', grade: 8 },
+    });
+    const order = await db.registrationOrder.create({
+      data: {
+        type: 'FIRST_CHILD',
+        parentEmail: 'otherParent@academic.test',
+        studentFullName: student.fullName,
+        studentGrade: 8,
+        classId: ids.classB,
+        packageMonths: 12,
+        quotedAmount: 6000000,
+        createdByManagerId: ids.manager,
+        status: 'LINKED',
+      },
+    });
+    // The immutable original class differs from the current placement.
+    const newcomer = await db.enrollment.create({
+      data: {
+        registrationOrderId: order.id,
+        studentProfileId: student.id,
+        classId: ids.classB,
+        packageMonths: 12,
+        status: 'ACTIVE',
+        startDate: new Date('2020-01-01'),
+        endDate: new Date('2040-12-31'),
+        placements: {
+          create: [
+            {
+              classId: ids.classB,
+              effectiveFrom: new Date('2020-01-01'),
+              effectiveTo: new Date('2020-01-02'),
+            },
+            { classId: ids.classA, effectiveFrom: new Date('2020-01-02') },
+          ],
+        },
+      },
+    });
+    const payload = { enrollmentIds: [newcomer.id], dueAt };
+    await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send(payload)
+      .expect(409);
+    await call('teacher', 'post', `assignments/${assignment.id}/publish`)
+      .send({ enrollmentIds: [ids.enrollment] })
+      .expect(201);
+    await call('teacher', 'post', `assignments/${assignment.id}/close`).expect(201);
+    await db.assignment.update({
+      where: { id: assignment.id },
+      data: { dueAt: new Date(Date.now() - 86400000) },
+    });
+    const original = await db.assignmentRecipient.findUniqueOrThrow({
+      where: {
+        assignmentId_enrollmentId: { assignmentId: assignment.id, enrollmentId: ids.enrollment },
+      },
+    });
+    await call('outsider', 'post', `assignments/${assignment.id}/recipients`)
+      .send(payload)
+      .expect(403);
+    await call('parent', 'post', `assignments/${assignment.id}/recipients`)
+      .send(payload)
+      .expect(403);
+    await call('outsider', 'get', `assignments/${assignment.id}/eligible-recipients`).expect(403);
+    await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send({ ...payload, dueAt: new Date(Date.now() - 1000).toISOString() })
+      .expect(409);
+    await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send({ ...payload, enrollmentIds: [newcomer.id, 'missing'] })
+      .expect(409);
+    for (const status of ['PENDING_LINK', 'ENDED'] as const) {
+      await db.enrollment.update({ where: { id: newcomer.id }, data: { status } });
+      await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+        .send(payload)
+        .expect(409);
+    }
+    await db.enrollment.update({
+      where: { id: newcomer.id },
+      data: { status: 'ACTIVE', endDate: new Date('2020-02-01') },
+    });
+    await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send(payload)
+      .expect(409);
+    await db.enrollment.update({
+      where: { id: newcomer.id },
+      data: { endDate: new Date('2040-12-31') },
+    });
+    await db.enrollmentPlacement.updateMany({
+      where: { enrollmentId: newcomer.id, effectiveTo: null },
+      data: { classId: ids.classB },
+    });
+    await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send(payload)
+      .expect(409);
+    await db.enrollmentPlacement.updateMany({
+      where: { enrollmentId: newcomer.id, effectiveTo: null },
+      data: { classId: ids.classA },
+    });
+    expect(await db.assignmentRecipient.count({ where: { assignmentId: assignment.id } })).toBe(1);
+    const eligible = await call(
+      'teacher',
+      'get',
+      `assignments/${assignment.id}/eligible-recipients?search=New`,
+    ).expect(200);
+    expect((eligible.body as Envelope<{ items: unknown[] }>).data.items).toEqual([
+      { enrollmentId: newcomer.id, studentId: student.id, fullName: student.fullName },
+    ]);
+
+    const oldNotificationCount = await db.notification.count({
+      where: { targetId: assignment.id, recipientUserId: ids.parent },
+    });
+    const responses = await Promise.all(
+      [0, 1].map(() =>
+        call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+          .send({ ...payload, enrollmentIds: [newcomer.id, ids.enrollment] })
+          .expect(201),
+      ),
+    );
+    const results = responses.map(
+      (r) =>
+        (r.body as Envelope<{ addedRecipients: WithId[]; skippedEnrollmentIds: string[] }>).data,
+    );
+    expect(results.reduce((n, r) => n + r.addedRecipients.length, 0)).toBe(1);
+    expect(
+      await db.notification.count({
+        where: { targetId: assignment.id, recipientUserId: ids.otherParent },
+      }),
+    ).toBe(1);
+    expect(
+      await db.notification.count({
+        where: { targetId: assignment.id, recipientUserId: ids.parent },
+      }),
+    ).toBe(oldNotificationCount);
+    expect(await db.assignmentRecipient.findUniqueOrThrow({ where: { id: original.id } })).toEqual(
+      original,
+    );
+    expect((await db.assignment.findUniqueOrThrow({ where: { id: assignment.id } })).status).toBe(
+      'CLOSED',
+    );
+    const secondOrder = await db.registrationOrder.create({
+      data: {
+        type: 'NEW_CHILD',
+        parentEmail: 'otherParent@academic.test',
+        studentFullName: student.fullName,
+        studentGrade: 8,
+        classId: ids.classA,
+        packageMonths: 12,
+        quotedAmount: 6000000,
+        createdByManagerId: ids.manager,
+        status: 'LINKED',
+      },
+    });
+    const secondEnrollment = await db.enrollment.create({
+      data: {
+        registrationOrderId: secondOrder.id,
+        studentProfileId: student.id,
+        classId: ids.classA,
+        packageMonths: 12,
+        status: 'ACTIVE',
+        startDate: new Date('2020-01-01'),
+        endDate: new Date('2040-12-31'),
+      },
+    });
+    const skipped = await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send({ ...payload, enrollmentIds: [secondEnrollment.id] })
+      .expect(201);
+    expect((skipped.body as Envelope<unknown>).data).toMatchObject({
+      addedRecipients: [],
+      skippedEnrollmentIds: [secondEnrollment.id],
+    });
+    const noCandidates = await call(
+      'teacher',
+      'get',
+      `assignments/${assignment.id}/eligible-recipients?search=New`,
+    ).expect(200);
+    expect((noCandidates.body as Envelope<{ total: number }>).data.total).toBe(0);
+
+    const detail = await call('otherParent', 'get', `assignments/${assignment.id}`).expect(200);
+    const data = (
+      detail.body as Envelope<{
+        recipients: (WithId & { canSubmit: boolean; effectiveDueAt: string })[];
+      }>
+    ).data;
+    expect(data.recipients).toHaveLength(1);
+    expect(data.recipients[0]).toMatchObject({
+      canSubmit: true,
+      effectiveDueAt: dueAt,
+      isSupplemental: true,
+    });
+    const recipientId = data.recipients[0].id;
+    const submit = {
+      recipientId,
+      answers: [{ questionId: assignment.questions[0].id, answer: '4' }],
+    };
+    await call('parent', 'post', 'submissions').send(submit).expect(403);
+    await call('parent', 'post', 'submissions')
+      .send({ ...submit, recipientId: original.id })
+      .expect(409);
+    const filtered = await call(
+      'otherParent',
+      'get',
+      `assignments?studentId=${student.id}&fromDate=${dueAt}&toDate=${dueAt}`,
+    ).expect(200);
+    expect((filtered.body as Envelope<WithId[]>).data.map((a) => a.id)).toContain(assignment.id);
+    const blocked = await call(
+      'teacher',
+      'post',
+      `assignments/${assignment.id}/publish-answers`,
+    ).expect(409);
+    expect(JSON.stringify(blocked.body)).toContain('SUPPLEMENTAL_WINDOW_OPEN');
+    expect(JSON.stringify(blocked.body)).toContain(dueAt);
+
+    // Closing the general window again must preserve the supplemental deadline.
+    await db.assignment.update({ where: { id: assignment.id }, data: { status: 'PUBLISHED' } });
+    const closed = await call('teacher', 'post', `assignments/${assignment.id}/close`).expect(201);
+    expect(
+      (closed.body as Envelope<{ activeSupplementalRecipientCount: number }>).data
+        .activeSupplementalRecipientCount,
+    ).toBe(1);
+    await call('otherParent', 'post', 'submissions').send(submit).expect(201);
+    await call('otherParent', 'post', 'submissions').send(submit).expect(201);
+    await call('otherParent', 'post', 'submissions').send(submit).expect(409);
+    expect(
+      (
+        await db.assignmentRecipient.findUniqueOrThrow({ where: { id: recipientId } })
+      ).dueAtOverride?.toISOString(),
+    ).toBe(dueAt);
+    await db.assignmentRecipient.update({
+      where: { id: recipientId },
+      data: { dueAtOverride: new Date(Date.now() - 1000) },
+    });
+    await call('teacher', 'post', `assignments/${assignment.id}/publish-answers`).expect(201);
+    await call('teacher', 'post', `assignments/${assignment.id}/recipients`)
+      .send(payload)
+      .expect(409);
+    // Do not occupy shared suite fixtures' seats in subsequent transfer/makeup tests.
+    await db.enrollment.updateMany({
+      where: { id: { in: [newcomer.id, secondEnrollment.id] } },
+      data: { status: 'ENDED' },
+    });
+  });
+
+  it('serializes supplemental assignment against publishing answers', async () => {
+    const assignment = await db.assignment.create({
+      data: {
+        classId: ids.classA,
+        teacherId: ids.teacher,
+        title: 'Answer publication race',
+        instructions: '',
+        dueAt: new Date(Date.now() - 86400000),
+        status: 'CLOSED',
+        maxAttempts: 1,
+        questions: {
+          create: {
+            position: 1,
+            kind: 'MULTIPLE_CHOICE',
+            prompt: '1+1?',
+            choices: ['2', '3'],
+            correctAnswer: '2',
+            maxScore: 10,
+          },
+        },
+      },
+    });
+    const responses = await Promise.all([
+      call('teacher', 'post', `assignments/${assignment.id}/recipients`).send({
+        enrollmentIds: [ids.enrollment],
+        dueAt: new Date(Date.now() + 86400000).toISOString(),
+      }),
+      call('teacher', 'post', `assignments/${assignment.id}/publish-answers`),
+    ]);
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 409]);
+    const saved = await db.assignment.findUniqueOrThrow({
+      where: { id: assignment.id },
+      include: { recipients: true },
+    });
+    if (saved.answersPublishedAt) expect(saved.recipients).toHaveLength(0);
+    else expect(saved.recipients).toHaveLength(1);
+  });
+
   it('keeps AI suggestions separate and rejects invalid model scores', async () => {
     ai.json.mockResolvedValueOnce({
       scores: [{ questionId: ids.question, score: 7, feedback: 'Review' }],

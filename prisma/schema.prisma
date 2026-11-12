@@ -950,6 +950,9 @@ model AssignmentRecipient {
   id           String       @id @default(cuid()) @db.VarChar(191)
   assignmentId String       @db.VarChar(191)
   enrollmentId String       @db.VarChar(191)
+  assignedAt   DateTime?
+  assignedById String?      @db.VarChar(191)
+  dueAtOverride DateTime?
   assignment   Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
   enrollment   Enrollment   @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
   submissions  Submission[]
