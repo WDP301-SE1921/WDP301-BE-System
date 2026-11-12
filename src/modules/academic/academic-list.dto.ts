@@ -35,6 +35,10 @@ export class SearchPageDto extends PageDto {
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   search?: string;
 }
+export class EligibleRecipientsQueryDto extends SearchPageDto {
+  @ApiPropertyOptional({ default: 50, maximum: 100 })
+  override limit = 50;
+}
 export class DateListDto extends SearchPageDto {
   @ApiPropertyOptional({ description: 'Inclusive UTC+7 day or exact ISO timestamp' })
   @IsOptional()

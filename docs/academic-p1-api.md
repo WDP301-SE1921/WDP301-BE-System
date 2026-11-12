@@ -1,6 +1,8 @@
 # Academic P1 backend
 
 Branch: `feature/academic-workflows`. API prefix: `/api/v1/academic`.
+
+Giao bài bổ sung cho học sinh vào lớp sau: xem [API và hướng dẫn tích hợp web/mobile](supplemental-assignment-handoff.md). Hỗ trợ bài đã đóng với hạn nộp riêng; ứng dụng cần dùng `effectiveDueAt` và `canSubmit` của từng người nhận.
 Authentication: existing Bearer access token from `/api/v1/auth/login`.
 Database: MySQL. Request examples and DTO fields are available at `/api/docs`.
 

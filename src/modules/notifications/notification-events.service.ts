@@ -99,10 +99,18 @@ export class NotificationEventsService {
     type: NotificationType,
     body: string,
     key: string,
+    enrollmentIds?: string[],
   ): Promise<void> {
     const assignment = await tx.assignment.findUniqueOrThrow({
       where: { id },
-      select: { title: true, classId: true, recipients: { select: { enrollmentId: true } } },
+      select: {
+        title: true,
+        classId: true,
+        recipients: {
+          ...(enrollmentIds ? { where: { enrollmentId: { in: enrollmentIds } } } : {}),
+          select: { enrollmentId: true, dueAtOverride: true },
+        },
+      },
     });
     for (const recipient of assignment.recipients)
       await this.family(
@@ -112,7 +120,11 @@ export class NotificationEventsService {
         type,
         'ASSIGNMENT',
         id,
-        `${assignment.title}: ${body}`,
+        `${assignment.title}: ${
+          type === 'ASSIGNMENT_REOPENED' && recipient.dueAtOverride
+            ? `Bài tập được cập nhật. Hạn nộp riêng của em: ${recipient.dueAtOverride.toISOString()}.`
+            : body
+        }`,
         key,
         true,
       );
@@ -158,13 +170,17 @@ export class NotificationEventsService {
     designerId: string,
   ): Promise<NotificationRecipient[]> {
     const submitted = await tx.auditLog.findFirst({
-      where: { entityType: 'CurriculumUnit', entityId: unitId, action: 'CURRICULUM_UNIT_SUBMITTED' },
+      where: {
+        entityType: 'CurriculumUnit',
+        entityId: unitId,
+        action: 'CURRICULUM_UNIT_SUBMITTED',
+      },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: { actorUserId: true },
     });
-    return [...new Set([designerId, submitted?.actorUserId].filter((id): id is string => !!id))].map(
-      (userId) => ({ userId }),
-    );
+    return [
+      ...new Set([designerId, submitted?.actorUserId].filter((id): id is string => !!id)),
+    ].map((userId) => ({ userId }));
   }
   async workflow(
     tx: Prisma.TransactionClient,

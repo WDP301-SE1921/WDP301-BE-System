@@ -41,6 +41,7 @@ import {
   AcademicSessionQueryDto,
   FeedbackQueryDto,
   EnrollmentQueryDto,
+  EligibleRecipientsQueryDto,
   RosterQueryDto,
   AssignmentQueryDto,
   SubmissionQueryDto,
@@ -82,6 +83,7 @@ import {
   MakeupDto,
   ProgramDto,
   RecipientsDto,
+  SupplementalRecipientsDto,
   OptionalReasonDto,
   ReactivateStudentDto,
   RescheduleMakeupDto,
@@ -238,7 +240,13 @@ export class AcademicController {
     @Param('id') id: string,
     @Body() input: OutcomeSourceReviewDto,
   ): Promise<unknown> {
-    return this.outcomes.verifySource(user, id, input.sourceLocator, input.sourceNote, input.expectedRevision);
+    return this.outcomes.verifySource(
+      user,
+      id,
+      input.sourceLocator,
+      input.sourceNote,
+      input.expectedRevision,
+    );
   }
 
   @Post('outcome-sets/:id/technical-approve')
@@ -629,6 +637,30 @@ export class AcademicController {
     @Body() input: RecipientsDto,
   ): Promise<unknown> {
     return this.assessment.publish(user, id, input);
+  }
+  @ApiOperation({
+    summary: 'Teacher: currently enrolled students who have not received this assignment',
+  })
+  @Get('assignments/:id/eligible-recipients')
+  eligibleRecipients(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() query: EligibleRecipientsQueryDto,
+  ): Promise<unknown> {
+    return this.assessment.eligibleRecipients(user, id, query);
+  }
+  @ApiOperation({
+    summary: 'Teacher: assign published or closed work to additional students',
+    description:
+      'Requires a future recipient deadline. Existing recipients are skipped without changing their deadlines. Published answers prevent supplemental assignment.',
+  })
+  @Post('assignments/:id/recipients')
+  supplementalRecipients(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: SupplementalRecipientsDto,
+  ): Promise<unknown> {
+    return this.assessment.addRecipients(user, id, input);
   }
   @Post('assignments/:id/close') close(
     @CurrentUser() user: AuthenticatedUser,

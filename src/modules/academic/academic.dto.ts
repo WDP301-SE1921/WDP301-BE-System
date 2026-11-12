@@ -314,7 +314,9 @@ export class OutcomeSourceReviewDto {
   @MaxLength(5000)
   sourceNote!: string;
 
-  @ApiPropertyOptional({ description: 'Revision the teacher read; a stale value returns REVISION_CONFLICT.' })
+  @ApiPropertyOptional({
+    description: 'Revision the teacher read; a stale value returns REVISION_CONFLICT.',
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -372,7 +374,9 @@ export class LearningOutcomeWriteDto {
   @MaxLength(5000)
   sourceNote?: string | null;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() required?: boolean;
-  @ApiPropertyOptional({ description: 'Revision the client edited; a stale value returns REVISION_CONFLICT.' })
+  @ApiPropertyOptional({
+    description: 'Revision the client edited; a stale value returns REVISION_CONFLICT.',
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -399,6 +403,22 @@ export class RecipientsDto {
   @ArrayUnique()
   @IsString({ each: true })
   enrollmentIds!: string[];
+}
+export class SupplementalRecipientsDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @MinLength(1, { each: true })
+  @MaxLength(191, { each: true })
+  enrollmentIds!: string[];
+
+  @ApiProperty({ description: 'Future deadline for the new recipients only; include timezone' })
+  @IsDateString()
+  @Matches(/(?:Z|[+-]\d{2}:?\d{2})$/i)
+  dueAt!: string;
 }
 export class AnswerDto {
   @ApiPropertyOptional({
