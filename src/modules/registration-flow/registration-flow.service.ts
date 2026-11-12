@@ -18,6 +18,8 @@ import { DatabaseService } from '../../database/orm/database.service';
 import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
 import { assertProgramFrequency } from './program-frequency';
 import { scheduledUntilByClass } from './class-scheduled-until';
+import { loadProgramForNewClass } from './class-program';
+import { moneyText, weeklySlotsText } from './registration-text';
 import { attendanceContribution } from '../academic/attendance-calculation';
 import {
   ClassDto,
@@ -412,17 +414,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     );
     await this.assertTeacher(input.teacherId);
     await this.assertRoom(input.roomId, input.capacity);
-    const program = await this.db.program.findUnique({
-      where: { id: input.programId },
-      include: { subjectRecord: true },
-    });
-    this.assert(program, 'PROGRAM_NOT_FOUND', 'Program not found', HttpStatus.NOT_FOUND);
-    this.assert(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
-    this.assert(
-      !program.subjectRecord || program.subjectRecord.isActive,
-      'SUBJECT_INACTIVE',
-      'Subject is inactive',
-    );
+    await loadProgramForNewClass(this.db, input.programId);
     return this.db.class.create({
       data: {
         programId: input.programId,
@@ -1653,7 +1645,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           subject: `EduGrade - Xác nhận thanh toán cho ${order.studentFullName}`,
           dedupeKey: `PAYMENT_CONFIRMED:${order.id}`,
           payload: {
-            text: `Đã xác nhận thanh toán ${payment.receiptNumber} cho ${order.studentFullName}. Môn: ${order.class.program.subject}. Lớp: ${order.class.name}. Lịch học: ${order.class.weeklySchedules.map((slot) => `thứ ${slot.weekday}, ${slot.startTime}-${slot.endTime}`).join('; ')}. Số tiền: ${order.quotedAmount.toString()} ${order.currency}.`,
+            text: `Đã xác nhận thanh toán ${payment.receiptNumber} cho ${order.studentFullName}. Môn: ${order.class.program.subject}. Lớp: ${order.class.name}. Lịch học: ${weeklySlotsText(order.class.weeklySchedules)}. Số tiền: ${moneyText(order.quotedAmount, order.currency)}.`,
           },
         },
       });
@@ -1968,8 +1960,25 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
     });
+    // Last non-cancelled session of each class (UTC+7 date, null without one): the app can tell a
+    // weekday the manager has not scheduled yet from a day the child has no class.
+    const scheduledUntil = await scheduledUntilByClass(
+      this.db,
+      rows.flatMap((row) => [row.classId, ...row.placements.map((placement) => placement.classId)]),
+    );
+    const withScheduledUntil = <T extends { id: string }>(
+      classroom: T,
+    ): T & { scheduledUntil: string | null } => ({
+      ...classroom,
+      scheduledUntil: scheduledUntil.get(classroom.id) ?? null,
+    });
     return rows.map((row) => ({
       ...row,
+      class: withScheduledUntil(row.class),
+      placements: row.placements.map((placement) => ({
+        ...placement,
+        class: withScheduledUntil(placement.class),
+      })),
       term: {
         startDate: dateOnly(row.startDate),
         endDate: dateOnly(row.endDate),

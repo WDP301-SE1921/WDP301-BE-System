@@ -20,6 +20,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiExtraModels,
+  ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -35,6 +36,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { SafeUserDto } from '../users/safe-user.dto';
 import { AuthService } from './auth.service';
 import { AuthResponseDto } from './dto/auth-response.dto';
+import { DeleteAccountDto, DeleteAccountResponseDto } from './dto/delete-account.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutResponseDto } from './dto/logout-response.dto';
 import { RealtimeTicketDto } from './dto/realtime-ticket.dto';
@@ -53,6 +55,7 @@ import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto/pa
   SafeUserDto,
   AvatarUrlResponseDto,
   DeleteAvatarResponseDto,
+  DeleteAccountResponseDto,
 )
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
@@ -229,6 +232,35 @@ export class AuthController {
     @Body() body: UpdateProfileDto,
   ): Promise<SafeUserDto> {
     return this.authService.updateProfile(user, body);
+  }
+
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete the current parent account',
+    description:
+      'Parent only. Confirms with the current password, then soft deletes the account and removes its personal data (name, phone, avatar, password; the email is replaced so it can register again) and revokes every session. Children, enrollments, grades and registration orders stay with the center. Wrong password returns 400 AUTH_CURRENT_PASSWORD_INVALID; other roles get 403 AUTH_ACCOUNT_DELETE_NOT_ALLOWED.',
+  })
+  @ApiOkResponse({
+    description: 'Account deleted; the access token stops working.',
+    schema: successEnvelopeSchema({ $ref: '#/components/schemas/DeleteAccountResponseDto' }),
+  })
+  @ApiBadRequestResponse({
+    description: 'AUTH_CURRENT_PASSWORD_INVALID or VALIDATION_ERROR.',
+    type: ApiErrorResponseDto,
+  })
+  @ApiForbiddenResponse({
+    description: 'AUTH_ACCOUNT_DELETE_NOT_ALLOWED for non-parent accounts.',
+    type: ApiErrorResponseDto,
+  })
+  @ApiTooManyRequestsResponse({ description: 'Too many attempts.', type: ApiErrorResponseDto })
+  deleteMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: DeleteAccountDto,
+  ): Promise<DeleteAccountResponseDto> {
+    return this.authService.deleteOwnAccount(user, body.password);
   }
 
   @Post('change-password')

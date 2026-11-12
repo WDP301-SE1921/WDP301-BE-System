@@ -63,4 +63,55 @@ describe('scheduledUntil', () => {
       ['class-b', null],
     ]);
   });
+
+  it('adds scheduledUntil to the class and every placement class of a child enrollment', async () => {
+    const classA = { id: 'class-a', name: 'Toán 9A', weeklySchedules: [] };
+    const classB = { id: 'class-b', name: 'Toán 9B', weeklySchedules: [] };
+    const groupBy = jest
+      .fn()
+      .mockResolvedValue([
+        { classId: 'class-a', _max: { startsAt: new Date('2026-12-04T11:00:00.000Z') } },
+      ]);
+    const db = {
+      studentProfile: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ id: 'student-1', grade: 9, parentProfile: { userId: 'parent-1' } }),
+      },
+      enrollment: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'enrollment-1',
+            classId: 'class-a',
+            status: 'ACTIVE',
+            startDate: new Date('2026-11-02T00:00:00.000Z'),
+            endDate: new Date('2027-02-02T00:00:00.000Z'),
+            class: classA,
+            placements: [
+              { classId: 'class-a', class: classA },
+              { classId: 'class-b', class: classB },
+            ],
+          },
+        ]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      classSession: { groupBy },
+    };
+    const service = new RegistrationFlowService(db as never, {} as never);
+    const parent = { id: 'parent-1', role: 'PARENT' } as never;
+    // Without `paginated` the route keeps its plain array response.
+    const [row] = (await service.myStudentEnrollments(parent, 'student-1')) as Array<{
+      class: { scheduledUntil: string | null };
+      placements: Array<{ class: { id: string; scheduledUntil: string | null } }>;
+    }>;
+    expect(row?.class.scheduledUntil).toBe('2026-12-04');
+    expect(row?.placements.map(({ class: c }) => [c.id, c.scheduledUntil])).toEqual([
+      ['class-a', '2026-12-04'],
+      ['class-b', null],
+    ]);
+    // One query for every class of the page, each class once.
+    const calls = groupBy.mock.calls as Array<[{ where: { classId: { in: string[] } } }]>;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0].where.classId.in).toEqual(['class-a', 'class-b']);
+  });
 });

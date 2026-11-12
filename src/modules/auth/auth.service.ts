@@ -7,6 +7,7 @@ import * as bcrypt from 'bcrypt';
 import { AppError } from '../../common/errors/app.error';
 import type { AppConfiguration } from '../../config/configuration';
 import { DatabaseService } from '../../database/orm/database.service';
+import { deletedAccountEmail, SELF_DELETE_REASON } from '../users/deleted-account';
 import { UsersService } from '../users/users.service';
 import type { SafeUser } from '../users/users.repository';
 import { AuthSessionsRepository } from './auth-sessions.repository';
@@ -356,6 +357,92 @@ export class AuthService {
       });
     });
     return { reset: true };
+  }
+
+  /**
+   * A parent deletes their own account (App Store rule for self-registered apps). The account is
+   * soft deleted and stripped of personal data: name, phone, avatar, password, and the email is
+   * replaced so the real address can register again. Every session ends. Children, enrollments,
+   * grades and registration orders stay with the center, as for an admin delete.
+   */
+  async deleteOwnAccount(user: AuthenticatedUser, password: string): Promise<{ deleted: true }> {
+    if (user.role !== 'PARENT') {
+      throw new AppError(
+        'AUTH_ACCOUNT_DELETE_NOT_ALLOWED',
+        'Only parent accounts can be deleted by their owner; staff accounts are removed by an administrator',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    this.assertPasswordWithinBcryptLimit(password);
+    const account = await this.usersService.findByEmailWithPassword(user.email);
+    if (
+      account?.id !== user.id ||
+      !account.passwordHash ||
+      !(await bcrypt.compare(password, account.passwordHash))
+    ) {
+      throw new AppError(
+        'AUTH_CURRENT_PASSWORD_INVALID',
+        'Current password is incorrect',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const now = new Date();
+    const avatarKey = await this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${user.id} FOR UPDATE`;
+      const row = await tx.user.findUnique({
+        where: { id: user.id },
+        select: { email: true, avatarStorageKey: true, deletedAt: true },
+      });
+      // A second tap that waited on the lock finds the account already deleted
+      if (!row || row.deletedAt) return null;
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          email: deletedAccountEmail(user.id),
+          displayName: null,
+          passwordHash: null,
+          avatarStorageKey: null,
+          emailVerifiedAt: null,
+          deletedAt: now,
+          deletedById: user.id,
+          deleteReason: SELF_DELETE_REASON,
+        },
+      });
+      await tx.parentProfile.updateMany({ where: { userId: user.id }, data: { phone: null } });
+      await tx.authSession.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: now },
+      });
+      await tx.pushSubscription.deleteMany({ where: { userId: user.id } });
+      await tx.emailVerificationToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: now },
+      });
+      await tx.passwordResetToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: now },
+      });
+      // Unsent emails to the old address are not delivered after the owner left
+      await tx.outboxEvent.updateMany({
+        where: { recipient: row.email, status: 'PENDING' },
+        data: { status: 'FAILED', lastError: 'RECIPIENT_ACCOUNT_DELETED' },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'ACCOUNT_SELF_DELETED',
+          entityType: 'User',
+          entityId: user.id,
+        },
+      });
+      return row.avatarStorageKey;
+    });
+    if (avatarKey) {
+      this.objectStorage.deleteObject(avatarKey).catch((delErr: Error) => {
+        this.logger.warn(`Failed to delete avatar of a deleted account: ${delErr.message}`);
+      });
+    }
+    return { deleted: true };
   }
 
   /**

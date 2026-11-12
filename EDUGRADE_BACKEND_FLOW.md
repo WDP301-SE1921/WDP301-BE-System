@@ -459,6 +459,7 @@ POST /api/v1/auth/login
 POST /api/v1/auth/refresh
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
+DELETE /api/v1/auth/me   # phụ huynh tự xóa tài khoản, body { password }
 ```
 
 ### Hồ sơ con

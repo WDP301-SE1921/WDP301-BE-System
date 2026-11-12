@@ -15,6 +15,7 @@ import type { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
+import { loadProgramForNewClass } from '../registration-flow/class-program';
 import {
   assertCurriculumSessionDates,
   lockCurriculumProgram,
@@ -73,6 +74,7 @@ export class CatalogService {
       where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
     });
     assertRule(teacher, 'INVALID_TEACHER', 'An active teacher is required');
+    await loadProgramForNewClass(this.repo.db, input.programId);
     return this.repo.db.class.create({ data: { ...input, isOpen: false } });
   }
 

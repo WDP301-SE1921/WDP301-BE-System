@@ -4,6 +4,7 @@ import {
   lastMonthlySlots,
   slotsForRange,
 } from '../../modules/curriculum-scheduling/curriculum-scheduling.service';
+import { moneyText, weeklySlotsText } from '../../modules/registration-flow/registration-text';
 import { SUBJECTS, TOPICS, lessonContent } from './curriculum-content';
 import {
   addDays,
@@ -2247,7 +2248,7 @@ class DashboardPlan {
         subject: `EduGrade - Xác nhận thanh toán cho ${student.fullName}`,
         dedupeKey: `PAYMENT_CONFIRMED:${pkg.orderId}`,
         payload: {
-          text: `Đã xác nhận thanh toán ${receiptNumber} cho ${student.fullName}. Môn: ${classPlan.program.subjectName}. Lớp: ${classPlan.name}. Lịch học: ${classPlan.schedules.map((slot) => `thứ ${slot.weekday}, ${slot.startTime}-${slot.endTime}`).join('; ')}. Số tiền: ${String(base.quotedAmount)} VND.`,
+          text: `Đã xác nhận thanh toán ${receiptNumber} cho ${student.fullName}. Môn: ${classPlan.program.subjectName}. Lớp: ${classPlan.name}. Lịch học: ${weeklySlotsText(classPlan.schedules)}. Số tiền: ${moneyText(base.quotedAmount, 'VND')}.`,
         },
         status: isFailed ? 'FAILED' : 'SENT',
         attemptCount: isFailed ? 5 : 1,

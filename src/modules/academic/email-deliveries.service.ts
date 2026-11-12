@@ -7,6 +7,7 @@ import { dateTimeRange } from '../../common/list-query';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import type { AppConfiguration } from '../../config/configuration';
 import { DatabaseService } from '../../database/orm/database.service';
+import { isDeletedAccountEmail } from '../users/deleted-account';
 import { assertRule, roles } from './academic-access.service';
 import type { EmailDeliveryFilterDto } from './academic.dto';
 
@@ -100,6 +101,17 @@ export class EmailDeliveriesService implements OnModuleInit, OnModuleDestroy {
     const event = await this.db.outboxEvent.findUnique({ where: { id } });
     assertRule(event, 'EMAIL_DELIVERY_NOT_FOUND', 'Email delivery not found', HttpStatus.NOT_FOUND);
     assertRule(event.status !== 'SENT', 'EMAIL_ALREADY_SENT', 'Email was already sent');
+    if (isDeletedAccountEmail(event.recipient)) {
+      await this.db.outboxEvent.updateMany({
+        where: { id, status: { in: ['PENDING', 'FAILED'] } },
+        data: { status: 'FAILED', lastError: 'RECIPIENT_ACCOUNT_DELETED' },
+      });
+      throw new AppError(
+        'EMAIL_RECIPIENT_DELETED',
+        'The recipient deleted their account',
+        HttpStatus.GONE,
+      );
+    }
     if (event.eventType === 'ACCOUNT_INVITATION') {
       const payload = event.payload as { tokenHash?: string };
       const invitation = await this.db.accountInvitation.findUnique({

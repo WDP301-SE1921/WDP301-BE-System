@@ -17,6 +17,7 @@ import { DatabaseService } from '../../src/database/orm/database.service';
 import { AuthService } from '../../src/modules/auth/auth.service';
 import { EmailDeliveriesService } from '../../src/modules/academic/email-deliveries.service';
 import type { ParentSuggestionDto } from '../../src/modules/registration-flow/dto/registration-flow.dto';
+import { weekdayName } from '../../src/modules/registration-flow/registration-text';
 
 interface Envelope<T> {
   success: true;
@@ -234,7 +235,41 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       await db.enrollment.findUniqueOrThrow({ where: { registrationOrderId: registrationId } }),
     ).toMatchObject({ studentProfileId: studentId, status: 'ACTIVE' });
     await call('PARENT', 'get', `registrations/${registrationId}/receipt`).expect(200);
-    await call('PARENT', 'get', `me/students/${studentId}/enrollments`).expect(200);
+    const enrollments = await call('PARENT', 'get', `me/students/${studentId}/enrollments`).expect(
+      200,
+    );
+    // No session was generated for the class yet: the app must not read its weekdays as days off.
+    const [enrolled] = (enrollments.body as Envelope<Array<{ class: { scheduledUntil: unknown } }>>)
+      .data;
+    expect(enrolled?.class.scheduledUntil).toBeNull();
+    const email = await db.outboxEvent.findFirstOrThrow({
+      where: { eventType: 'PAYMENT_CONFIRMED', aggregateId: registrationId },
+    });
+    const weekday = new Date(`${tomorrow}T00:00:00Z`).getUTCDay() || 7;
+    const text = (email.payload as { text: string }).text;
+    expect(text).toContain(`Lịch học: ${weekdayName(weekday)}, 18:00-20:00.`);
+    expect(text).toContain('Số tiền: 2.400.000 VND.');
+  });
+
+  it('refuses a new class in a program the ADMIN soft-deleted, on both class routes', async () => {
+    const program = await call('MANAGER', 'post', 'programs')
+      .send({ name: 'Toán 8 cũ', subject: 'Toán', grade: 8, sessionsPerWeek: 1 })
+      .expect(201);
+    const programId = (program.body as Envelope<WithId>).data.id;
+    await db.program.update({ where: { id: programId }, data: { deletedAt: new Date() } });
+    const teacher = await db.user.findFirstOrThrow({
+      where: { role: 'TEACHER', status: 'ACTIVE' },
+    });
+    const before = await db.class.count();
+    const current = await call('MANAGER', 'post', 'classes')
+      .send({ programId, name: 'Toán 8Z', capacity: 20, monthlyFee: 800000 })
+      .expect(404);
+    expect((current.body as { error: { code: string } }).error.code).toBe('PROGRAM_NOT_FOUND');
+    const legacy = await call('MANAGER', 'post', 'academic/classes')
+      .send({ programId, name: 'Toán 8Z', teacherId: teacher.id, capacity: 20, monthlyFee: 800000 })
+      .expect(404);
+    expect((legacy.body as { error: { code: string } }).error.code).toBe('PROGRAM_NOT_FOUND');
+    expect(await db.class.count()).toBe(before);
   });
 
   it('searches partial email case-insensitively, sorts, limits and returns only safe parent summaries', async () => {
