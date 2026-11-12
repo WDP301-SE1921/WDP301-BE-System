@@ -258,6 +258,18 @@ export class AdminRecordsService {
   ): Promise<Map<string, string[]>> {
     const result = new Map<string, string[]>(ids.map((id) => [id, []]));
     if (!ids.length) return result;
+    if (kind === 'account' || kind === 'parent') {
+      // Tài khoản tự xóa đã mất email, mật khẩu và thông tin cá nhân: khôi phục chỉ ra tài khoản rỗng
+      const rows = await db.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, deletedById: true },
+      });
+      for (const row of rows)
+        if (row.deletedById === row.id)
+          result
+            .get(row.id)
+            ?.push('Phụ huynh đã tự xóa tài khoản trên ứng dụng — không khôi phục được');
+    }
     if (kind === 'student') {
       const rows = await db.studentProfile.findMany({
         where: { id: { in: ids } },

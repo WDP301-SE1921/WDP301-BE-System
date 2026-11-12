@@ -110,6 +110,14 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - `class` và `class` của mỗi phần tử `placements[]` thêm `scheduledUntil: "YYYY-MM-DD" | null`, cùng nghĩa với mục 1.10: ngày (giờ Việt Nam) của buổi cuối chưa hủy của lớp, `null` khi lớp chưa có buổi nào. Thêm một truy vấn `groupBy` cho mỗi trang, các field cũ giữ nguyên.
 - Lý do: Nhân viên ghi danh được vào lớp mà Quản lý chưa bấm "Tạo lịch học" (đúng SRS 5.4, buổi không tự sinh). Trước đây lịch tuần trên mobile báo "Hôm nay học sinh không có buổi học" cho những ngày lớp có học theo lịch cố định nhưng chưa có buổi. Mobile dùng field này để báo "chưa có lịch buổi học" thay vì báo con được nghỉ.
 
+### 1.17. Phụ huynh tự xóa tài khoản (`DELETE /api/v1/auth/me`, 12/11)
+- Lý do: app cho phụ huynh tự đăng ký thì App Store và Google Play bắt buộc có chức năng xóa tài khoản ngay trong app.
+- Body `{ "password": "<mật khẩu hiện tại>" }`, trả `{ "deleted": true }`. Chỉ `PARENT`; role khác nhận 403 `AUTH_ACCOUNT_DELETE_NOT_ALLOWED` (tài khoản nhân sự do Admin tổng xóa). Sai mật khẩu trả 400 `AUTH_CURRENT_PASSWORD_INVALID`. Giới hạn 5 lần mỗi phút.
+- Xóa ngay, không chặn: xóa mềm user (`deletedAt`, `deletedById` = chính phụ huynh, `deleteReason` = "Phụ huynh tự xóa tài khoản trên ứng dụng"), xóa tên, số điện thoại, ảnh đại diện (cả tệp trong kho), mật khẩu, `emailVerifiedAt`; đổi email thành `deleted-<id>@deleted.invalid` để email thật đăng ký lại được. Thu hồi mọi phiên, xóa đăng ký push, vô hiệu mã xác minh và link đặt lại mật khẩu, bỏ các email chưa gửi tới địa chỉ cũ. Ghi audit `ACCOUNT_SELF_DELETED`.
+- Giữ lại cho trung tâm: hồ sơ con, ghi danh, điểm, điểm danh, đơn đăng ký và thanh toán (đơn vẫn giữ `parentEmail`, nên nếu email đó đăng ký lại thì thấy lại hóa đơn cũ của mình). Con đang học vẫn học tiếp.
+- Kèm theo: hàng đợi email bỏ qua người nhận `@deleted.invalid` (`FAILED`, `lastError` = `RECIPIENT_ACCOUNT_DELETED`, retry trả 410 `EMAIL_RECIPIENT_DELETED`); Admin tổng không khôi phục được tài khoản phụ huynh đã tự xóa (`restoreBlockers` có lý do).
+- Không đổi schema, không migration.
+
 ---
 
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
