@@ -11,6 +11,7 @@ function localStudyTime(value: Date | string): string {
     timeZone: 'Asia/Ho_Chi_Minh',
     dateStyle: 'short',
     timeStyle: 'short',
+    hourCycle: 'h23',
   }).format(new Date(value));
 }
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
