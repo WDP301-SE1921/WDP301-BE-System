@@ -1,24 +1,24 @@
-FROM node:22-alpine AS dependencies
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
-RUN corepack enable
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-
-FROM dependencies AS build
-COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY prisma ./prisma
+RUN pnpm install --frozen-lockfile
+COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm prisma:generate && pnpm build && pnpm prune --prod
 
-FROM node:22-alpine AS runtime
+FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-RUN corepack enable
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/prisma ./prisma
-COPY assets ./assets
-COPY package.json ./
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/prisma ./prisma
+COPY --chown=node:node assets ./assets
+COPY --chown=node:node package.json ./
 USER node
 EXPOSE 3000
-CMD ["sh", "-c", "pnpm prisma:migrate:deploy && NODE_ENV=development SEED_MODE=demo node dist/database/seed.js && NODE_ENV=production node dist/main.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/v1/health/ready',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "dist/main.js"]
