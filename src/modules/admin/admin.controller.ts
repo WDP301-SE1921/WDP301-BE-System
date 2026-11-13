@@ -15,11 +15,13 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AdminAccountsService } from './admin-accounts.service';
+import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminReadService } from './admin-read.service';
 import { AdminRecordsService } from './admin-records.service';
 import { AdminSystemService } from './admin-system.service';
 import {
   AdminAccountQueryDto,
+  AdminDashboardQueryDto,
   CreateAdminAccountDto,
   CreateAdminStudentDto,
   RECORD_KINDS,
@@ -46,12 +48,37 @@ export class AdminController {
     private readonly system: AdminSystemService,
     private readonly read: AdminReadService,
     private readonly records: AdminRecordsService,
+    private readonly dashboard: AdminDashboardService,
   ) {}
 
   @Get('overview')
   @ApiOperation({ summary: 'Admin: system-wide counters for the overview screen' })
   overview(@CurrentUser() user: AuthenticatedUser): Promise<unknown> {
     return this.system.overview(user);
+  }
+
+  @Get('dashboard/business')
+  @ApiOperation({
+    summary:
+      'Admin: business dashboard — revenue, receipts, top parents, expiring packages, classes (read-only)',
+  })
+  businessDashboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AdminDashboardQueryDto,
+  ): Promise<unknown> {
+    return this.dashboard.business(user, query);
+  }
+
+  @Get('dashboard/system')
+  @ApiOperation({
+    summary:
+      'Admin: system dashboard — accounts, logins, queues, sensitive actions, soft-deleted data (read-only)',
+  })
+  systemDashboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: AdminDashboardQueryDto,
+  ): Promise<unknown> {
+    return this.dashboard.system(user, query);
   }
 
   @Get('services')

@@ -48,6 +48,22 @@ export const RECORD_KINDS = [
 ] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
 
+/** Kỳ thống kê của dashboard Admin (ngày trung tâm). Mặc định đầu tháng → hôm nay. */
+export class AdminDashboardQueryDto {
+  @ApiPropertyOptional({ example: '2026-11-01', description: 'First day (center local date).' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  fromDate?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-11-13',
+    description: 'Last day inclusive; later than today is clamped to today.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  toDate?: string;
+}
+
 export class AdminAccountQueryDto {
   @ApiPropertyOptional({
     description: 'Accepted for consistency with other lists; this endpoint is always paginated.',
