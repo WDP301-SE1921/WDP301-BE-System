@@ -10,6 +10,7 @@ describe('AcademicStorageService Unit Tests', () => {
     putObject: jest.Mock;
     deleteObject: jest.Mock;
     createSignedGetUrl: jest.Mock;
+    readObject: jest.Mock;
   };
   let mockRepo: {
     db: {
@@ -24,6 +25,7 @@ describe('AcademicStorageService Unit Tests', () => {
       putObject: jest.fn().mockResolvedValue(undefined),
       deleteObject: jest.fn().mockResolvedValue(undefined),
       createSignedGetUrl: jest.fn().mockResolvedValue({ url: 'http://signed-url', expiresIn: 60 }),
+      readObject: jest.fn().mockResolvedValue(Buffer.from('private-image-bytes')),
     };
 
     mockRepo = {
@@ -48,6 +50,46 @@ describe('AcademicStorageService Unit Tests', () => {
   const parentUser = { id: 'parent-1', role: 'PARENT' } as AuthenticatedUser;
   const teacherUser = { id: 'teacher-1', role: 'TEACHER' } as AuthenticatedUser;
   const strangerUser = { id: 'other-user', role: 'PARENT' } as AuthenticatedUser;
+
+  it('streams an owned image through the authenticated API instead of a public HTTP URL', async () => {
+    mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
+      id: 'file-1',
+      ownerId: parentUser.id,
+      storageKey: 'private/image.png',
+      mimeType: 'image/png',
+    });
+    await expect(service.content(parentUser, 'file-1')).resolves.toEqual({
+      buffer: Buffer.from('private-image-bytes'),
+      mimeType: 'image/png',
+    });
+    expect(mockObjectStorage.readObject).toHaveBeenCalledWith('private/image.png');
+    expect(mockObjectStorage.createSignedGetUrl).not.toHaveBeenCalled();
+  });
+
+  it('never reads file bytes for another parent', async () => {
+    mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
+      id: 'file-1',
+      ownerId: parentUser.id,
+      storageKey: 'private/image.png',
+      mimeType: 'image/png',
+    });
+    await expect(service.content(strangerUser, 'file-1')).rejects.toThrow(AppError);
+    expect(mockObjectStorage.readObject).not.toHaveBeenCalled();
+  });
+
+  it('streams a submitted image only to its assigned teacher', async () => {
+    mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({
+      id: 'file-1',
+      ownerId: parentUser.id,
+      storageKey: 'private/image.png',
+      mimeType: 'image/png',
+    });
+    mockRepo.db.submissionFile.count.mockResolvedValue(1);
+    await expect(service.content(teacherUser, 'file-1')).resolves.toMatchObject({
+      mimeType: 'image/png',
+    });
+    expect(mockObjectStorage.readObject).toHaveBeenCalledTimes(1);
+  });
 
   it('preview should sign inline URL with 300 seconds TTL for image file', async () => {
     mockRepo.db.fileAsset.findUniqueOrThrow.mockResolvedValue({

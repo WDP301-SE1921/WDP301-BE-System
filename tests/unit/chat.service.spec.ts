@@ -96,7 +96,7 @@ describe('Chat message revoke', () => {
           deletedAt: null,
           sender,
         }),
-        update: jest.fn().mockImplementation(({ data }) => ({
+        update: jest.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => ({
           id: 'message',
           conversationId: 'conversation',
           senderId: 'sender',
@@ -108,7 +108,9 @@ describe('Chat message revoke', () => {
       chatConversation: { update: jest.fn().mockResolvedValue({}) },
       notificationDispatch: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
     };
-    const db = { $transaction: jest.fn((callback) => callback(tx)) };
+    const db = {
+      $transaction: jest.fn((callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    };
     const objectStorage = {
       deleteObject: jest.fn().mockResolvedValue(undefined),
       createSignedGetUrl: jest.fn(),
@@ -127,8 +129,8 @@ describe('Chat message revoke', () => {
           attachmentName: null,
           attachmentMimeType: null,
           attachmentSize: null,
-          deletedAt: expect.any(Date),
-        }),
+          deletedAt: expect.any(Date) as unknown,
+        }) as unknown,
       }),
     );
     expect(tx.notificationDispatch.createMany).toHaveBeenCalledWith({
@@ -139,7 +141,7 @@ describe('Chat message revoke', () => {
           payload: expect.objectContaining({
             conversationId: 'conversation',
             messageId: 'message',
-          }),
+          }) as unknown,
         }),
       ],
     });
@@ -163,7 +165,9 @@ describe('Chat message revoke', () => {
         update: jest.fn(),
       },
     };
-    const db = { $transaction: jest.fn((callback) => callback(tx)) };
+    const db = {
+      $transaction: jest.fn((callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    };
     const objectStorage = { deleteObject: jest.fn() };
     const service = new ChatService(db as never, {} as never, objectStorage as never);
 

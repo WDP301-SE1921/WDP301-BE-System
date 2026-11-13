@@ -12,7 +12,9 @@ RUN pnpm prisma:generate && pnpm build && pnpm prune --prod
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+# PDF.js/canvas needs system font fallback for PDFs using non-embedded standard fonts.
+# Without it, valid Helvetica text renders as a blank image in this slim Linux runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates fontconfig fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/prisma ./prisma

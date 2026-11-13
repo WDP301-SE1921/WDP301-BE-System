@@ -114,4 +114,20 @@ export class AcademicStorageService {
       contentType: file.mimeType,
     });
   }
+
+  async content(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    const file = await this.checkFileAccess(user, id);
+    assertRule(
+      ['image/png', 'image/jpeg', 'application/pdf'].includes(file.mimeType),
+      'INVALID_FILE_TYPE',
+      'File cannot be displayed inline',
+    );
+    return {
+      buffer: await this.objectStorage.readObject(file.storageKey),
+      mimeType: file.mimeType,
+    };
+  }
 }

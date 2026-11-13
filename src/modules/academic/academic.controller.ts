@@ -785,6 +785,26 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.storage.preview(user, id);
   }
+  @Get('files/:id/content')
+  @ApiOperation({
+    summary: 'Authorized file bytes for HTTPS inline preview; same ownership rules as download',
+  })
+  async fileContent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const file = await this.storage.content(user, id);
+    response
+      .type(file.mimeType)
+      .set({
+        'Cache-Control': 'private, no-store',
+        'Content-Disposition': 'inline',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+      })
+      .send(file.buffer);
+  }
   @Post('announcements') announcement(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: AnnouncementDto,

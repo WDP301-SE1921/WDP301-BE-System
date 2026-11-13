@@ -196,8 +196,28 @@ export class AuthService {
   }
 
   async currentProfile(user: SafeUser): Promise<SafeUser> {
-    const { id, email, displayName, role, status, emailVerifiedAt, hasAvatar, createdAt, updatedAt } = user;
-    const safe = { id, email, displayName, role, status, emailVerifiedAt, hasAvatar, createdAt, updatedAt };
+    const {
+      id,
+      email,
+      displayName,
+      role,
+      status,
+      emailVerifiedAt,
+      hasAvatar,
+      createdAt,
+      updatedAt,
+    } = user;
+    const safe = {
+      id,
+      email,
+      displayName,
+      role,
+      status,
+      emailVerifiedAt,
+      hasAvatar,
+      createdAt,
+      updatedAt,
+    };
     if (user.role !== 'PARENT') return safe;
     const parent = await this.db.parentProfile.findUnique({
       where: { userId: user.id },
@@ -742,7 +762,10 @@ export class AuthService {
     return { url: signed.url, expiresIn: signed.expiresIn };
   }
 
-  async updateAvatar(user: AuthenticatedUser, file?: Express.Multer.File): Promise<AvatarUrlResponseDto> {
+  async updateAvatar(
+    user: AuthenticatedUser,
+    file?: Express.Multer.File,
+  ): Promise<AvatarUrlResponseDto> {
     const { extension, mimeType } = validateAvatarImageFile(file);
     const nonNullFile = file!;
 
@@ -782,14 +805,18 @@ export class AuthService {
       try {
         await this.objectStorage.deleteObject(newKey);
       } catch (cleanupErr) {
-        this.logger.error(`Failed to clean up newly uploaded avatar "${newKey}": ${(cleanupErr as Error).message}`);
+        this.logger.error(
+          `Failed to clean up newly uploaded avatar "${newKey}": ${(cleanupErr as Error).message}`,
+        );
       }
       throw error;
     }
 
     if (oldKey) {
-      this.objectStorage.deleteObject(oldKey).catch((delErr) => {
-        this.logger.warn(`Failed to delete replaced avatar object "${oldKey}": ${delErr.message}`);
+      this.objectStorage.deleteObject(oldKey).catch((delErr: unknown) => {
+        this.logger.warn(
+          `Failed to delete replaced avatar object "${oldKey}": ${delErr instanceof Error ? delErr.message : String(delErr)}`,
+        );
       });
     }
 
@@ -814,8 +841,10 @@ export class AuthService {
         data: { avatarStorageKey: null },
       });
 
-      this.objectStorage.deleteObject(oldKey).catch((delErr) => {
-        this.logger.warn(`Failed to delete removed avatar object "${oldKey}": ${delErr.message}`);
+      this.objectStorage.deleteObject(oldKey).catch((delErr: unknown) => {
+        this.logger.warn(
+          `Failed to delete removed avatar object "${oldKey}": ${delErr instanceof Error ? delErr.message : String(delErr)}`,
+        );
       });
     }
 

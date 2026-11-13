@@ -220,30 +220,59 @@ describe('Demo seed against MySQL and shared APIs', () => {
       ['staff', 'parents/search', { email: 'parent' }],
     ];
     for (const [role, path, filters] of cases) {
-      const response = await request(server).get(`/api/v1/${path}`)
+      const response = await request(server)
+        .get(`/api/v1/${path}`)
         .query({ paginated: true, page: 1, limit: 1, ...filters })
         .set('Authorization', `Bearer ${tokens[role]}`);
-      expect({ path, status: response.status, body: response.body as unknown }).toMatchObject({ path, status: 200 });
-      const data = (response.body as { data: { items: unknown[]; total: number; page: number; limit: number } }).data;
+      expect({ path, status: response.status, body: response.body as unknown }).toMatchObject({
+        path,
+        status: 200,
+      });
+      const data = (
+        response.body as { data: { items: unknown[]; total: number; page: number; limit: number } }
+      ).data;
       expect({ path, page: data.page, limit: data.limit }).toEqual({ path, page: 1, limit: 1 });
       expect(Array.isArray(data.items)).toBe(true);
       expect(data.items.length).toBeLessThanOrEqual(1);
       expect(data.total).toBeGreaterThanOrEqual(data.items.length);
     }
     const lessonsUrl = `/api/v1/academic/lessons?programId=${programId}&paginated=true&limit=1`;
-    const first = await request(server).get(`${lessonsUrl}&page=1`).set('Authorization', `Bearer ${tokens.manager}`).expect(200);
-    const second = await request(server).get(`${lessonsUrl}&page=2`).set('Authorization', `Bearer ${tokens.manager}`).expect(200);
-    const firstData = (first.body as { data: { items: Array<{ id: string }>; total: number } }).data;
-    const secondData = (second.body as { data: { items: Array<{ id: string }>; total: number } }).data;
+    const first = await request(server)
+      .get(`${lessonsUrl}&page=1`)
+      .set('Authorization', `Bearer ${tokens.manager}`)
+      .expect(200);
+    const second = await request(server)
+      .get(`${lessonsUrl}&page=2`)
+      .set('Authorization', `Bearer ${tokens.manager}`)
+      .expect(200);
+    const firstData = (first.body as { data: { items: Array<{ id: string }>; total: number } })
+      .data;
+    const secondData = (second.body as { data: { items: Array<{ id: string }>; total: number } })
+      .data;
     expect(firstData.total).toBe(secondData.total);
     expect(firstData.items[0].id).not.toBe(secondData.items[0].id);
-    const empty = await request(server).get('/api/v1/academic/assignments')
-      .query({ paginated: true, status: 'DRAFT' }).set('Authorization', `Bearer ${tokens.parent}`).expect(200);
+    const empty = await request(server)
+      .get('/api/v1/academic/assignments')
+      .query({ paginated: true, status: 'DRAFT' })
+      .set('Authorization', `Bearer ${tokens.parent}`)
+      .expect(200);
     expect((empty.body as { data: { total: number } }).data.total).toBe(0);
-    await request(server).get('/api/v1/academic/assignments?status=INVALID').set('Authorization', `Bearer ${tokens.teacher}`).expect(400);
-    await request(server).get('/api/v1/rooms?isActive=wrong').set('Authorization', `Bearer ${tokens.manager}`).expect(400);
-    await request(server).get('/api/v1/academic/lessons?limit=101').set('Authorization', `Bearer ${tokens.manager}`).expect(400);
-    await request(server).get('/api/v1/academic/sessions?fromDate=2026-10-25&toDate=2026-10-24').set('Authorization', `Bearer ${tokens.manager}`).expect(400);
+    await request(server)
+      .get('/api/v1/academic/assignments?status=INVALID')
+      .set('Authorization', `Bearer ${tokens.teacher}`)
+      .expect(400);
+    await request(server)
+      .get('/api/v1/rooms?isActive=wrong')
+      .set('Authorization', `Bearer ${tokens.manager}`)
+      .expect(400);
+    await request(server)
+      .get('/api/v1/academic/lessons?limit=101')
+      .set('Authorization', `Bearer ${tokens.manager}`)
+      .expect(400);
+    await request(server)
+      .get('/api/v1/academic/sessions?fromDate=2026-10-25&toDate=2026-10-24')
+      .set('Authorization', `Bearer ${tokens.manager}`)
+      .expect(400);
   }, 120_000);
 
   it('keeps payment, placement, attendance, makeup and grade records consistent', async () => {
@@ -465,7 +494,9 @@ describe('Demo seed against MySQL and shared APIs', () => {
       },
     );
     expect(await db.user.findUnique({ where: { id: outsider.id } })).toBeNull();
-    expect(await db.user.count()).toBe(20);
+    // The demo now includes the seeded ADMIN account alongside the 20 operational accounts.
+    expect(await db.user.count()).toBe(21);
+    expect(await db.user.count({ where: { role: 'ADMIN', status: 'ACTIVE' } })).toBe(1);
     expect(await db.studentProfile.count()).toBe(14);
     expect(await db.program.count()).toBe(16);
     expect(await db.authSession.count()).toBe(0);

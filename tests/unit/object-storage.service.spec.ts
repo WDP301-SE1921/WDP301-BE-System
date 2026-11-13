@@ -1,14 +1,15 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ObjectStorageService } from '../../src/integrations/object-storage.service';
+import type { AppConfiguration } from '../../src/config/configuration';
 
 describe('ObjectStorageService Unit Tests', () => {
-  let configService: jest.Mocked<ConfigService<any, true>>;
+  let configService: { get: jest.Mock };
 
   beforeEach(() => {
     configService = {
       get: jest.fn(),
-    } as any;
+    };
   });
 
   it('should throw ServiceUnavailableException if storage is unconfigured', async () => {
@@ -18,7 +19,9 @@ describe('ObjectStorageService Unit Tests', () => {
       storageSecret: '',
     });
 
-    const service = new ObjectStorageService(configService);
+    const service = new ObjectStorageService(
+      configService as unknown as ConfigService<AppConfiguration, true>,
+    );
 
     await expect(
       service.putObject({
@@ -37,7 +40,9 @@ describe('ObjectStorageService Unit Tests', () => {
       storageEndpoint: 'http://localhost:9000',
     });
 
-    const service = new ObjectStorageService(configService);
+    const service = new ObjectStorageService(
+      configService as unknown as ConfigService<AppConfiguration, true>,
+    );
     expect(() => service.onApplicationShutdown()).not.toThrow();
   });
 });

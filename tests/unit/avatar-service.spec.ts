@@ -1,12 +1,31 @@
 import { HttpStatus } from '@nestjs/common';
 import { AuthService } from '../../src/modules/auth/auth.service';
 import { AppError } from '../../src/common/errors/app.error';
+import type { ConfigService } from '@nestjs/config';
+import type { JwtService } from '@nestjs/jwt';
+import type { AppConfiguration } from '../../src/config/configuration';
+import type { AuthenticatedUser } from '../../src/common/types/authenticated-user';
+import type { DatabaseService } from '../../src/database/orm/database.service';
+import type { ObjectStorageService } from '../../src/integrations/object-storage.service';
+import type { UsersService } from '../../src/modules/users/users.service';
+import type { AuthSessionsRepository } from '../../src/modules/auth/auth-sessions.repository';
 
 describe('AuthService Avatar Unit Tests', () => {
   let authService: AuthService;
-  let mockDb: any;
-  let mockObjectStorage: any;
-  let mockUsersService: any;
+  let mockDb: {
+    user: {
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      updateMany: jest.Mock;
+      update: jest.Mock;
+    };
+  };
+  let mockObjectStorage: {
+    putObject: jest.Mock;
+    deleteObject: jest.Mock;
+    createSignedGetUrl: jest.Mock;
+  };
+  let mockUsersService: { toSafeUser: jest.Mock };
 
   beforeEach(() => {
     mockDb = {
@@ -23,7 +42,7 @@ describe('AuthService Avatar Unit Tests', () => {
       createSignedGetUrl: jest.fn().mockResolvedValue({ url: 'http://signed-url', expiresIn: 900 }),
     };
     mockUsersService = {
-      toSafeUser: jest.fn((u) => ({
+      toSafeUser: jest.fn((u: { id: string; email: string; avatarStorageKey: string | null }) => ({
         id: u.id,
         email: u.email,
         hasAvatar: Boolean(u.avatarStorageKey),
@@ -31,21 +50,26 @@ describe('AuthService Avatar Unit Tests', () => {
     };
 
     authService = new AuthService(
-      {} as any,
-      {} as any,
-      mockDb as any,
-      {} as any,
-      mockUsersService as any,
-      mockObjectStorage as any,
+      {} as AuthSessionsRepository,
+      {} as ConfigService<AppConfiguration, true>,
+      mockDb as unknown as DatabaseService,
+      {} as JwtService,
+      mockUsersService as unknown as UsersService,
+      mockObjectStorage as unknown as ObjectStorageService,
     );
   });
 
-  const mockUser: any = {
+  const mockUser: AuthenticatedUser = {
     id: 'user-123',
     email: 'test@example.com',
     role: 'PARENT',
     status: 'ACTIVE',
     hasAvatar: false,
+    displayName: null,
+    emailVerifiedAt: null,
+    createdAt: new Date('2026-11-13T00:00:00Z'),
+    updatedAt: new Date('2026-11-13T00:00:00Z'),
+    sessionId: 'session-123',
   };
 
   it('getAvatar should return null url when user has no avatar', async () => {
@@ -69,16 +93,18 @@ describe('AuthService Avatar Unit Tests', () => {
   });
 
   it('updateAvatar should succeed, upload object, conditionally update DB, and clean up old avatar', async () => {
-    mockDb.user.findUniqueOrThrow.mockResolvedValue({ avatarStorageKey: 'avatars/user-123/old.png' });
+    mockDb.user.findUniqueOrThrow.mockResolvedValue({
+      avatarStorageKey: 'avatars/user-123/old.png',
+    });
     mockDb.user.updateMany.mockResolvedValue({ count: 1 });
 
     const validPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
-    const file: any = {
+    const file = {
       originalname: 'new-avatar.png',
       mimetype: 'image/png',
       size: validPng.length,
       buffer: validPng,
-    };
+    } as Express.Multer.File;
 
     const result = await authService.updateAvatar(mockUser, file);
     expect(result.url).toBe('http://signed-url');
@@ -87,27 +113,35 @@ describe('AuthService Avatar Unit Tests', () => {
     expect(mockObjectStorage.putObject).toHaveBeenCalledTimes(1);
     expect(mockDb.user.updateMany).toHaveBeenCalledWith({
       where: { id: mockUser.id, avatarStorageKey: 'avatars/user-123/old.png' },
-      data: expect.objectContaining({ avatarStorageKey: expect.stringMatching(/^avatars\/user-123\//) }),
+      data: expect.objectContaining({
+        avatarStorageKey: expect.stringMatching(/^avatars\/user-123\//) as unknown,
+      }) as unknown,
     });
     // Old object deletion was triggered
     expect(mockObjectStorage.deleteObject).toHaveBeenCalledWith('avatars/user-123/old.png');
   });
 
   it('updateAvatar should throw CONFLICT 409 and clean up new object if concurrent update modified avatar', async () => {
-    mockDb.user.findUniqueOrThrow.mockResolvedValue({ avatarStorageKey: 'avatars/user-123/old.png' });
+    mockDb.user.findUniqueOrThrow.mockResolvedValue({
+      avatarStorageKey: 'avatars/user-123/old.png',
+    });
     // Simulate concurrent update: updateMany matched 0 rows because avatarStorageKey changed
     mockDb.user.updateMany.mockResolvedValue({ count: 0 });
 
     const validPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
-    const file: any = {
+    const file = {
       originalname: 'new-avatar.png',
       mimetype: 'image/png',
       size: validPng.length,
       buffer: validPng,
-    };
+    } as Express.Multer.File;
 
     await expect(authService.updateAvatar(mockUser, file)).rejects.toThrow(
-      new AppError('AVATAR_CONFLICT', 'Avatar was modified concurrently by another request', HttpStatus.CONFLICT),
+      new AppError(
+        'AVATAR_CONFLICT',
+        'Avatar was modified concurrently by another request',
+        HttpStatus.CONFLICT,
+      ),
     );
 
     // Verify cleanup of newly uploaded object
