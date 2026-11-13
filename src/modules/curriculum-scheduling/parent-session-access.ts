@@ -15,6 +15,9 @@ const localMidnight = (date: Date): Date => new Date(date.getTime() - 7 * 3_600_
 
 /** The same eligibility predicate is used for list, count and detail. */
 export function parentSessionWhere(enrollments: Enrollment[]): Prisma.ClassSessionWhereInput {
+  // Prisma treats `OR: []` as no filter, which would expose every class session to a child with
+  // no enrollment yet. Match nothing instead.
+  if (enrollments.length === 0) return { id: { in: [] } };
   return {
     OR: enrollments.map((enrollment) => ({
       AND: [
