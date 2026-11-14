@@ -336,8 +336,8 @@ export class AuthController {
   })
   @UseInterceptors(
     FileInterceptor('file', {
-      // Multer rejects at its limit; validation still caps accepted files at 5 MiB.
-      limits: { fileSize: 5 * 1024 * 1024 + 1, files: 1, fields: 0 },
+      // Multer 2.5 accepts the exact limit and rejects larger files before storage.
+      limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 },
     }),
   )
   updateAvatar(
