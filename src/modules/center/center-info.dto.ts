@@ -16,3 +16,14 @@ export class CenterInfoDto {
   @ApiProperty({ type: String, nullable: true, example: 'Thứ 2 - Chủ nhật, 7:30 - 21:00' })
   openingHours!: string | null;
 }
+
+export class PublicSubjectDto {
+  @ApiProperty({ example: 'clx0subject0math' })
+  id!: string;
+
+  @ApiProperty({ example: 'MATH' })
+  code!: string;
+
+  @ApiProperty({ example: 'Toán học' })
+  name!: string;
+}

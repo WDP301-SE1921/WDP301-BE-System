@@ -3,7 +3,7 @@ import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { Public } from '../../common/decorators/public.decorator';
 import { DatabaseService } from '../../database/orm/database.service';
-import { CenterInfoDto } from './center-info.dto';
+import { CenterInfoDto, PublicSubjectDto } from './center-info.dto';
 import { CENTER_PROFILE_ID } from './center-profile';
 
 @Public()
@@ -28,5 +28,19 @@ export class CenterController {
       email: profile?.email ?? null,
       openingHours: profile?.openingHours ?? null,
     };
+  }
+
+  @Get('subjects')
+  @ApiOperation({
+    summary: 'Active subjects for the public site',
+    description: 'Public. Active, non-deleted subjects ordered by name, for the landing page.',
+  })
+  @ApiOkResponse({ type: PublicSubjectDto, isArray: true })
+  subjects(): Promise<PublicSubjectDto[]> {
+    return this.db.subject.findMany({
+      where: { deletedAt: null, isActive: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      select: { id: true, code: true, name: true },
+    });
   }
 }

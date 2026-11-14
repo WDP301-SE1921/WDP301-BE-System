@@ -117,3 +117,37 @@ describe('center contact details', () => {
     expect(jwt.sessionMaxAgeSeconds).toBe(7776000);
   });
 });
+
+describe('GET /center/subjects', () => {
+  type SubjectArgs = {
+    where: unknown;
+    orderBy: unknown;
+    select: unknown;
+  };
+  type SubjectRow = { id: string; code: string; name: string };
+
+  function controllerWith(rows: SubjectRow[]): {
+    controller: CenterController;
+    findMany: jest.Mock<Promise<SubjectRow[]>, [SubjectArgs]>;
+  } {
+    const findMany = jest.fn<Promise<SubjectRow[]>, [SubjectArgs]>().mockResolvedValue(rows);
+    const db = { subject: { findMany } };
+    return { controller: new CenterController(db as unknown as DatabaseService), findMany };
+  }
+
+  it('lists only active, non-deleted subjects ordered by name', async () => {
+    const { controller, findMany } = controllerWith([]);
+    await controller.subjects();
+    expect(findMany).toHaveBeenCalledTimes(1);
+    const args = findMany.mock.calls[0][0];
+    expect(args.where).toEqual({ deletedAt: null, isActive: true });
+    expect(args.orderBy).toEqual([{ name: 'asc' }, { id: 'asc' }]);
+    expect(args.select).toEqual({ id: true, code: true, name: true });
+  });
+
+  it('returns id, code and name of each subject', async () => {
+    const rows = [{ id: 's1', code: 'MATH', name: 'Toán học' }];
+    const { controller } = controllerWith(rows);
+    await expect(controller.subjects()).resolves.toEqual(rows);
+  });
+});
