@@ -134,6 +134,13 @@ export class SessionCancelDto {
   @IsOptional()
   @IsBoolean()
   shiftLessons?: boolean;
+  @ApiPropertyOptional({
+    default: false,
+    description: 'true: each student due at this session gets one more class day on the term.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  extendTerm?: boolean;
 }
 
 export class SessionCancelPreviewDto {
@@ -151,6 +158,10 @@ export class SessionBulkCancelPreviewDto {
   @MaxLength(191, { each: true })
   sessionIds!: string[];
   @ApiPropertyOptional({ default: false }) @IsOptional() @IsBoolean() shiftLessons?: boolean;
+  @ApiPropertyOptional({ default: false, description: 'Extend each due student by one class day per session.' })
+  @IsOptional()
+  @IsBoolean()
+  extendTerm?: boolean;
   @ApiPropertyOptional({ description: 'Accepted so the cancel form body can be previewed as is.' })
   @IsOptional()
   @IsString()

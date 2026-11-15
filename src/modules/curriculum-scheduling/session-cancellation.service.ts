@@ -1,3 +1,4 @@
+import { extendForCancelledSessions } from '../academic/enrollment-extension';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
@@ -101,6 +102,7 @@ export class SessionCancellationService {
           reason: input.reason,
           expectedRevision: input.expectedRevision,
           shiftLessons: true,
+          ...(input.extendTerm ? { extendTerm: true } : {}),
         }),
       )
       .digest('hex');
@@ -154,6 +156,8 @@ export class SessionCancellationService {
       this.assertShiftAllowed(evaluation);
       const reason = input.reason.trim();
       await this.apply(tx, user, evaluation, reason, true);
+      if (input.extendTerm)
+        await extendForCancelledSessions(tx, [id], user.id, `Buổi trung tâm huỷ: ${reason}`);
       const session = await tx.classSession.findUniqueOrThrow({ where: { id } });
       const outcome = evaluation.classes[0];
       const pushed = outcome?.pushedLessons[0] ?? null;
@@ -235,7 +239,15 @@ export class SessionCancellationService {
     const reason = input.reason.trim();
     const sessionIds = [...new Set(input.sessionIds)].sort();
     const hash = createHash('sha256')
-      .update(JSON.stringify({ action: 'bulk-cancel', sessionIds, reason, shiftLessons }))
+      .update(
+        JSON.stringify({
+          action: 'bulk-cancel',
+          sessionIds,
+          reason,
+          shiftLessons,
+          ...(input.extendTerm ? { extendTerm: true } : {}),
+        }),
+      )
       .digest('hex');
     const hints = await this.db.classSession.findMany({
       where: { id: { in: sessionIds } },
@@ -267,7 +279,16 @@ export class SessionCancellationService {
         );
       const bulkId = randomUUID();
       await this.apply(tx, user, evaluation, reason, shiftLessons, bulkId);
+      const extendedEnrollments = input.extendTerm
+        ? await extendForCancelledSessions(
+            tx,
+            evaluation.cancellable.map((row) => row.id),
+            user.id,
+            `Buổi trung tâm huỷ: ${reason}`,
+          )
+        : 0;
       const response = toJson({
+        extendedEnrollments,
         bulkId,
         cancelledCount: evaluation.cancellable.length,
         shiftLessons,

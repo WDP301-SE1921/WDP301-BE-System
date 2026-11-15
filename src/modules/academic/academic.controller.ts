@@ -69,7 +69,9 @@ import {
   LessonOutcomeWriteDto,
   AttendanceDto,
   ClassDto,
+  CorrectAttendanceDto,
   DecisionDto,
+  ExtendEnrollmentDto,
   EndLeaveEarlyDto,
   EmailDeliveryFilterDto,
   FeedbackDto,
@@ -529,6 +531,36 @@ export class AcademicController {
     @Body() input: TransferDto,
   ): Promise<unknown> {
     return this.workflows.transfer(user, id, input);
+  }
+  @Post('enrollments/:id/extensions')
+  @ApiOperation({ summary: 'Staff: extend the term for free by 1-90 days with a reason (bill unchanged)' })
+  extendEnrollment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: ExtendEnrollmentDto,
+  ): Promise<unknown> {
+    return this.workflows.extend(user, id, input);
+  }
+  @Get('enrollments/:id/extensions')
+  @ApiOperation({ summary: 'Staff/manager/parent (own child): term extensions, newest first' })
+  enrollmentExtensions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.workflows.extensions(user, id);
+  }
+  @Patch('sessions/:id/participants/:participantId/attendance')
+  @ApiOperation({
+    summary:
+      'Teacher (own class) or manager: correct one finalized attendance result, same local day only',
+  })
+  correctAttendance(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('participantId') participantId: string,
+    @Body() input: CorrectAttendanceDto,
+  ): Promise<unknown> {
+    return this.workflows.correctAttendance(user, id, participantId, input);
   }
   @Post('enrollments/:id/end') end(
     @CurrentUser() user: AuthenticatedUser,

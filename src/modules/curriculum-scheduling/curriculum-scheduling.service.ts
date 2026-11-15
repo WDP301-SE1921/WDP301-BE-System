@@ -1,3 +1,4 @@
+import { extendForCancelledSessions } from '../academic/enrollment-extension';
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
@@ -1791,6 +1792,7 @@ export class CurriculumSchedulingService {
     reason: string,
     expectedRevision: number,
     key: string | undefined,
+    extendTerm = false,
   ): Promise<unknown> {
     this.requireRole(user, 'MANAGER');
     const idempotencyKey = key?.trim();
@@ -1801,7 +1803,17 @@ export class CurriculumSchedulingService {
       HttpStatus.BAD_REQUEST,
     );
     const hash = createHash('sha256')
-      .update(JSON.stringify({ actorId: user.id, action: 'cancel', id, reason, expectedRevision }))
+      .update(
+        JSON.stringify({
+          actorId: user.id,
+          action: 'cancel',
+          id,
+          reason,
+          expectedRevision,
+          // Only present when set, so keys used before this flag keep their hash.
+          ...(extendTerm ? { extendTerm } : {}),
+        }),
+      )
       .digest('hex');
     return this.transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM class_sessions WHERE id = ${id} FOR UPDATE`;
@@ -1861,9 +1873,11 @@ export class CurriculumSchedulingService {
           action: 'CLASS_SESSION_CANCELLED',
           entityType: 'ClassSession',
           entityId: id,
-          afterData: { reason: reason.trim() },
+          afterData: { reason: reason.trim(), ...(extendTerm ? { extendTerm } : {}) },
         },
       });
+      if (extendTerm)
+        await extendForCancelledSessions(tx, [id], user.id, `Buổi trung tâm huỷ: ${reason.trim()}`);
       await tx.sessionMutation.create({
         data: {
           sessionId: id,

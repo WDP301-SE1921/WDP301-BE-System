@@ -27,7 +27,9 @@ import { attendanceContribution } from './attendance-calculation';
 import {
   AttendanceDto,
   AttendanceQueryDto,
+  CorrectAttendanceDto,
   DecisionDto,
+  ExtendEnrollmentDto,
   EndLeaveEarlyDto,
   LeaveDto,
   LeaveFilterDto,
@@ -39,6 +41,20 @@ import {
   TransferDto,
 } from './academic.dto';
 import { actsAsStaff, isBackOffice } from '../../common/auth/role-access';
+import {
+  MIN_PAUSE_DAYS_FOR_EXTENSION,
+  extendEnrollment,
+  inclusiveDays,
+  resizeLeaveExtension,
+} from './enrollment-extension';
+
+const ymd = (value: Date): string => value.toISOString().slice(0, 10);
+const dmy = (value: Date): string => ymd(value).split('-').reverse().join('/');
+/** Last day of an exclusive term end, as dd/mm/yyyy. */
+const lastDay = (endExclusive: Date): string => dmy(new Date(endExclusive.getTime() - 86_400_000));
+/** Teachers and managers may correct a finalized attendance until the end of the study day. */
+const correctionDeadline = (startsAt: Date): Date =>
+  new Date(studyDate(startsAt).getTime() + 17 * 3600000);
 
 /** Adds the optional staff reason to an audit payload without changing its shape when absent. */
 function withReason<T extends object>(data: T, reason?: string): T & { reason?: string } {
@@ -297,7 +313,12 @@ export class EnrollmentWorkflowsService {
         return leave;
       }
       // Staff record leave on behalf of the parent, so it is approved in the same transaction.
-      return this.decideLeave(user, leave.id, { approve: true, reason: input.reason }, tx);
+      return this.decideLeave(
+        user,
+        leave.id,
+        { approve: true, reason: input.reason, extendTerm: input.extendTerm },
+        tx,
+      );
     });
   }
 
@@ -311,6 +332,7 @@ export class EnrollmentWorkflowsService {
     const run = async (tx: Prisma.TransactionClient): Promise<unknown> => {
       const leave = await tx.leaveRequest.findUniqueOrThrow({ where: { id } });
       assertRule(leave.status === 'PENDING', 'REQUEST_DECIDED', 'Request has already been decided');
+      let credited: { days: number; newEndDate: Date } | null = null;
       if (input.approve) {
         const enrollment = await tx.enrollment.findUniqueOrThrow({
           where: { id: leave.enrollmentId },
@@ -361,6 +383,22 @@ export class EnrollmentWorkflowsService {
             where: { id: { in: rows.map((r) => r.id) } },
             data: { attendance: 'EXCUSED' },
           });
+        if (input.extendTerm) {
+          const days = inclusiveDays(leave.fromDate, leave.toDate);
+          assertRule(
+            leave.kind === 'PERIOD_PAUSE' && days >= MIN_PAUSE_DAYS_FOR_EXTENSION,
+            'LEAVE_TOO_SHORT_TO_EXTEND',
+            `Only a period pause of at least ${MIN_PAUSE_DAYS_FOR_EXTENSION} days extends the term`,
+          );
+          credited = await extendEnrollment(tx, {
+            enrollmentId: leave.enrollmentId,
+            source: 'LEAVE',
+            days,
+            reason: `Bảo lưu nghỉ dài hạn ${dmy(leave.fromDate)}–${dmy(leave.toDate)}`,
+            actorUserId: user.id,
+            leaveRequestId: leave.id,
+          });
+        }
       }
       const updated = await tx.leaveRequest.update({
         where: { id },
@@ -376,7 +414,7 @@ export class EnrollmentWorkflowsService {
         leave.enrollmentId,
         'LEAVE_DECIDED',
         id,
-        `Yêu cầu nghỉ từ ${leave.fromDate.toISOString().slice(0, 10)} đến ${leave.toDate.toISOString().slice(0, 10)} đã ${input.approve ? 'được duyệt' : 'bị từ chối'}.`,
+        `Yêu cầu nghỉ từ ${leave.fromDate.toISOString().slice(0, 10)} đến ${leave.toDate.toISOString().slice(0, 10)} đã ${input.approve ? 'được duyệt' : 'bị từ chối'}.${credited ? ` Hạn học được cộng ${credited.days} ngày (bảo lưu), đến ${lastDay(credited.newEndDate)}.` : ''}`,
       );
       return updated;
     };
@@ -414,6 +452,7 @@ export class EnrollmentWorkflowsService {
         where: { id },
         data: { status: 'CANCELLED', decidedById: user.id },
       });
+      await resizeLeaveExtension(tx, id, 0, user.id);
       await this.queueFamilyEmail(
         tx,
         user.id,
@@ -500,13 +539,19 @@ export class EnrollmentWorkflowsService {
           afterData: { toDate: shortenedTo, reason: input.reason },
         },
       });
+      const creditChange = await resizeLeaveExtension(
+        tx,
+        id,
+        inclusiveDays(leave.fromDate, shortenedTo),
+        user.id,
+      );
       await this.queueFamilyEmail(
         tx,
         user.id,
         leave.enrollmentId,
         'LEAVE_ENDED_EARLY',
         id,
-        `Kỳ nghỉ kết thúc sớm; ngày trở lại học là ${input.effectiveDate}.`,
+        `Kỳ nghỉ kết thúc sớm; ngày trở lại học là ${input.effectiveDate}.${creditChange ? ` Phần bảo lưu được điều chỉnh ${creditChange} ngày.` : ''}`,
       );
       return updated;
     });
@@ -1196,6 +1241,119 @@ export class EnrollmentWorkflowsService {
         );
       }
       return completed;
+    });
+  }
+
+  /** Staff: free extension of the term (bảo lưu or a center-caused loss); the bill is unchanged. */
+  async extend(user: AuthenticatedUser, id: string, input: ExtendEnrollmentDto): Promise<unknown> {
+    roles(user, 'STAFF');
+    return this.repo.transaction(async (tx) => {
+      const extension = (await extendEnrollment(tx, {
+        enrollmentId: id,
+        source: 'MANUAL',
+        days: input.days,
+        reason: input.reason,
+        actorUserId: user.id,
+      }))!;
+      const enrollment = await tx.enrollment.findUniqueOrThrow({
+        where: { id },
+        include: { class: { select: { name: true } } },
+      });
+      await this.queueFamilyEmail(
+        tx,
+        user.id,
+        id,
+        'ENROLLMENT_EXTENDED',
+        extension.id,
+        `Hạn học lớp ${enrollment.class.name} được gia hạn ${input.days} ngày, đến ${lastDay(extension.newEndDate)}. Lý do: ${extension.reason}.`,
+      );
+      return { extension, enrollment };
+    });
+  }
+
+  async extensions(user: AuthenticatedUser, id: string): Promise<unknown> {
+    await this.access.enrollment(user, id);
+    return this.repo.db.enrollmentExtension.findMany({
+      where: { enrollmentId: id },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    });
+  }
+
+  /**
+   * Fix one result of a finalized session on the same local day only (locks at 24:00). Excused rows
+   * stay with their leave and a swapped-out source stays absent, like finalizeAttendance.
+   */
+  async correctAttendance(
+    user: AuthenticatedUser,
+    sessionId: string,
+    participantId: string,
+    input: CorrectAttendanceDto,
+  ): Promise<unknown> {
+    roles(user, 'TEACHER', 'MANAGER');
+    if (user.role === 'TEACHER') await this.access.session(user, sessionId);
+    return this.repo.transaction(async (tx) => {
+      const session = await tx.classSession.findUniqueOrThrow({ where: { id: sessionId } });
+      assertRule(
+        session.status === 'COMPLETED',
+        'SESSION_NOT_FINALIZED',
+        'Only a finalized session can be corrected',
+      );
+      assertRule(
+        new Date() < correctionDeadline(session.startsAt),
+        'CORRECTION_WINDOW_CLOSED',
+        'Attendance can only be corrected on the day of the session',
+      );
+      const row = await tx.sessionParticipant.findFirst({
+        where: { id: participantId, sessionId, cancelled: false },
+        include: {
+          replacementBookings: { where: { status: { in: ['COMPLETED', 'MISSED'] } } },
+          sourceBookings: { where: { status: { in: ['BOOKED', 'COMPLETED'] } } },
+        },
+      });
+      assertRule(row, 'PARTICIPANT_NOT_FOUND', 'Participant not found', HttpStatus.NOT_FOUND);
+      assertRule(
+        row.attendance !== 'EXCUSED',
+        'EXCUSED_REQUIRES_LEAVE',
+        'Excused attendance is controlled by approved leave',
+      );
+      assertRule(
+        !row.sourceBookings.length || input.status === 'ABSENT',
+        'MAKEUP_SOURCE_ABSENT',
+        'A swapped session must remain absent at its original location',
+      );
+      if (row.attendance === input.status) return row;
+      const updated = await tx.sessionParticipant.update({
+        where: { id: row.id },
+        data: { attendance: input.status },
+      });
+      const booking = row.replacementBookings[0];
+      if (booking)
+        await tx.makeupBooking.update({
+          where: { id: booking.id },
+          data: {
+            status: input.status === 'PRESENT' ? 'COMPLETED' : 'MISSED',
+            activeOriginalId: input.status === 'PRESENT' ? booking.originalParticipantId : null,
+          },
+        });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: 'ATTENDANCE_CORRECTED',
+          entityType: 'SessionParticipant',
+          entityId: row.id,
+          beforeData: { attendance: row.attendance },
+          afterData: { attendance: input.status, reason: input.reason.trim() },
+        },
+      });
+      await this.queueFamilyEmail(
+        tx,
+        user.id,
+        row.enrollmentId,
+        'ATTENDANCE_CORRECTED',
+        `${sessionId}:${row.id}:${randomUUID()}`,
+        `Điểm danh buổi ${localStudyTime(session.startsAt)} đã được sửa: ${input.status === 'PRESENT' ? 'có mặt' : 'vắng mặt'}.`,
+      );
+      return updated;
     });
   }
 

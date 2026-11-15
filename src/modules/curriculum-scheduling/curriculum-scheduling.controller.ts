@@ -340,6 +340,8 @@ export class CurriculumSchedulingController {
   ): Promise<unknown> {
     if (input.shiftLessons === true)
       return this.cancellation.cancelWithShift(user, id, input, key);
+    if (input.extendTerm === true)
+      return this.service.cancelSession(user, id, input.reason, input.expectedRevision, key, true);
     return this.service.cancelSession(user, id, input.reason, input.expectedRevision, key);
   }
 

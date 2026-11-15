@@ -6,6 +6,12 @@ const staff = { id: 'staff-1', role: 'STAFF' } as never;
 const manager = { id: 'manager-1', role: 'MANAGER' } as never;
 const D = (value: number | string): Prisma.Decimal => new Prisma.Decimal(value);
 
+type Mocks = Record<string, jest.Mock>;
+/** First argument of the first call, typed for assertions. */
+function firstArg<T = { data: Record<string, unknown> }>(mock: jest.Mock): T {
+  return (mock.mock.calls[0] as unknown[])[0] as T;
+}
+
 async function codeOf(promise: Promise<unknown>): Promise<string | undefined> {
   try {
     await promise;
@@ -15,7 +21,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string | undefined> {
   }
 }
 
-function paymentDb(refunds: { status: string; amount: Prisma.Decimal }[] = []) {
+function paymentDb(refunds: { status: string; amount: Prisma.Decimal }[] = []): Record<string, Mocks> {
   const db = {
     $queryRaw: jest.fn().mockResolvedValue([]),
     payment: {
@@ -34,7 +40,7 @@ function paymentDb(refunds: { status: string; amount: Prisma.Decimal }[] = []) {
     auditLog: { create: jest.fn().mockResolvedValue({}) },
     $transaction: (work: (tx: unknown) => unknown): unknown => work(db),
   };
-  return db;
+  return db as unknown as Record<string, Mocks>;
 }
 
 describe('refund requests', () => {
@@ -48,8 +54,8 @@ describe('refund requests', () => {
       method: string;
     };
     expect(result).toMatchObject({ status: 'PENDING', amount: '800000.00', method: 'CASH' });
-    expect(db.paymentRefund.create.mock.calls[0][0].data).toMatchObject({ enrollmentId: 'enr-1' });
-    expect(db.auditLog.create.mock.calls[0][0].data.action).toBe('PAYMENT_REFUND_REQUESTED');
+    expect(firstArg(db.paymentRefund.create).data).toMatchObject({ enrollmentId: 'enr-1' });
+    expect(firstArg(db.auditLog.create).data.action).toBe('PAYMENT_REFUND_REQUESTED');
   });
 
   it('rejects a second refund while one is pending', async () => {
@@ -76,7 +82,7 @@ describe('refund requests', () => {
 });
 
 describe('refund decisions', () => {
-  function refundDb(status = 'PENDING') {
+  function refundDb(status = 'PENDING'): Record<string, Mocks> {
     const db = {
       $queryRaw: jest.fn().mockResolvedValue([]),
       paymentRefund: {
@@ -107,7 +113,7 @@ describe('refund decisions', () => {
       outboxEvent: { create: jest.fn().mockResolvedValue({}) },
       $transaction: (work: (tx: unknown) => unknown): unknown => work(db),
     };
-    return db;
+    return db as unknown as Record<string, Mocks>;
   }
 
   it('approval emails the parent and is audited', async () => {
@@ -116,8 +122,8 @@ describe('refund decisions', () => {
       approve: true,
     })) as { status: string };
     expect(result.status).toBe('APPROVED');
-    expect(db.outboxEvent.create.mock.calls[0][0].data.payload.text).toContain('Chuyển khoản');
-    expect(db.auditLog.create.mock.calls[0][0].data.action).toBe('PAYMENT_REFUND_APPROVED');
+    expect(firstArg<{ data: { payload: { text: string } } }>(db.outboxEvent.create).data.payload.text).toContain('Chuyển khoản');
+    expect(firstArg(db.auditLog.create).data.action).toBe('PAYMENT_REFUND_APPROVED');
   });
 
   it('rejection sends no email', async () => {

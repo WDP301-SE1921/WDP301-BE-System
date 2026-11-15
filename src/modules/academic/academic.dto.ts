@@ -161,9 +161,30 @@ export class LeaveDto extends ReasonDto {
   @ApiPropertyOptional() @IsOptional() @IsString() sessionId?: string;
   @ApiProperty() @IsDateString({ strict: true }) fromDate!: string;
   @ApiProperty() @IsDateString({ strict: true }) toDate!: string;
+  @ApiPropertyOptional({
+    description:
+      'Staff, period pause of at least 14 days: credit the paused days back to the term (bảo lưu).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  extendTerm?: boolean;
 }
 export class DecisionDto extends ReasonDto {
   @ApiProperty() @IsBoolean() approve!: boolean;
+  @ApiPropertyOptional({ description: 'Approving a pause of 14+ days: extend the term by its days.' })
+  @IsOptional()
+  @IsBoolean()
+  extendTerm?: boolean;
+}
+export class ExtendEnrollmentDto {
+  @ApiProperty({ minimum: 1, maximum: 90 }) @IsInt() @Min(1) @Max(90) days!: number;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(300) reason!: string;
+}
+export class CorrectAttendanceDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(300) reason!: string;
+  @ApiProperty({ enum: ['PRESENT', 'ABSENT'] })
+  @IsEnum({ PRESENT: 'PRESENT', ABSENT: 'ABSENT' })
+  status!: 'PRESENT' | 'ABSENT';
 }
 export class TransferDto extends ReasonDto {
   @ApiProperty() @IsString() @MinLength(1) targetClassId!: string;
