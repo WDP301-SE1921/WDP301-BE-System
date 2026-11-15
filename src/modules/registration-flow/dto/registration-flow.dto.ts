@@ -453,6 +453,14 @@ export class ConfirmPaymentDto {
   @IsString()
   @MaxLength(191)
   receiptNumber?: string;
+
+  @ApiPropertyOptional({
+    enum: ['CASH', 'BANK_TRANSFER'],
+    description: 'How the family paid; omitted by older clients (stored as null).',
+  })
+  @IsOptional()
+  @IsIn(['CASH', 'BANK_TRANSFER'])
+  method?: 'CASH' | 'BANK_TRANSFER';
 }
 
 export class ListRegistrationsDto extends PageDto {
@@ -523,6 +531,73 @@ export class ListPaymentsDto extends PageDto {
   @IsOptional()
   @IsDateString({ strict: true })
   toDate?: string;
+
+  @ApiPropertyOptional({ enum: ['CASH', 'BANK_TRANSFER'] })
+  @IsOptional()
+  @IsIn(['CASH', 'BANK_TRANSFER'])
+  method?: 'CASH' | 'BANK_TRANSFER';
+
+  @ApiPropertyOptional({ enum: ['me'], description: 'Only payments confirmed by the caller.' })
+  @IsOptional()
+  @IsIn(['me'])
+  confirmedBy?: 'me';
+}
+
+export class ShiftSummaryQueryDto {
+  @ApiPropertyOptional({ example: '2026-11-15', description: 'Center local date; default today.' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  date?: string;
+
+  @ApiPropertyOptional({ description: 'Manager only: whose shift; staff always see their own.' })
+  @IsOptional()
+  @IsString()
+  staffId?: string;
+}
+
+export class CreateRefundDto {
+  @ApiProperty({ example: '800000', description: 'Whole VND paid back.' })
+  @Matches(/^\d{1,12}$/)
+  amount!: string;
+
+  @ApiProperty({ enum: ['CASH', 'BANK_TRANSFER'] })
+  @IsIn(['CASH', 'BANK_TRANSFER'])
+  method!: 'CASH' | 'BANK_TRANSFER';
+
+  @ApiProperty({ example: 'Nghỉ hẳn trước kỳ' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(300)
+  reason!: string;
+}
+
+export class RefundListQueryDto extends PageDto {
+  @ApiPropertyOptional({ enum: ['PENDING', 'APPROVED', 'REJECTED'] })
+  @IsOptional()
+  @IsIn(['PENDING', 'APPROVED', 'REJECTED'])
+  status?: 'PENDING' | 'APPROVED' | 'REJECTED';
+
+  @ApiPropertyOptional({ example: '2026-11-01', description: 'Requested on/after (local date).' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  fromDate?: string;
+
+  @ApiPropertyOptional({ example: '2026-11-30', description: 'Requested on/before (local date).' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  toDate?: string;
+}
+
+export class DecideRefundDto {
+  @ApiProperty()
+  @IsBoolean()
+  approve!: boolean;
+
+  @ApiPropertyOptional({ example: 'Số tiền chưa đúng' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
 }
 
 export class ListStudentsDto extends PageDto {

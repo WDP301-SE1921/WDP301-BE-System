@@ -3,6 +3,7 @@ import { HttpStatus, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@
 import {
   Prisma,
   type Class,
+  type PaymentMethod,
   type ClassWeeklySchedule,
   type Program,
   type StudentProfile,
@@ -20,6 +21,7 @@ import { assertProgramFrequency } from './program-frequency';
 import { scheduledUntilByClass } from './class-scheduled-until';
 import { loadProgramForNewClass } from './class-program';
 import { moneyText, weeklySlotsText } from './registration-text';
+import { addCalendarMonths, priceTuition, tetPricing } from './tuition-pricing';
 import { attendanceContribution } from '../academic/attendance-calculation';
 import {
   ClassDto,
@@ -41,6 +43,7 @@ import {
   ParentSuggestionDto,
   ProgramDto,
   ProgramFilterDto,
+  ShiftSummaryQueryDto,
   ReplaceClassSchedulesDto,
   RoomDto,
   SessionSubstitutionDto,
@@ -1246,7 +1249,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         );
         this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
         await this.assertRegistrationAllowed(tx, student, classroom, startDate, endDate);
-        const quotedAmount = new Prisma.Decimal(classroom.monthlyFee).mul(input.packageMonths);
+        const price = priceTuition(classroom.monthlyFee, startDate, input.packageMonths);
+        const quotedAmount = price.quotedAmount;
         const created = await tx.registrationOrder.create({
           data: {
             type: 'EXISTING_STUDENT_NEW_SUBJECT',
@@ -1258,6 +1262,10 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             classId: classroom.id,
             packageMonths: input.packageMonths,
             quotedAmount,
+            listAmount: price.listAmount,
+            tetDiscountAmount: price.tetDiscountAmount,
+            tetPeriodStart: price.tetPeriodStart,
+            tetPeriodEnd: price.tetPeriodEnd,
             billSnapshot: {
               parent: {
                 displayName: student.parentProfile.user.displayName,
@@ -1377,6 +1385,8 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
             confirmedAt: dateTimeRange(query.fromDate, query.toDate),
           }
         : {}),
+      ...(query.method ? { method: query.method } : {}),
+      ...(query.confirmedBy === 'me' ? { confirmedByManagerId: user.id } : {}),
       ...(search
         ? {
             OR: [
@@ -1387,10 +1397,11 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           }
         : {}),
     };
-    const [items, total, aggregate] = await Promise.all([
+    const [items, total, aggregate, refunded] = await Promise.all([
       this.db.payment.findMany({
         where,
         include: {
+          refunds: { orderBy: { createdAt: 'asc' } },
           confirmedByManager: { select: { id: true, displayName: true, email: true } },
           registrationOrder: {
             select: {
@@ -1411,13 +1422,76 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       }),
       this.db.payment.count({ where }),
       this.db.payment.aggregate({ where, _sum: { amount: true } }),
+      this.db.paymentRefund.aggregate({
+        where: { status: 'APPROVED', payment: where },
+        _sum: { amount: true },
+      }),
     ]);
+    const totalAmount = aggregate._sum.amount ?? new Prisma.Decimal(0);
+    const refundedAmount = refunded._sum.amount ?? new Prisma.Decimal(0);
     return {
-      items,
+      items: items.map((item) => {
+        const itemRefunded = item.refunds
+          .filter((refund) => refund.status === 'APPROVED')
+          .reduce((sum, refund) => sum.add(refund.amount), new Prisma.Decimal(0));
+        return {
+          ...item,
+          refunds: item.refunds.map(refundView),
+          refundedAmount: itemRefunded.toFixed(2),
+          netAmount: item.amount.sub(itemRefunded).toFixed(2),
+        };
+      }),
       page: query.page,
       limit: query.limit,
       total,
-      totalAmount: (aggregate._sum.amount ?? new Prisma.Decimal(0)).toString(),
+      totalAmount: totalAmount.toString(),
+      refundedAmount: refundedAmount.toFixed(2),
+      netAmount: totalAmount.sub(refundedAmount).toFixed(2),
+    };
+  }
+
+  /**
+   * End-of-shift cash check for one staff member and one local day: money they confirmed by method,
+   * minus refunds they requested that a manager approved that day. Cash in drawer = cash in - cash out.
+   */
+  async shiftSummary(user: AuthenticatedUser, query: ShiftSummaryQueryDto): Promise<unknown> {
+    this.requireRoles(user, 'STAFF', 'MANAGER');
+    const staffId = isManagerOrAdmin(user.role) && query.staffId ? query.staffId : user.id;
+    const date = query.date?.slice(0, 10) ?? dateOnly(todayLocalDate())!;
+    const range = dateTimeRange(date, date);
+    const [payments, refunds] = await Promise.all([
+      this.db.payment.groupBy({
+        by: ['method'],
+        where: { confirmedByManagerId: staffId, confirmedAt: range },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      this.db.paymentRefund.groupBy({
+        by: ['method'],
+        where: { requestedById: staffId, status: 'APPROVED', decidedAt: range },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+    ]);
+    const bucket = (
+      rows: { method: PaymentMethod | null; _sum: { amount: Prisma.Decimal | null }; _count: { _all: number } }[],
+      method: PaymentMethod | null,
+    ): { count: number; amount: string } => {
+      const row = rows.find((item) => item.method === method);
+      return { count: row?._count._all ?? 0, amount: (row?._sum.amount ?? new Prisma.Decimal(0)).toFixed(2) };
+    };
+    const cashIn = bucket(payments, 'CASH');
+    const cashOut = bucket(refunds, 'CASH');
+    return {
+      date,
+      staffId,
+      collected: {
+        CASH: cashIn,
+        BANK_TRANSFER: bucket(payments, 'BANK_TRANSFER'),
+        UNKNOWN: bucket(payments, null),
+      },
+      refunded: { CASH: cashOut, BANK_TRANSFER: bucket(refunds, 'BANK_TRANSFER') },
+      cashInDrawer: new Prisma.Decimal(cashIn.amount).sub(cashOut.amount).toFixed(2),
     };
   }
 
@@ -1518,6 +1592,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     id: string,
     idempotencyKey: string | undefined,
     receiptNumber?: string,
+    method?: PaymentMethod,
   ): Promise<unknown> {
     this.requireRoles(user, 'STAFF');
     this.assert(idempotencyKey, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key header is required');
@@ -1525,6 +1600,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     const requestHash = hashRequest({
       registrationId: id,
       receiptNumber: receiptNumber?.trim() ?? null,
+      ...(method ? { method } : {}),
     });
     const replayOf = (
       record: { actorUserId: string | null; requestHash: string | null; response: unknown } | null,
@@ -1601,6 +1677,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           currency: order.currency,
           confirmedByManagerId: user.id,
           receiptNumber: receiptNumber?.trim() || receiptNo(order.id),
+          method: method ?? null,
         },
       });
       const enrollment = await tx.enrollment.create({
@@ -1645,7 +1722,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           subject: `EduGrade - Xác nhận thanh toán cho ${order.studentFullName}`,
           dedupeKey: `PAYMENT_CONFIRMED:${order.id}`,
           payload: {
-            text: `Đã xác nhận thanh toán ${payment.receiptNumber} cho ${order.studentFullName}. Môn: ${order.class.program.subject}. Lớp: ${order.class.name}. Lịch học: ${weeklySlotsText(order.class.weeklySchedules)}. Số tiền: ${moneyText(order.quotedAmount, order.currency)}.`,
+            text: `Đã xác nhận thanh toán ${payment.receiptNumber} cho ${order.studentFullName}. Môn: ${order.class.program.subject}. Lớp: ${order.class.name}. Lịch học: ${weeklySlotsText(order.class.weeklySchedules)}. Số tiền: ${moneyText(order.quotedAmount, order.currency)}${method ? `. Hình thức: ${PAYMENT_METHOD_LABELS[method]}` : ''}.`,
           },
         },
       });
@@ -2555,10 +2632,14 @@ function registrationProblem(input: {
   return null;
 }
 
+const paymentWithRefunds = {
+  include: { refunds: { orderBy: { createdAt: 'asc' } } },
+} satisfies Prisma.PaymentDefaultArgs;
+
 const registrationInclude = {
   targetStudent: { select: { id: true, fullName: true, grade: true } },
   class: { include: { program: true, weeklySchedules: true } },
-  payment: true,
+  payment: paymentWithRefunds,
   enrollment: true,
 } satisfies Prisma.RegistrationOrderInclude;
 
@@ -2571,7 +2652,7 @@ const billInclude = {
     },
   },
   class: { include: { program: true, weeklySchedules: true } },
-  payment: true,
+  payment: paymentWithRefunds,
 } satisfies Prisma.RegistrationOrderInclude;
 
 type BillOrder = Prisma.RegistrationOrderGetPayload<{ include: typeof billInclude }>;
@@ -2635,16 +2716,21 @@ function billResponse(order: BillOrder): Record<string, unknown> {
       endDate: dateOnly(order.endDate),
     },
     pricing: {
-      monthlyFee: snapshot?.monthlyFee ?? order.quotedAmount.div(order.packageMonths).toFixed(2),
+      monthlyFee:
+        snapshot?.monthlyFee ??
+        (order.listAmount ?? order.quotedAmount).div(order.packageMonths).toFixed(2),
       packageMonths: order.packageMonths,
       total: order.quotedAmount.toFixed(2),
       currency: order.currency,
+      ...tetPricing(order),
     },
     payment: order.payment
       ? {
           receiptNumber: order.payment.receiptNumber,
           paidAmount: order.payment.amount.toFixed(2),
           confirmedAt: order.payment.confirmedAt.toISOString(),
+          method: order.payment.method,
+          refunds: order.payment.refunds.map(refundView),
         }
       : null,
   };
@@ -2657,6 +2743,10 @@ function receiptResponse(order: {
   studentGrade: number;
   packageMonths: number;
   quotedAmount: Prisma.Decimal;
+  listAmount: Prisma.Decimal | null;
+  tetDiscountAmount: Prisma.Decimal | null;
+  tetPeriodStart: Date | null;
+  tetPeriodEnd: Date | null;
   currency: string;
   startDate: Date | null;
   endDate: Date | null;
@@ -2667,6 +2757,8 @@ function receiptResponse(order: {
     confirmedAt: Date;
     amount: Prisma.Decimal;
     currency: string;
+    method: PaymentMethod | null;
+    refunds: RefundRow[];
   } | null;
   enrollment: { id: string; status: string; startDate: Date | null; endDate: Date | null } | null;
   class: {
@@ -2701,15 +2793,46 @@ function receiptResponse(order: {
           amount: Number(order.payment.amount),
           currency: order.payment.currency,
           confirmedAt: order.payment.confirmedAt.toISOString(),
+          method: order.payment.method,
+          refunds: order.payment.refunds.map(refundView),
         }
       : null,
     enrollment: order.enrollment
       ? { id: order.enrollment.id, status: order.enrollment.status }
       : null,
     quotedAmount: Number(order.quotedAmount),
+    ...tetPricing(order),
     currency: order.currency,
   };
 }
+
+type RefundRow = {
+  id: string;
+  amount: Prisma.Decimal;
+  method: PaymentMethod;
+  reason: string;
+  status: string;
+  createdAt: Date;
+  decidedAt: Date | null;
+};
+
+/** Refund as shown on bills and receipts (all statuses; only APPROVED reduces the paid amount). */
+export function refundView(refund: RefundRow): Record<string, unknown> {
+  return {
+    id: refund.id,
+    amount: refund.amount.toFixed(2),
+    method: refund.method,
+    reason: refund.reason,
+    status: refund.status,
+    requestedAt: refund.createdAt.toISOString(),
+    decidedAt: refund.decidedAt?.toISOString() ?? null,
+  };
+}
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  CASH: 'Tiền mặt',
+  BANK_TRANSFER: 'Chuyển khoản',
+};
 
 const TERM_LABELS = {
   UPCOMING: 'Sắp học',
@@ -2755,17 +2878,6 @@ function dateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
 }
 
-function addCalendarMonths(startDate: Date, months: number): Date {
-  const year = startDate.getUTCFullYear();
-  const month = startDate.getUTCMonth();
-  const day = startDate.getUTCDate();
-  const targetFirst = new Date(Date.UTC(year, month + months, 1));
-  const targetLastDay = new Date(
-    Date.UTC(targetFirst.getUTCFullYear(), targetFirst.getUTCMonth() + 1, 0),
-  ).getUTCDate();
-  targetFirst.setUTCDate(Math.min(day, targetLastDay));
-  return targetFirst;
-}
 
 function isoWeekday(date: Date): number {
   const day = new Date(date.getTime() + HCM_OFFSET_MS).getUTCDay();

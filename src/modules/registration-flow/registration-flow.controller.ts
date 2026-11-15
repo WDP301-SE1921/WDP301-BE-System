@@ -26,6 +26,9 @@ import {
   ClassScheduleSlotDto,
   ClassFilterDto,
   ConfirmPaymentDto,
+  CreateRefundDto,
+  DecideRefundDto,
+  RefundListQueryDto,
   CreateRegistrationDto,
   CreateStudentDto,
   ListPaymentsDto,
@@ -41,6 +44,7 @@ import {
   ParentSearchDto,
   ProgramDto,
   ProgramFilterDto,
+  ShiftSummaryQueryDto,
   ReplaceClassSchedulesDto,
   RoomDto,
   SessionSubstitutionDto,
@@ -51,13 +55,17 @@ import {
   UpdateRoomDto,
   UpdateStudentDto,
 } from './dto/registration-flow.dto';
+import { PaymentRefundsService } from './payment-refunds.service';
 import { RegistrationFlowService } from './registration-flow.service';
 
 @ApiBearerAuth()
 @ApiTags('parent-registration-flow')
 @Controller({ version: '1' })
 export class RegistrationFlowController {
-  constructor(private readonly flow: RegistrationFlowService) {}
+  constructor(
+    private readonly flow: RegistrationFlowService,
+    private readonly refunds: PaymentRefundsService,
+  ) {}
 
   @Get('me/bills')
   @ApiOperation({ summary: 'Parent: list own registration bills, including unpaid drafts' })
@@ -431,6 +439,55 @@ export class RegistrationFlowController {
     return this.flow.listPayments(user, query);
   }
 
+  @Get('payments/shift-summary')
+  @ApiOperation({
+    summary: 'Staff: today cash/transfer collected and refunded by me (manager may pass staffId)',
+  })
+  shiftSummary(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ShiftSummaryQueryDto,
+  ): Promise<unknown> {
+    return this.flow.shiftSummary(user, query);
+  }
+
+  @Get('enrollments/:id/refund-quote')
+  @ApiOperation({
+    summary:
+      'Staff/manager: refund proposal for the bill of an enrollment (months not started yet, Tết month at half)',
+  })
+  refundQuote(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
+    return this.refunds.quote(user, id);
+  }
+
+  @Post('payments/:id/refunds')
+  @ApiOperation({ summary: 'Staff: record money paid back to the family; a manager approves it' })
+  requestRefund(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: CreateRefundDto,
+  ): Promise<unknown> {
+    return this.refunds.request(user, id, input);
+  }
+
+  @Get('refunds')
+  @ApiOperation({ summary: 'Staff/manager: refunds with their payment, newest first' })
+  listRefunds(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: RefundListQueryDto,
+  ): Promise<unknown> {
+    return this.refunds.list(user, query);
+  }
+
+  @Post('refunds/:id/decision')
+  @ApiOperation({ summary: 'Manager: approve or reject a refund; approved refunds lower revenue' })
+  decideRefund(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() input: DecideRefundDto,
+  ): Promise<unknown> {
+    return this.refunds.decide(user, id, input);
+  }
+
   @Get('registrations/:id')
   @ApiOperation({ summary: 'Staff or owning parent: read a registration' })
   registration(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
@@ -487,7 +544,7 @@ export class RegistrationFlowController {
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() input: ConfirmPaymentDto,
   ): Promise<unknown> {
-    return this.flow.confirmPayment(user, id, idempotencyKey, input.receiptNumber);
+    return this.flow.confirmPayment(user, id, idempotencyKey, input.receiptNumber, input.method);
   }
 
   @Get('registrations/:id/receipt')
