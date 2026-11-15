@@ -44,6 +44,23 @@ enum PaymentStatus {
   CONFIRMED
 }
 
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ExtensionSource {
+  MANUAL
+  LEAVE
+  SESSION_CANCELLED
+}
+
 enum EnrollmentStatus {
   PENDING_LINK
   ACTIVE
@@ -335,6 +352,12 @@ model RegistrationOrder {
   classId              String              @db.VarChar(191)
   packageMonths        Int
   quotedAmount         Decimal             @db.Decimal(14, 2)
+  /// Fee x months before the Tết discount; null on bills created before it (= quotedAmount).
+  listAmount           Decimal?            @db.Decimal(14, 2)
+  /// Half of the monthly fee for the package month that contains mùng 1 Tết.
+  tetDiscountAmount    Decimal?            @db.Decimal(14, 2)
+  tetPeriodStart       DateTime?           @db.Date
+  tetPeriodEnd         DateTime?           @db.Date
   billSnapshot         Json?
   currency             String              @default("VND") @db.VarChar(3)
   startDate            DateTime?           @db.Date
@@ -369,16 +392,41 @@ model Payment {
   amount               Decimal           @db.Decimal(14, 2)
   currency             String            @default("VND") @db.VarChar(3)
   status               PaymentStatus     @default(CONFIRMED)
+  /// Null on payments confirmed before the method was recorded.
+  method               PaymentMethod?
   confirmedByManagerId String            @db.VarChar(191)
   confirmedAt          DateTime          @default(now())
   receiptNumber        String            @unique @db.VarChar(191)
   registrationOrder    RegistrationOrder @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
   confirmedByManager   User              @relation("PaymentConfirmedBy", fields: [confirmedByManagerId], references: [id], onDelete: Restrict)
+  refunds              PaymentRefund[]
   createdAt            DateTime          @default(now())
 
   @@index([confirmedByManagerId])
   @@index([confirmedAt])
   @@map("payments")
+}
+
+/// Money paid back to a family (months not started); staff record it, a manager approves it.
+model PaymentRefund {
+  id            String        @id @default(cuid()) @db.VarChar(191)
+  paymentId     String        @db.VarChar(191)
+  enrollmentId  String?       @db.VarChar(191)
+  amount        Decimal       @db.Decimal(14, 2)
+  method        PaymentMethod
+  reason        String        @db.VarChar(300)
+  status        RefundStatus  @default(PENDING)
+  requestedById String        @db.VarChar(191)
+  decidedById   String?       @db.VarChar(191)
+  decidedAt     DateTime?
+  decisionNote  String?       @db.VarChar(300)
+  payment       Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  createdAt     DateTime      @default(now())
+
+  @@index([paymentId, status])
+  @@index([status, createdAt])
+  @@index([requestedById, decidedAt])
+  @@map("payment_refunds")
 }
 
 model Enrollment {
@@ -397,6 +445,7 @@ model Enrollment {
   participants        SessionParticipant[]
   recipients          AssignmentRecipient[]
   transfers           EnrollmentTransfer[]
+  extensions          EnrollmentExtension[]
   registrationOrder   RegistrationOrder     @relation(fields: [registrationOrderId], references: [id], onDelete: Restrict)
   studentProfile      StudentProfile?       @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
   class               Class                 @relation(fields: [classId], references: [id], onDelete: Restrict)
@@ -651,6 +700,28 @@ model EnrollmentTransfer {
 
   @@index([enrollmentId, effectiveAt])
   @@map("enrollment_transfers")
+}
+
+/// Free extension of an enrollment term (bảo lưu, cancelled session, manual); the bill is unchanged.
+model EnrollmentExtension {
+  id              String          @id @default(cuid()) @db.VarChar(191)
+  enrollmentId    String          @db.VarChar(191)
+  source          ExtensionSource
+  days            Int
+  reason          String          @db.VarChar(300)
+  leaveRequestId  String?         @db.VarChar(191)
+  sessionId       String?         @db.VarChar(191)
+  previousEndDate DateTime        @db.Date
+  newEndDate      DateTime        @db.Date
+  actorUserId     String          @db.VarChar(191)
+  enrollment      Enrollment      @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@unique([leaveRequestId])
+  @@unique([sessionId, enrollmentId])
+  @@index([enrollmentId, createdAt])
+  @@map("enrollment_extensions")
 }
 
 model ClassSession {
@@ -947,15 +1018,15 @@ model LessonOutcome {
 }
 
 model AssignmentRecipient {
-  id           String       @id @default(cuid()) @db.VarChar(191)
-  assignmentId String       @db.VarChar(191)
-  enrollmentId String       @db.VarChar(191)
-  assignedAt   DateTime?
-  assignedById String?      @db.VarChar(191)
+  id            String       @id @default(cuid()) @db.VarChar(191)
+  assignmentId  String       @db.VarChar(191)
+  enrollmentId  String       @db.VarChar(191)
+  assignedAt    DateTime?
+  assignedById  String?      @db.VarChar(191)
   dueAtOverride DateTime?
-  assignment   Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
-  enrollment   Enrollment   @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
-  submissions  Submission[]
+  assignment    Assignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  enrollment    Enrollment   @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  submissions   Submission[]
 
   @@unique([assignmentId, enrollmentId])
   @@map("assignment_recipients")
@@ -977,18 +1048,18 @@ model Submission {
 }
 
 model GradeReview {
-  id           String      @id @default(cuid()) @db.VarChar(191)
-  submissionId String      @db.VarChar(191)
-  revision     Int
-  reviewerId   String      @db.VarChar(191)
-  status       GradeStatus @default(DRAFT)
-  scores       Json
+  id             String      @id @default(cuid()) @db.VarChar(191)
+  submissionId   String      @db.VarChar(191)
+  revision       Int
+  reviewerId     String      @db.VarChar(191)
+  status         GradeStatus @default(DRAFT)
+  scores         Json
   rubricSnapshot Json?
-  totalScore   Float
-  feedback     String      @db.Text
-  publishedAt  DateTime?
-  submission   Submission  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
-  createdAt    DateTime    @default(now())
+  totalScore     Float
+  feedback       String      @db.Text
+  publishedAt    DateTime?
+  submission     Submission  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  createdAt      DateTime    @default(now())
 
   @@unique([submissionId, revision])
   @@map("grade_reviews")
@@ -1024,12 +1095,12 @@ model FileAsset {
 }
 
 model AssignmentFile {
-  assignmentId String @db.VarChar(191)
-  fileId String @db.VarChar(191)
-  teacherOnly Boolean @default(false)
+  assignmentId     String     @db.VarChar(191)
+  fileId           String     @db.VarChar(191)
+  teacherOnly      Boolean    @default(false)
   questionPosition Int?
-  assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  file FileAsset @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  assignment       Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  file             FileAsset  @relation(fields: [fileId], references: [id], onDelete: Restrict)
 
   @@id([assignmentId, fileId])
   @@map("assignment_files")
