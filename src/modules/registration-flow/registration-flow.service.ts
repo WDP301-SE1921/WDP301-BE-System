@@ -1413,6 +1413,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
               startDate: true,
               endDate: true,
               class: { select: { id: true, name: true, program: true } },
+              enrollment: { select: { id: true, status: true } },
             },
           },
         },
