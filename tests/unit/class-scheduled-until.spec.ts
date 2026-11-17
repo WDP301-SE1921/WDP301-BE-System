@@ -1,4 +1,7 @@
-import { scheduledUntilByClass } from '../../src/modules/registration-flow/class-scheduled-until';
+import {
+  scheduledRangeByClass,
+  scheduledUntilByClass,
+} from '../../src/modules/registration-flow/class-scheduled-until';
 import { RegistrationFlowService } from '../../src/modules/registration-flow/registration-flow.service';
 
 const manager = { id: 'manager-1', role: 'MANAGER' } as never;
@@ -113,5 +116,41 @@ describe('scheduledUntil', () => {
     const calls = groupBy.mock.calls as Array<[{ where: { classId: { in: string[] } } }]>;
     expect(calls).toHaveLength(1);
     expect(calls[0]?.[0].where.classId.in).toEqual(['class-a', 'class-b']);
+  });
+});
+
+describe('scheduledRangeByClass', () => {
+  it('reports the Vietnam dates of the first and last non-cancelled session in one query', async () => {
+    const groupBy = jest.fn().mockResolvedValue([
+      {
+        classId: 'class-a',
+        // 06:00 on 2026-11-02 in Vietnam is 23:00 UTC on 2026-11-01.
+        _min: { startsAt: new Date('2026-11-01T23:00:00.000Z') },
+        _max: { startsAt: new Date('2027-01-20T11:00:00.000Z') },
+      },
+      { classId: 'class-b', _min: { startsAt: null }, _max: { startsAt: null } },
+    ]);
+    const result = await scheduledRangeByClass({ classSession: { groupBy } } as never, [
+      'class-a',
+      'class-b',
+      'class-a',
+    ]);
+    expect(groupBy).toHaveBeenCalledWith({
+      by: ['classId'],
+      where: { classId: { in: ['class-a', 'class-b'] }, status: { not: 'CANCELLED' } },
+      _min: { startsAt: true },
+      _max: { startsAt: true },
+    });
+    expect(result.get('class-a')).toEqual({
+      scheduledFrom: '2026-11-02',
+      scheduledUntil: '2027-01-20',
+    });
+    expect(result.has('class-b')).toBe(false);
+  });
+
+  it('does not query when there are no classes', async () => {
+    const groupBy = jest.fn();
+    expect((await scheduledRangeByClass({ classSession: { groupBy } } as never, [])).size).toBe(0);
+    expect(groupBy).not.toHaveBeenCalled();
   });
 });

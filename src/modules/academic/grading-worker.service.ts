@@ -8,7 +8,7 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  ServiceUnavailableException,
+  HttpStatus,
 } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { AcademicAiService, isRecord } from '../../integrations/academic-ai.service';
@@ -77,8 +77,10 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
       );
     }
     if (!this.ai.available())
-      throw new ServiceUnavailableException(
+      throw new AppError(
+        'AI_UNAVAILABLE',
         'AI is not configured; manual grading remains available',
+        HttpStatus.SERVICE_UNAVAILABLE,
       );
     return this.repo.transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM submissions WHERE id = ${submissionId} FOR UPDATE`;

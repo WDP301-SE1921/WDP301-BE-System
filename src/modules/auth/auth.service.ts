@@ -141,13 +141,21 @@ export class AuthService {
   async login(email: string, password: string): Promise<AuthResponseDto> {
     this.assertPasswordWithinBcryptLimit(password);
     const user = await this.usersService.findByEmailWithPassword(email);
-    if (!user?.passwordHash || user.status !== 'ACTIVE' || user.deletedAt) {
+    if (!user?.passwordHash || user.deletedAt) {
       throw this.invalidCredentialsError();
     }
 
     const matches = await bcrypt.compare(password, user.passwordHash);
     if (!matches) {
       throw this.invalidCredentialsError();
+    }
+    // Only someone who knows the password learns the account is locked; others still get 401.
+    if (user.status !== 'ACTIVE') {
+      throw new AppError(
+        'AUTH_ACCOUNT_DISABLED',
+        'This account has been disabled by the center',
+        HttpStatus.FORBIDDEN,
+      );
     }
 
     return this.createAuthenticatedSession(this.usersService.toSafeUser(user));

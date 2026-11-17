@@ -118,6 +118,23 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - Kèm theo: hàng đợi email bỏ qua người nhận `@deleted.invalid` (`FAILED`, `lastError` = `RECIPIENT_ACCOUNT_DELETED`, retry trả 410 `EMAIL_RECIPIENT_DELETED`); Admin tổng không khôi phục được tài khoản phụ huynh đã tự xóa (`restoreBlockers` có lý do).
 - Không đổi schema, không migration.
 
+### 1.18. Lớp trả ngày học đầu và cuối (`GET /api/v1/classes`, `GET /api/v1/classes/:id`, 17/11)
+- Lý do: góp ý RV3 "không có thông tin thời gian bắt đầu/kết thúc của lớp". Lớp không có cột ngày riêng; thời gian học là từ buổi đầu tới buổi cuối chưa hủy.
+- Mỗi lớp thêm `scheduledFrom: "YYYY-MM-DD" | null` (ngày theo giờ Việt Nam của buổi đầu chưa hủy) cạnh `scheduledUntil` đã có; chi tiết lớp nay trả cả hai. `null` khi lớp chưa có buổi. Một truy vấn `groupBy` (`_min`, `_max`) mỗi trang (`scheduledRangeByClass` trong `class-scheduled-until.ts`). Field cũ giữ nguyên.
+
+### 1.19. Bill và biên lai ghi số buổi theo lịch tuần (`term.plannedSessions`, 17/11)
+- Lý do: góp ý RV3 "học phí đóng theo tháng nhưng lớp tổ chức theo buổi".
+- `GET /registrations/:id/bill`, `GET /me/bills` và `GET /registrations/:id/receipt` thêm `term.plannedSessions: number | null`: số buổi lịch tuần của lớp từ ngày bắt đầu tới trước ngày hết hạn (`plannedSessionCount` trong `planned-sessions.ts`). Chưa trừ ngày nghỉ của trung tâm và buổi hủy: đây là số buổi học phí tháng được báo giá theo. Bill dùng lịch tuần trong bản chụp lúc lập. `null` khi đơn chưa có ngày.
+
+### 1.20. Xem một báo cáo học tập (`GET /api/v1/academic/reports/:id`, 17/11)
+- Lý do: góp ý RV2 "báo cáo còn sơ sài"; web chỉ có danh sách để tải Excel/PDF.
+- Chỉ giáo viên được phân công lớp (cùng quyền với tải báo cáo). Trả `className`, `from`, `to`, `generatedAt`, `scope`, `studentId`, `teachingProgress`, `rows[]` (từng học sinh: buổi phải học, có mặt, % chuyên cần, số bài có điểm, điểm trung bình %), `aiSummary`. Báo cáo không có trả 404 `REPORT_NOT_FOUND`. Danh sách `GET /academic/reports` không đổi.
+
+### 1.21. Đăng nhập tài khoản bị khóa báo đúng lý do (`POST /api/v1/auth/login`, 17/11)
+- Lý do: góp ý RV1 "sửa lại text hiển thị của hồ sơ bị khóa"; phụ huynh bị khóa chỉ thấy "Email hoặc mật khẩu không đúng".
+- Đúng mật khẩu mà tài khoản `DISABLED` thì trả 403 `AUTH_ACCOUNT_DISABLED`. Sai mật khẩu vẫn trả 401 `AUTH_INVALID_CREDENTIALS`, nên người không biết mật khẩu không dò được tài khoản nào bị khóa. Tài khoản đã xóa mềm vẫn 401.
+- Yêu cầu AI chấm khi máy chủ chưa cấu hình AI (`POST /api/v1/academic/submissions/:id/grade-ai`) nay trả mã `AI_UNAVAILABLE` (503) thay cho lỗi 503 không mã, để web báo "Trung tâm chưa bật AI chấm bài".
+
 ---
 
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
@@ -140,6 +157,7 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 | **14** | **Hai nhân viên đặt suất học bù cuối cùng cùng lúc thì cả hai đều được** (11/11, lỗi từ `41e3467`) | `src/modules/academic/enrollment-workflows.service.ts`<br>`tests/unit/makeup-booking-lock.spec.ts` | `bookMakeup` đọc thường `sessionParticipant` trước câu `FOR UPDATE` trong transaction RepeatableRead, nên snapshot bị chốt trước khóa: yêu cầu thứ hai chờ khóa xong vẫn đếm chỗ trên snapshot cũ. E2E `academic` "serializes competing requests for the last makeup seat" trả `[201, 201]`. | Đọc `sessionId` của suất gốc ngoài transaction (suất không bao giờ đổi buổi), để câu khóa là câu đầu tiên. E2E qua 3/3 lần. Không đổi contract. **Chưa sửa:** `rescheduleMakeup` không khóa buổi đích nên đổi suất vào buổi còn một chỗ vẫn có thể vượt sức chứa. |
 | **15** | **Email xác nhận thanh toán ghi sai thứ học** (12/11) | `src/modules/registration-flow/registration-flow.service.ts`<br>`src/modules/registration-flow/registration-text.ts`<br>`src/database/seeds/seed-dashboard.ts` | Câu "Lịch học" in thẳng `weekday` kiểu ISO (1 là thứ Hai) sau chữ "thứ", nên thứ Hai thành "thứ 1", thứ Bảy thành "thứ 6", Chủ nhật thành "thứ 7"; số tiền in thô (`1500000.00 VND`). | `weeklySlotsText` ghi "Thứ 2" … "Thứ 7", "Chủ nhật", xếp theo thứ trong tuần; `moneyText` nhóm số kiểu Việt Nam (`1.500.000 VND`). Seed demo dùng cùng hàm. Chỉ đổi nội dung email, không đổi API. |
 | **16** | **Tạo được lớp cho khóa học đã bị Admin xóa mềm khi gọi thẳng API** (12/11) | `src/modules/registration-flow/class-program.ts`<br>`src/modules/registration-flow/registration-flow.service.ts`<br>`src/modules/academic/catalog.service.ts` | Cùng loại lỗi số 12: `POST /classes` chỉ kiểm `isActive` của khóa và môn. Route cũ `POST /academic/classes` không kiểm khóa học nào cả (khóa không tồn tại thành lỗi khóa ngoại). | Cả hai route dùng `loadProgramForNewClass`: khóa không có hoặc có `deletedAt` trả 404 `PROGRAM_NOT_FOUND`, khóa ngừng hoạt động 409 `PROGRAM_INACTIVE`, môn ngừng hoặc đã xóa mềm 409 `SUBJECT_INACTIVE`. Mã lỗi của `POST /classes` không đổi; web không gọi `POST /academic/classes`. |
+| **17** | **Nhân viên ghi nghỉ dài hạn có tích "Bảo lưu" không lưu được đơn** (17/11, lỗi từ đợt 15/11) | `src/modules/academic/enrollment-workflows.service.ts` | `requestLeave` đưa cả body vào `leaveRequest.create`, trong đó có `extendTerm`, mà bảng `leave_requests` không có cột này nên Prisma từ chối khi `extendTerm: true` (thấy khi đọc code, chưa chạy lại bản cũ để xem mã lỗi). | Tách `extendTerm` ra trước khi ghi đơn, chỉ chuyển sang bước duyệt. Đã gọi thật trên BE local (database thử): `PERIOD_PAUSE` 14 ngày kèm `extendTerm: true` trả 201 `APPROVED`. Không đổi contract. |
 
 ---
 

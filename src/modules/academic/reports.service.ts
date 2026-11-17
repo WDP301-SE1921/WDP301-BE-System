@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { pageResult } from '../../common/pagination';
 import { dateTimeRange } from '../../common/list-query';
 import { ClassContentQueryDto } from './academic-list.dto';
@@ -238,6 +238,30 @@ export class ReportsService {
       };
     });
     return pageResult(page, Promise.resolve(items), () => this.repo.db.learningReport.count({ where }));
+  }
+
+  /** One report with its per-student rows and AI summary, for reading on screen. */
+  async detail(user: AuthenticatedUser, id: string): Promise<unknown> {
+    roles(user, 'TEACHER');
+    const report = await this.repo.db.learningReport.findUnique({ where: { id } });
+    assertRule(report, 'REPORT_NOT_FOUND', 'Report not found', HttpStatus.NOT_FOUND);
+    await this.access.classroom(user, report.classId);
+    const snapshot = report.snapshot as unknown as ReportSnapshot;
+    const scoped = typeof snapshot.studentId === 'string';
+    return {
+      id: report.id,
+      classId: report.classId,
+      createdAt: report.createdAt,
+      className: snapshot.className,
+      from: snapshot.from,
+      to: snapshot.to,
+      generatedAt: snapshot.generatedAt,
+      scope: !('studentId' in snapshot) ? null : scoped ? 'STUDENT' : 'CLASS',
+      studentId: scoped ? snapshot.studentId : null,
+      teachingProgress: snapshot.teachingProgress,
+      rows: snapshot.rows,
+      aiSummary: report.aiSummary ?? null,
+    };
   }
 
   async export(

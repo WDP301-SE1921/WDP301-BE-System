@@ -18,7 +18,8 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { DatabaseService } from '../../database/orm/database.service';
 import { assignedTeacherAt, assignedTeacherWhere } from './class-teacher';
 import { assertProgramFrequency } from './program-frequency';
-import { scheduledUntilByClass } from './class-scheduled-until';
+import { scheduledRangeByClass, scheduledUntilByClass } from './class-scheduled-until';
+import { plannedSessionCount } from './planned-sessions';
 import { loadProgramForNewClass } from './class-program';
 import { moneyText, weeklySlotsText } from './registration-text';
 import { addCalendarMonths, priceTuition, tetPricing } from './tuition-pricing';
@@ -943,14 +944,16 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         }),
       ),
     );
-    const scheduledUntil = await scheduledUntilByClass(
+    // First and last non-cancelled session (UTC+7 dates): the class's study period.
+    const scheduled = await scheduledRangeByClass(
       this.db,
       rows.map((row) => row.id),
     );
     const listed = rows.map((row, index) => ({
       ...row,
       rosterCount: rosterCounts[index],
-      scheduledUntil: scheduledUntil.get(row.id) ?? null,
+      scheduledFrom: scheduled.get(row.id)?.scheduledFrom ?? null,
+      scheduledUntil: scheduled.get(row.id)?.scheduledUntil ?? null,
     }));
     if (!input.startDate || !input.packageMonths || user.role === 'TEACHER')
       return pageResult(input, Promise.resolve(listed), () => this.db.class.count({ where }));
@@ -2110,7 +2113,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       ],
       AND: [{ OR: [{ status: 'ACTIVE' }, { status: 'ENDED', endedAt: { gt: at } }] }],
     };
-    const [items, total, scheduleLocked] = await Promise.all([
+    const [items, total, scheduleLocked, scheduled] = await Promise.all([
       this.db.enrollment.findMany({
         where,
         select: {
@@ -2140,9 +2143,12 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       }),
       this.db.enrollment.count({ where }),
       this.isScheduleLocked(this.db, id),
+      scheduledRangeByClass(this.db, [id]),
     ]);
     return {
       ...classroom,
+      scheduledFrom: scheduled.get(id)?.scheduledFrom ?? null,
+      scheduledUntil: scheduled.get(id)?.scheduledUntil ?? null,
       pendingTeacher:
         classroom.pendingTeacherId &&
         classroom.pendingTeacherFrom &&
@@ -2715,6 +2721,11 @@ function billResponse(order: BillOrder): Record<string, unknown> {
       packageMonths: order.packageMonths,
       startDate: dateOnly(order.startDate),
       endDate: dateOnly(order.endDate),
+      plannedSessions: plannedSessionCount(
+        snapshot?.class.schedules ?? order.class.weeklySchedules,
+        order.startDate,
+        order.endDate,
+      ),
     },
     pricing: {
       monthlyFee:
@@ -2785,6 +2796,11 @@ function receiptResponse(order: {
       packageMonths: order.packageMonths,
       startDate: dateOnly(order.startDate),
       endDate: dateOnly(order.endDate),
+      plannedSessions: plannedSessionCount(
+        order.class.weeklySchedules,
+        order.startDate,
+        order.endDate,
+      ),
       ...termStatus(order),
     },
     payment: order.payment

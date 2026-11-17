@@ -777,6 +777,14 @@ export class AcademicController {
   ): Promise<unknown> {
     return this.reports.list(user, page);
   }
+  @Get('reports/:id')
+  @ApiOperation({ summary: 'Assigned teacher: one learning report with per-student rows' })
+  reportDetail(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<unknown> {
+    return this.reports.detail(user, id);
+  }
   @Get('reports/:id/download') async download(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

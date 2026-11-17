@@ -239,7 +239,9 @@ export class EnrollmentWorkflowsService {
       'INVALID_LEAVE',
       'Single absence requires a session; period pause must omit it',
     );
-    const data = { ...input, fromDate: from, toDate: to, requestedById: user.id };
+    // extendTerm is a decision for staff, not a leave_requests column: keep it out of the row.
+    const { extendTerm, ...fields } = input;
+    const data = { ...fields, fromDate: from, toDate: to, requestedById: user.id };
     return this.repo.transaction(async (tx) => {
       const enrollment = await tx.enrollment.findUniqueOrThrow({
         where: { id: input.enrollmentId },
@@ -316,7 +318,7 @@ export class EnrollmentWorkflowsService {
       return this.decideLeave(
         user,
         leave.id,
-        { approve: true, reason: input.reason, extendTerm: input.extendTerm },
+        { approve: true, reason: input.reason, extendTerm },
         tx,
       );
     });
