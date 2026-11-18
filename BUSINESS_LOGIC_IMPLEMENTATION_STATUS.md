@@ -17,7 +17,7 @@ Tài liệu này giải thích hệ thống đang làm gì, chạy theo trình t
 5. Nhân sự, invitation và Manager
 6. Môn, chương trình, lớp, phòng và lịch tuần
 7. Giáo trình, duyệt và phiên bản
-8. Sinh lịch, đổi lịch, hủy buổi
+8. Sinh lịch, đổi lịch (hủy buổi đã gỡ 19/11/2026)
 9. Hồ sơ học sinh, đăng ký và thanh toán
 10. Roster, báo nghỉ và điểm danh
 11. Học bù và chuyên cần
@@ -362,7 +362,7 @@ Teacher phản hồi bài mình được phân công. Manager xem giám sát; De
 
 Không có luồng tạo Unit/Lesson bằng AI trong phạm vi yêu cầu này. AI chấm bài và AI tóm tắt báo cáo là hai chức năng riêng vẫn tồn tại.
 
-## 8. Sinh lịch, đổi lịch và hủy buổi
+## 8. Sinh lịch và đổi lịch
 
 ### 8.1. Sinh buổi từ giáo trình — đã có luồng chính
 
@@ -389,16 +389,9 @@ Preview là ảnh chụp tại thời điểm xem; commit phải kiểm tra lạ
 7. Reschedule command với idempotency key ghi giờ mới, tăng revision, ghi audit và mutation.
 8. Giữ sessionId, lesson và quan hệ nghiệp vụ.
 
-### 8.3. Hủy buổi — đã có command
+### 8.3. Hủy buổi và ngày nghỉ trung tâm — đã gỡ 19/11/2026
 
-1. Manager gửi reason, expectedRevision và Idempotency-Key.
-2. Lock session, kiểm tra mutation cùng khóa để replay hoặc từ chối khác nội dung.
-3. Session phải SCHEDULED và startsAt còn ở tương lai; revision phải khớp.
-4. Chặn nếu có makeup BOOKED ở vai trò nguồn hoặc đích.
-5. Chặn nếu có participant attendance khác UNMARKED hoặc leave của session đang PENDING/APPROVED.
-6. Đổi session thành CANCELLED, lưu cancelReason/cancelledAt, tăng revision.
-7. Ghi audit và SessionMutation chứa response để replay.
-8. Không xóa session hoặc toàn bộ lịch sử liên quan. Chưa tự gửi email hủy buổi.
+Trung tâm không hủy buổi và không có ngày nghỉ do Quản lý nhập. Buổi không dạy được thì đổi giờ hoặc dạy thay. Sinh lịch tự bỏ qua kỳ nghỉ Tết (23 tháng Chạp → mùng 7, bảng `TET_BREAKS`). Buổi `CANCELLED` cũ vẫn được đọc và hiển thị.
 
 ### 8.4. Legacy tạo buổi thủ công
 
@@ -1137,7 +1130,6 @@ Tổng cộng **169 khai báo route** trong các controller được kiểm tra.
 | GET | `/academic/session-generations/:id` | curriculum-scheduling.controller.ts |
 | POST | `/academic/sessions/:id/reschedule-preview` | curriculum-scheduling.controller.ts |
 | POST | `/academic/sessions/:id/reschedule` | curriculum-scheduling.controller.ts |
-| POST | `/academic/sessions/:id/cancel` | curriculum-scheduling.controller.ts |
 | GET | `/staff` | directory.controller.ts |
 | POST | `/staff` | directory.controller.ts |
 | GET | `/staff/:id` | directory.controller.ts |

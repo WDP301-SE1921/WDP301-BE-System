@@ -491,18 +491,7 @@ PATCH /api/v1/classes/:id
 POST  /api/v1/classes/:id/schedules
 ```
 
-Hủy buổi và ngày nghỉ trung tâm (từ 10/11; request, response và mã lỗi ở `CURRICULUM_SCHEDULING_API.md`):
-
-```http
-POST   /api/v1/academic/sessions/:id/cancel            # MANAGER/ADMIN, Idempotency-Key bắt buộc, shiftLessons tùy chọn
-POST   /api/v1/academic/sessions/:id/cancel-preview    # MANAGER/ADMIN, không ghi gì
-POST   /api/v1/academic/sessions/bulk-cancel-preview   # MANAGER/ADMIN, không ghi gì
-POST   /api/v1/academic/sessions/bulk-cancel           # MANAGER/ADMIN, Idempotency-Key bắt buộc
-GET    /api/v1/academic/center-closures                # MANAGER, STAFF, TEACHER, CURRICULUM_DESIGNER
-POST   /api/v1/academic/center-closures                # chỉ MANAGER/ADMIN
-PATCH  /api/v1/academic/center-closures/:id            # chỉ MANAGER/ADMIN, expectedRevision
-DELETE /api/v1/academic/center-closures/:id            # chỉ MANAGER/ADMIN
-```
+Hủy buổi và ngày nghỉ trung tâm: **đã gỡ 19/11/2026**, các route `sessions/:id/cancel`, `sessions/:id/cancel-preview`, `sessions/bulk-cancel-preview`, `sessions/bulk-cancel` và `center-closures` trả 404. Buổi không dạy được thì đổi giờ hoặc dạy thay. Sinh lịch tự bỏ qua kỳ nghỉ Tết (23 tháng Chạp → mùng 7). Chi tiết ở `CURRICULUM_SCHEDULING_API.md`.
 
 ### Đăng ký và thu tiền
 
@@ -573,7 +562,7 @@ sequenceDiagram
 409 DUPLICATE_CLASS_REGISTRATION
 409 STUDENT_SCHEDULE_CONFLICT
 409 REGISTRATION_NOT_DRAFT
-409 IDEMPOTENCY_KEY_REQUIRED    (luồng đăng ký; hủy buổi và hủy theo lô trả 400 cùng mã này)
+409 IDEMPOTENCY_KEY_REQUIRED    (luồng đăng ký)
 500 INTERNAL_ERROR
 ```
 

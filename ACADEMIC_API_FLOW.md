@@ -8,7 +8,7 @@ Cập nhật: 08/10/2026. Tài liệu này mô tả **API đang có trong repo b
 - Gửi `Authorization: Bearer <accessToken>` cho các route được bảo vệ. Lấy token qua `POST /api/v1/auth/login`.
 - Response thành công có dạng `{ "success": true, "data": ... }`. Response lỗi có dạng `{ "success": false, "error": { "code": "...", "message": "...", "requestId": "..." } }`.
 - Ngày nhập ở dạng `YYYY-MM-DD`; ngày giờ đổi buổi ở UTC ISO, ví dụ `2026-11-04T11:00:00.000Z`. `weekday` là ISO weekday: thứ Hai `1`, Chủ nhật `7`; giờ lịch tuần là `HH:mm` theo giờ địa phương của lớp.
-- `Idempotency-Key` là header bắt buộc cho import commit, sinh lịch, đổi giờ và hủy buổi. Khi retry cùng thao tác, giữ nguyên key **và** payload; dùng key mới cho thao tác mới.
+- `Idempotency-Key` là header bắt buộc cho import commit, sinh lịch và đổi giờ. Khi retry cùng thao tác, giữ nguyên key **và** payload; dùng key mới cho thao tác mới.
 - Các body và query bị kiểm tra DTO; field lạ sẽ bị từ chối. Swagger, nếu được bật ở môi trường chạy, nằm tại `/api/docs`.
 
 Luồng chạy chính:
@@ -176,9 +176,8 @@ Backend yêu cầu bản giáo trình `APPROVED`, cùng `programId` với lớp,
 | ---------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
 | `POST /sessions/:id/reschedule-preview`        | Manager | Body `startsAt`, `endsAt`, `reason`, `expectedRevision`; kiểm tra khả năng đổi giờ.                            |
 | `POST /sessions/:id/reschedule`                | Manager | Cùng body preview, thêm `Idempotency-Key`; giữ nguyên session ID, tăng revision, ghi audit.                    |
-| `POST /sessions/:id/cancel`                    | Manager | `{ "reason": "...", "expectedRevision": 1 }`, thêm `Idempotency-Key`; chuyển buổi sang `CANCELLED`, ghi audit. Body thêm `shiftLessons?` (dời bài); kèm `cancel-preview`, `bulk-cancel-preview`, `bulk-cancel`, chi tiết ở `CURRICULUM_SCHEDULING_API.md`. |
 
-Chỉ xử lý buổi `SCHEDULED` ở tương lai. Khi đổi giờ, backend kiểm tra xung đột lớp/giáo viên, thứ tự bài và các dữ liệu học viên liên quan. Khi hủy, booking học bù, điểm danh đã ghi hoặc đơn nghỉ đang hiệu lực phải được xử lý trước. Lấy `revision` mới từ chi tiết buổi trước mỗi thao tác; nếu có người khác đã sửa, tải lại buổi và preview lại.
+Chỉ xử lý buổi `SCHEDULED` ở tương lai. Khi đổi giờ, backend kiểm tra xung đột lớp/giáo viên, thứ tự bài và các dữ liệu học viên liên quan. Hủy buổi đã gỡ ngày 19/11/2026 (route trả 404); buổi không dạy được thì đổi giờ hoặc dạy thay. Lấy `revision` mới từ chi tiết buổi trước mỗi thao tác; nếu có người khác đã sửa, tải lại buổi và preview lại.
 
 ```http
 POST /api/v1/academic/sessions/<sessionId>/reschedule

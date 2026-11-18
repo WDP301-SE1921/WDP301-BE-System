@@ -81,9 +81,8 @@ có trường mới. Các `DELETE` cứng cũ của Quản lý giữ nguyên.
 
 ### Sau khi gộp với `dev` (đợt 3 refactor thiết lập học vụ, 2026-11-10)
 
-- ADMIN dùng được như Quản lý: `POST /academic/sessions/:id/cancel`, `cancel-preview`, `sessions/bulk-cancel`,
-  `sessions/bulk-cancel-preview`, và `POST|PATCH|DELETE /academic/center-closures`. `GET /academic/center-closures`
-  mở cho mọi nhân sự, gồm ADMIN.
+- (Đã gỡ 19/11/2026) Các route hủy buổi (`sessions/:id/cancel`, `cancel-preview`, `sessions/bulk-cancel`,
+  `sessions/bulk-cancel-preview`) và `academic/center-closures` không còn, trả 404 cho mọi vai trò.
 - Thiết kế giáo trình dùng chung bản nháp (Q6): `GET /academic/lessons` và `GET /academic/feedback` trả mọi bài /
   phản hồi cho Quản lý, ADMIN và mọi người thiết kế giáo trình; giáo viên vẫn chỉ thấy phần của mình. Người thiết kế
   nào cũng gọi được `POST /academic/feedback/:id/resolve`, không còn 403 "Feedback is assigned to another designer".

@@ -93,7 +93,7 @@ Tổng cộng 20 tài khoản; tài khoản bị khóa/chờ duyệt không dùn
 - 14 đăng ký: 12 hoàn tất có thanh toán/enrollment/placement, một nháp có thể xác nhận thanh toán và một đã hủy.
 - Gói đang học, sắp hết hạn, chưa bắt đầu, hết hạn/kết thúc sớm; lớp đầy có sức chứa 2 và đúng 2 học sinh đang chiếm chỗ.
 - Một lịch sử chuyển lớp có hai placement liên tiếp; một thay đổi giáo viên có ngày hiệu lực và một buổi dạy thay.
-- Buổi quá khứ đã hoàn thành, buổi sắp tới chưa điểm danh, một buổi hủy; giáo viên/phòng không trùng giờ.
+- Buổi quá khứ đã hoàn thành, buổi sắp tới chưa điểm danh; không có buổi hủy và không có buổi trong kỳ nghỉ Tết (23 tháng Chạp → mùng 7); giáo viên/phòng không trùng giờ.
 - Nghỉ một buổi ở các trạng thái; tạm nghỉ được duyệt có điểm danh `EXCUSED` tương ứng.
 - Học bù `BOOKED`, `COMPLETED`, `MISSED`, `CANCELLED`; buổi gốc và buổi bù cùng `lessonId`. Buổi bổ sung 14:00–16:00 được tạo thủ công để không phụ thuộc ngày dạy của hai lớp song song.
 - 6 bài tập: nháp, đang nhận bài, đã đóng, công bố đáp án, điều chỉnh điểm và chưa có bài nộp. Có trắc nghiệm/tự luận, hai lần nộp, bài chờ chấm, điểm nháp/đã duyệt/đã công bố/bị thay thế.

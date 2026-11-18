@@ -76,7 +76,7 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 ### 1.10. Ngày buổi cuối đã lên lịch của lớp (B9b, 10/11)
 - `GET /classes` (mỗi phần tử) và `GET /programs/:id` (mỗi phần tử `classes[]`) thêm `scheduledUntil: "YYYY-MM-DD" | null`: ngày theo giờ Việt Nam của buổi cuối chưa hủy của lớp, `null` khi lớp chưa có buổi. Thêm một truy vấn `groupBy` cho mỗi trang, các field cũ giữ nguyên.
 
-### 1.11. Hủy buổi có dời bài, hủy nhiều buổi, tạo lịch nối tiếp (B6, 10/11)
+### 1.11. Hủy buổi có dời bài, hủy nhiều buổi, tạo lịch nối tiếp (B6, 10/11; phần hủy đã gỡ 19/11, xem 1.22)
 - `POST /academic/sessions/:id/cancel`: body thêm `shiftLessons?: boolean` (mặc định `false`, giữ nguyên hành vi, kiểm tra và response cũ). Khi `true`: các buổi `SCHEDULED` sau đó của lớp, cùng giáo trình (`lesson.unitId`, chỉ bài `LESSON`), mỗi buổi nhận bài của buổi liền trước; response là dòng buổi học cộng `shiftedSessions`, `pushedLesson { id, title, sequence }`, `pushedLessonFits` (còn buổi trống trong kỳ để bài bị đẩy vào lần tạo lịch sau). Buổi bị đổi bài có học bù đã đặt: 409 `LESSON_SHIFT_BLOCKED`, `details.sessions[{ sessionId, startsAt }]`.
 - Route mới, chỉ `MANAGER`: `POST /academic/sessions/:id/cancel-preview` (body `{ shiftLessons? }`), `POST /academic/sessions/bulk-cancel-preview` và `POST /academic/sessions/bulk-cancel` (body `{ sessionIds (1–200, không trùng), reason, shiftLessons? }`, header `Idempotency-Key`). Preview trả 200 kèm `blockers[{ sessionId, code }]`, không ghi gì. `bulk-cancel` chạy một transaction, được cả hoặc không được gì; bị chặn thì 409 `BULK_CANCEL_BLOCKED`, `details.blockers` với `code` ∈ `SESSION_NOT_FOUND`, `SESSION_LOCKED`, `MAKEUP_BOOKING_EXISTS`, `ATTENDANCE_RECORDED`, `LEAVE_EXISTS`, `LESSON_SHIFT_BLOCKED`. Mỗi lớp nhận một thông báo `SESSION_CANCELLED` (đích `CLASS`), không phải mỗi buổi một thông báo.
 - Tạo lịch (`session-preview`, `session-generations`): lớp đã có buổi chưa hủy của giáo trình thì khoảng mới bắt đầu từ bài liền sau bài của buổi cuối (C4); lớp chưa có thì gán theo vị trí buổi tính từ đầu kỳ, bỏ ngày nghỉ trung tâm. `INSUFFICIENT_LESSONS` chỉ kiểm buổi trong khoảng được yêu cầu (trước đây kiểm cả kỳ). Khoảng bắt đầu trước hoặc trùng buổi đã có của cùng giáo trình: 409 `SESSIONS_AFTER_RANGE_EXIST`, `details.lastScheduledDate`. `session-preview` thêm `mode` (`CONTINUE` | `TERM_POSITION`), `startLesson`, `unscheduledLessons` (bài không còn buổi trong kỳ).
@@ -85,7 +85,7 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - `session-generations` đọc buổi cuối (bài neo) và kiểm `SESSIONS_AFTER_RANGE_EXIST` bằng câu `FOR UPDATE` sau khi khóa lớp, để không bỏ sót một lệnh hủy có dời bài vừa commit (đọc thường trên TiDB dùng snapshot đầu transaction). `session-preview` vẫn đọc thường.
 - Migration `20261110000000_session_bulk_cancel`: bảng mới `session_bulk_cancels` lưu idempotency của hủy nhiều buổi.
 
-### 1.12. Ngày nghỉ trung tâm (B5, 10/11)
+### 1.12. Ngày nghỉ trung tâm (B5, 10/11; đã gỡ 19/11, xem 1.22)
 - Migration `20261110010000_center_closures`: bảng mới `center_closures`.
 - `GET /academic/center-closures?fromDate&toDate&page&limit&paginated` (MANAGER, STAFF, TEACHER, CURRICULUM_DESIGNER); `POST`, `PATCH /:id` (kèm `expectedRevision`), `DELETE /:id` chỉ MANAGER, có audit. Lỗi: 400 `INVALID_DATE_RANGE`, 400 `CLOSURE_TOO_LONG` (quá 92 ngày), 409 `CENTER_CLOSURE_OVERLAP` (`details` là ngày nghỉ bị chồng), 409 `REVISION_CONFLICT`, 404 `CENTER_CLOSURE_NOT_FOUND`.
 - `POST`/`PATCH` không tự hủy buổi: trả `affectedSessions` (tối đa 500 buổi `SCHEDULED` trong `[fromDate 00:00+07, toDate+1 00:00+07)`, kèm `classId`, `className`, `revision`, `lesson`) và `affectedTotal` để Quản lý hủy bằng `bulk-cancel`. Không gửi thông báo khi tạo ngày nghỉ; phụ huynh nhận thông báo hủy theo lớp từ `bulk-cancel`.
@@ -136,6 +136,14 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - Yêu cầu AI chấm khi máy chủ chưa cấu hình AI (`POST /api/v1/academic/submissions/:id/grade-ai`) nay trả mã `AI_UNAVAILABLE` (503) thay cho lỗi 503 không mã, để web báo "Trung tâm chưa bật AI chấm bài".
 
 ---
+
+### 1.22. Bỏ hủy buổi và ngày nghỉ trung tâm; kỳ nghỉ Tết cố định (19/11)
+- Trung tâm không hủy buổi. Buổi không dạy được thì đổi giờ (`POST /academic/sessions/:id/reschedule`) hoặc dạy thay.
+- Đã xóa, trả 404: `POST /academic/sessions/:id/cancel`, `sessions/:id/cancel-preview`, `sessions/bulk-cancel-preview`, `sessions/bulk-cancel`, `GET|POST /academic/center-closures`, `PATCH|DELETE /academic/center-closures/:id`. Mất luôn gia hạn bù khi hủy (`extendTerm` của hủy buổi); gia hạn từ đơn nghỉ dài hạn và gia hạn tay giữ nguyên.
+- Sinh lịch (`session-preview`, `session-generations`) bỏ qua kỳ nghỉ Tết **23 tháng Chạp → mùng 7** (bảng `TET_BREAKS` trong `src/common/lunar-new-year.ts`, 2025–2035). Bài kế tiếp rơi vào buổi đầu sau Tết.
+- Giảm Tết 50% giữ nguyên, đọc chung bảng mùng 1 với kỳ nghỉ. Mùng 1 Tết 2030 sửa thành 02/02 (lịch Việt Nam).
+- Không đổi schema. Buổi `CANCELLED` cũ, `cancelReason`, thông báo `SESSION_CANCELLED`, gia hạn `SESSION_CANCELLED` vẫn đọc được. Bộ lọc `status` của `scheduled-sessions` chỉ nhận `SCHEDULED`, `COMPLETED`.
+- Seed không còn buổi hủy, không có buổi trong kỳ nghỉ Tết; seed dashboard thông báo "Lịch nghỉ Tết" thay cho thông báo nghỉ lễ.
 
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
 
