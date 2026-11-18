@@ -1,8 +1,6 @@
 import { EnrollmentWorkflowsService } from '../../src/modules/academic/enrollment-workflows.service';
 import {
-  daysForOneMoreSession,
   extendEnrollment,
-  extendForCancelledSessions,
   inclusiveDays,
   resizeLeaveExtension,
 } from '../../src/modules/academic/enrollment-extension';
@@ -100,13 +98,6 @@ describe('term extension', () => {
       extendEnrollment(extensionTx(ended) as never, input, { skipIfNotExtendable: true }),
     ).resolves.toBeNull();
   });
-
-  it('adds days up to the next class weekday after the term end', () => {
-    // 01/01/2027 is a Friday (ISO 5). Class on Mon (1) and Wed (3): next is Mon 04/01 → 4 days.
-    expect(daysForOneMoreSession(day('2027-01-01'), [1, 3])).toBe(4);
-    // Class on Friday: the end day itself becomes the extra session → 1 day.
-    expect(daysForOneMoreSession(day('2027-01-01'), [5])).toBe(1);
-  });
 });
 
 describe('bảo lưu credit after a leave changes', () => {
@@ -143,27 +134,6 @@ describe('bảo lưu credit after a leave changes', () => {
   });
 });
 
-describe('cancelled sessions', () => {
-  it('extends every due student by one class day', async () => {
-    const tx = extensionTx({ id: 'enr-1', status: 'ACTIVE', endDate: day('2027-01-01') });
-    tx.classSession.findMany.mockResolvedValue([
-      {
-        id: 'ses-1',
-        classId: 'cls-1',
-        startsAt: new Date('2026-12-07T11:00:00.000Z'),
-        class: { weeklySchedules: [{ weekday: 1 }, { weekday: 3 }] },
-      },
-    ]);
-    tx.enrollment.findMany.mockResolvedValue([{ id: 'enr-1', endDate: day('2027-01-01') }]);
-    expect(await extendForCancelledSessions(tx as never, ['ses-1'], 'manager-1', 'Bão')).toBe(1);
-    expect(firstArg(tx.enrollmentExtension.create).data).toMatchObject({
-      source: 'SESSION_CANCELLED',
-      sessionId: 'ses-1',
-      days: 4,
-    });
-  });
-});
-
 describe('attendance correction', () => {
   const teacher = { id: 'teacher-1', role: 'TEACHER' } as never;
 
@@ -183,7 +153,11 @@ describe('attendance correction', () => {
     const repo = { transaction: (work: (t: unknown) => unknown): unknown => work(tx), db: {} };
     const access = { session: jest.fn().mockResolvedValue(undefined) };
     const notifications = { workflow: jest.fn().mockResolvedValue(undefined) };
-    const workflows = new EnrollmentWorkflowsService(repo as never, access as never, notifications as never);
+    const workflows = new EnrollmentWorkflowsService(
+      repo as never,
+      access as never,
+      notifications as never,
+    );
     // Family email lookup is not part of these rules.
     (workflows as unknown as { queueFamilyEmail: () => Promise<void> }).queueFamilyEmail =
       (): Promise<void> => Promise.resolve();
@@ -230,13 +204,13 @@ describe('attendance correction', () => {
     jest.useFakeTimers({ now: new Date('2026-11-15T14:00:00.000Z') });
     const session = { status: 'COMPLETED', startsAt: new Date('2026-11-15T12:00:00.000Z') };
     const source = service(session, { ...row, sourceBookings: [{ id: 'mk-1' }] });
-    expect(await codeOf(source.workflows.correctAttendance(teacher, 'ses-1', 'part-1', input))).toBe(
-      'MAKEUP_SOURCE_ABSENT',
-    );
+    expect(
+      await codeOf(source.workflows.correctAttendance(teacher, 'ses-1', 'part-1', input)),
+    ).toBe('MAKEUP_SOURCE_ABSENT');
     const excused = service(session, { ...row, attendance: 'EXCUSED' });
-    expect(await codeOf(excused.workflows.correctAttendance(teacher, 'ses-1', 'part-1', input))).toBe(
-      'EXCUSED_REQUIRES_LEAVE',
-    );
+    expect(
+      await codeOf(excused.workflows.correctAttendance(teacher, 'ses-1', 'part-1', input)),
+    ).toBe('EXCUSED_REQUIRES_LEAVE');
   });
 
   it('syncs the makeup booking of a replacement seat', async () => {

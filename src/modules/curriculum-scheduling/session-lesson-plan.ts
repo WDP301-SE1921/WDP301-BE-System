@@ -31,8 +31,8 @@ export function isClosed(date: string, closures: readonly ClosureRange[]): boole
 }
 
 /**
- * Weekly slots between two local dates, skipping center closures (B5).
- * `closures` defaults to none so seed data keeps its old calendar.
+ * Weekly slots between two local dates, skipping `closures` (the Tết breaks, see
+ * `common/lunar-new-year`). `closures` defaults to none.
  */
 export function slotsForRange(
   schedules: Array<Pick<ClassWeeklySchedule, 'weekday' | 'startTime' | 'endTime'>>,
@@ -58,50 +58,13 @@ export function slotsForRange(
   return result.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
 }
 
-export type ChainSession = { id: string; startsAt: Date; lessonId: string };
-
-export type LessonShift = {
-  /** Sessions whose lesson changes, in time order. */
-  changes: Array<{ sessionId: string; fromLessonId: string; toLessonId: string }>;
-  /** Lessons left without a session of this chain, in teaching order. */
-  pushedLessonIds: string[];
-};
-
-/**
- * Cancels `cancelledIds` inside one class + curriculum chain and moves every later lesson
- * back by one session per cancelled session (Q1 "Hủy và dời bài sang buổi sau").
- *
- * `chain` holds the cancelled sessions and every scheduled session after the earliest one,
- * all teaching lessons of the same curriculum. The result equals cancelling the sessions
- * one by one in time order, so single and bulk cancellation share it.
- */
-export function compactLessons(
-  chain: ChainSession[],
-  cancelledIds: ReadonlySet<string>,
-): LessonShift {
-  const ordered = [...chain].sort(
-    (a, b) => a.startsAt.getTime() - b.startsAt.getTime() || a.id.localeCompare(b.id),
-  );
-  const first = ordered.findIndex((row) => cancelledIds.has(row.id));
-  if (first < 0) return { changes: [], pushedLessonIds: [] };
-  const tail = ordered.slice(first);
-  const queue = tail.map((row) => row.lessonId);
-  const kept = tail.filter((row) => !cancelledIds.has(row.id));
-  const changes = kept.flatMap((row, index) =>
-    row.lessonId === queue[index]
-      ? []
-      : [{ sessionId: row.id, fromLessonId: row.lessonId, toLessonId: queue[index] }],
-  );
-  return { changes, pushedLessonIds: queue.slice(kept.length) };
-}
-
 export type PlannableLesson = { id: string; sequence: number };
 
 /**
  * Lessons for the slots of a requested range (C4).
  * - `anchorSequence` set: the class already taught this curriculum before the range, so the
  *   range continues with the lessons after that one.
- * - otherwise: the lesson matches the slot position from the start of the term, closures
+ * - otherwise: the lesson matches the slot position from the start of the term, Tết breaks
  *   excluded, so a class opened mid-term teaches what the other classes teach that week.
  * Returns the lesson queue starting at the first slot of the range.
  */

@@ -88,7 +88,6 @@ describe('curriculum session preview', () => {
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn().mockResolvedValue(null),
       },
-      centerClosure: { findMany: jest.fn().mockResolvedValue([]) },
       schedulePreview: {
         create: jest.fn().mockResolvedValue({ id: 'preview-1', expiresAt: new Date('2027-01-04') }),
       },

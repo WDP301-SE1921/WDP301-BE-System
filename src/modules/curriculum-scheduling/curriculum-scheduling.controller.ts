@@ -25,7 +25,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ParentCurriculumResponseDto } from '../academic/parent-learning-response.dto';
-import { SearchPageDto, ClassContentQueryDto, ParentCurriculumQueryDto } from '../academic/academic-list.dto';
+import {
+  SearchPageDto,
+  ClassContentQueryDto,
+  ParentCurriculumQueryDto,
+} from '../academic/academic-list.dto';
 import { AcademicErrorsFilter } from '../academic/academic-errors.filter';
 import {
   CreateCurriculumUnitDto,
@@ -38,21 +42,12 @@ import {
   ReviewNoteDto,
   LessonOrderDto,
   SessionRescheduleDto,
-  SessionCancelDto,
-  SessionCancelPreviewDto,
-  SessionBulkCancelDto,
-  SessionBulkCancelPreviewDto,
-  CenterClosureDto,
-  CenterClosureQueryDto,
-  UpdateCenterClosureDto,
   ImportCommitDto,
   SubmitCurriculumUnitDto,
   TechnicalReviewDto,
   ReviseCurriculumUnitDto,
 } from './curriculum-scheduling.dto';
 import { CurriculumSchedulingService } from './curriculum-scheduling.service';
-import { SessionCancellationService } from './session-cancellation.service';
-import { CenterClosureService } from './center-closure.service';
 
 @ApiExtraModels(ParentCurriculumResponseDto)
 @ApiTags('curriculum-scheduling')
@@ -60,11 +55,7 @@ import { CenterClosureService } from './center-closure.service';
 @UseFilters(AcademicErrorsFilter)
 @Controller({ path: 'academic', version: '1' })
 export class CurriculumSchedulingController {
-  constructor(
-    private readonly service: CurriculumSchedulingService,
-    private readonly cancellation: SessionCancellationService,
-    private readonly closures: CenterClosureService,
-  ) {}
+  constructor(private readonly service: CurriculumSchedulingService) {}
 
   @ApiOkResponse({
     schema: {
@@ -133,7 +124,11 @@ export class CurriculumSchedulingController {
 
   @Get('curriculum-units/:id/reviewers')
   @ApiOperation({ summary: 'List active teachers responsible for the curriculum program' })
-  reviewers(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Query() query: SearchPageDto): Promise<unknown> {
+  reviewers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Query() query: SearchPageDto,
+  ): Promise<unknown> {
     return this.service.reviewers(user, id, query);
   }
 
@@ -325,95 +320,5 @@ export class CurriculumSchedulingController {
     @Body() input: SessionRescheduleDto,
   ): Promise<unknown> {
     return this.service.reschedule(user, id, input, key);
-  }
-
-  @Post('sessions/:id/cancel')
-  @ApiOperation({
-    summary:
-      'Manager: cancel a session. shiftLessons=true moves every later lesson of the same curriculum back one session',
-  })
-  cancelSession(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-    @Headers('idempotency-key') key: string | undefined,
-    @Body() input: SessionCancelDto,
-  ): Promise<unknown> {
-    if (input.shiftLessons === true)
-      return this.cancellation.cancelWithShift(user, id, input, key);
-    if (input.extendTerm === true)
-      return this.service.cancelSession(user, id, input.reason, input.expectedRevision, key, true);
-    return this.service.cancelSession(user, id, input.reason, input.expectedRevision, key);
-  }
-
-  @Post('sessions/:id/cancel-preview')
-  @ApiOperation({ summary: 'Manager: what cancelling this session would block or change; writes nothing' })
-  cancelPreview(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-    @Body() input: SessionCancelPreviewDto,
-  ): Promise<unknown> {
-    return this.cancellation.cancelPreview(user, id, input);
-  }
-
-  @Post('sessions/bulk-cancel-preview')
-  @ApiOperation({ summary: 'Manager: preview cancelling up to 200 sessions; writes nothing' })
-  bulkCancelPreview(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() input: SessionBulkCancelPreviewDto,
-  ): Promise<unknown> {
-    return this.cancellation.bulkCancelPreview(user, input);
-  }
-
-  @Post('sessions/bulk-cancel')
-  @ApiOperation({
-    summary: 'Manager: cancel up to 200 sessions in one transaction (all or nothing)',
-  })
-  bulkCancel(
-    @CurrentUser() user: AuthenticatedUser,
-    @Headers('idempotency-key') key: string | undefined,
-    @Body() input: SessionBulkCancelDto,
-  ): Promise<unknown> {
-    return this.cancellation.bulkCancel(user, input, key);
-  }
-
-  @Get('center-closures')
-  @ApiOperation({ summary: 'Staff: center closures overlapping fromDate–toDate' })
-  centerClosures(
-    @CurrentUser() user: AuthenticatedUser,
-    @Query() query: CenterClosureQueryDto,
-  ): Promise<unknown> {
-    return this.closures.list(user, query);
-  }
-
-  @Post('center-closures')
-  @ApiOperation({
-    summary: 'Manager: add a center closure; returns the scheduled sessions inside it',
-  })
-  createCenterClosure(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() input: CenterClosureDto,
-  ): Promise<unknown> {
-    return this.closures.create(user, input);
-  }
-
-  @Patch('center-closures/:id')
-  @ApiOperation({
-    summary: 'Manager: change a center closure; returns the scheduled sessions inside it',
-  })
-  updateCenterClosure(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-    @Body() input: UpdateCenterClosureDto,
-  ): Promise<unknown> {
-    return this.closures.update(user, id, input);
-  }
-
-  @Delete('center-closures/:id')
-  @ApiOperation({ summary: 'Manager: remove a center closure' })
-  deleteCenterClosure(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-  ): Promise<unknown> {
-    return this.closures.remove(user, id);
   }
 }

@@ -394,11 +394,26 @@ describe('Shared curriculum and generated sessions', () => {
       .set('Idempotency-Key', 'move-first-session')
       .send(move)
       .expect(201);
-    const cancelled = await call('MANAGER', 'post', `sessions/${sessionId}/cancel`)
-      .set('Idempotency-Key', 'cancel-first-session')
-      .send({ reason: 'Nghỉ học', expectedRevision: 2 })
-      .expect(201);
-    expect((cancelled.body as Envelope<{ status: string }>).data.status).toBe('CANCELLED');
+    // Session cancel and center closures were removed on 19/11/2026.
+    for (const route of [
+      `sessions/${sessionId}/cancel`,
+      `sessions/${sessionId}/cancel-preview`,
+      'sessions/bulk-cancel-preview',
+      'sessions/bulk-cancel',
+    ])
+      await call('MANAGER', 'post', route)
+        .set('Idempotency-Key', 'cancel-first-session')
+        .send({ reason: 'Nghỉ học', expectedRevision: 2, sessionIds: [sessionId] })
+        .expect(404);
+    const kept = await call('MANAGER', 'get', `scheduled-sessions/${sessionId}`).expect(200);
+    expect((kept.body as Envelope<{ status: string; revision: number }>).data).toMatchObject({
+      status: 'SCHEDULED',
+      revision: 2,
+    });
+    await call('MANAGER', 'get', 'center-closures').expect(404);
+    await call('MANAGER', 'post', 'center-closures')
+      .send({ fromDate: '2027-02-05', toDate: '2027-02-12', reason: 'Tết' })
+      .expect(404);
   }, 90_000);
 
   it('previews and atomically imports a CSV draft, then allows deleting the unused draft', async () => {

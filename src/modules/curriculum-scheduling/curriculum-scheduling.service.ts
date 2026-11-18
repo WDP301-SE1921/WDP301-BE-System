@@ -1,4 +1,3 @@
-import { extendForCancelledSessions } from '../academic/enrollment-extension';
 import { NotificationEventsService } from '../notifications/notification-events.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
@@ -48,8 +47,8 @@ import {
   vietnamDayStart,
   type ClosureRange,
 } from './session-lesson-plan';
-import { closuresBetween } from './center-closure.service';
-import { SessionCancellationRepository } from './session-cancellation.repository';
+import { tetBreaks } from '../../common/lunar-new-year';
+import { SessionRowsRepository } from './session-rows.repository';
 import { roleAllowed } from '../../common/auth/role-access';
 
 // Seeds and older callers import the calendar helper from here.
@@ -92,7 +91,7 @@ function slotsTeacherIds(classroom: ClassWithSchedule, slots: PlannedSlot[]): st
 @Injectable()
 export class CurriculumSchedulingService {
   // Stateless SQL helpers; created here so existing callers keep the two-argument constructor.
-  private readonly sessionRows = new SessionCancellationRepository();
+  private readonly sessionRows = new SessionRowsRepository();
 
   constructor(
     private readonly db: DatabaseService,
@@ -1320,8 +1319,8 @@ export class CurriculumSchedulingService {
       ]);
       this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
-      // Read after the program and class locks: a concurrent cancel that shifts lessons
-      // locks the class first, so the anchor lesson cannot change under this generation.
+      // Read after the program and class locks, so the anchor lesson cannot change under this
+      // generation.
       const context = await this.planContext(tx, classId, unit, input.fromDate, true);
       if (input.previewId) {
         const preview = await tx.schedulePreview.findUnique({ where: { id: input.previewId } });
@@ -1786,119 +1785,6 @@ export class CurriculumSchedulingService {
     });
   }
 
-  async cancelSession(
-    user: AuthenticatedUser,
-    id: string,
-    reason: string,
-    expectedRevision: number,
-    key: string | undefined,
-    extendTerm = false,
-  ): Promise<unknown> {
-    this.requireRole(user, 'MANAGER');
-    const idempotencyKey = key?.trim();
-    this.assert(
-      idempotencyKey && idempotencyKey.length <= 191,
-      'IDEMPOTENCY_KEY_REQUIRED',
-      'Idempotency-Key is required',
-      HttpStatus.BAD_REQUEST,
-    );
-    const hash = createHash('sha256')
-      .update(
-        JSON.stringify({
-          actorId: user.id,
-          action: 'cancel',
-          id,
-          reason,
-          expectedRevision,
-          // Only present when set, so keys used before this flag keep their hash.
-          ...(extendTerm ? { extendTerm } : {}),
-        }),
-      )
-      .digest('hex');
-    return this.transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM class_sessions WHERE id = ${id} FOR UPDATE`;
-      const prior = await tx.sessionMutation.findUnique({
-        where: { sessionId_key: { sessionId: id, key: idempotencyKey } },
-      });
-      if (prior) {
-        this.assert(
-          prior.actorUserId === user.id && prior.requestHash === hash,
-          'IDEMPOTENCY_CONFLICT',
-          'Key was used for another change',
-        );
-        return prior.response;
-      }
-      const session = await tx.classSession.findUnique({ where: { id } });
-      this.assert(session, 'SESSION_NOT_FOUND', 'Session not found', HttpStatus.NOT_FOUND);
-      this.assert(
-        session.status === 'SCHEDULED' && session.startsAt > new Date(),
-        'SESSION_LOCKED',
-        'Only future scheduled sessions can be cancelled',
-      );
-      this.assert(
-        session.revision === expectedRevision,
-        'REVISION_CONFLICT',
-        'Session changed; reload it',
-      );
-      const [bookings, attendance, leaves] = await Promise.all([
-        tx.makeupBooking.count({
-          where: {
-            status: 'BOOKED',
-            OR: [{ original: { sessionId: id } }, { replacement: { sessionId: id } }],
-          },
-        }),
-        tx.sessionParticipant.count({ where: { sessionId: id, attendance: { not: 'UNMARKED' } } }),
-        tx.leaveRequest.count({
-          where: { sessionId: id, status: { in: ['PENDING', 'APPROVED'] } },
-        }),
-      ]);
-      this.assert(!bookings, 'MAKEUP_BOOKING_EXISTS', 'Resolve makeup bookings before cancelling');
-      this.assert(
-        !attendance && !leaves,
-        'SESSION_HAS_DEPENDENCIES',
-        'Resolve attendance and leave records before cancelling',
-      );
-      const result = await tx.classSession.update({
-        where: { id },
-        data: {
-          status: 'CANCELLED',
-          cancelReason: reason.trim(),
-          cancelledAt: new Date(),
-          revision: { increment: 1 },
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          actorUserId: user.id,
-          action: 'CLASS_SESSION_CANCELLED',
-          entityType: 'ClassSession',
-          entityId: id,
-          afterData: { reason: reason.trim(), ...(extendTerm ? { extendTerm } : {}) },
-        },
-      });
-      if (extendTerm)
-        await extendForCancelledSessions(tx, [id], user.id, `Buổi trung tâm huỷ: ${reason.trim()}`);
-      await tx.sessionMutation.create({
-        data: {
-          sessionId: id,
-          actorUserId: user.id,
-          key: idempotencyKey,
-          requestHash: hash,
-          response: result,
-        },
-      });
-      await this.notifications.session(
-        tx,
-        user.id,
-        id,
-        'SESSION_CANCELLED',
-        `Buổi học đã bị huỷ: ${reason.trim()}`,
-        `cancel:${id}:${idempotencyKey}`,
-      );
-      return result;
-    });
-  }
-
   private async validateReschedule(
     tx: Prisma.TransactionClient | DatabaseService,
     id: string,
@@ -2032,11 +1918,11 @@ export class CurriculumSchedulingService {
   }
 
   /**
-   * Inputs of `plan` that come from other rows: center closures over the unit term and the
-   * lesson of the class's last session of this unit (C4). Load after locking the class.
+   * Inputs of `plan`: the Tết breaks over the unit term and the lesson of the class's last
+   * session of this unit (C4). Load after locking the class.
    * `lock`: read the anchor with `FOR UPDATE` (generate). A plain read inside a TiDB
    * pessimistic transaction uses the snapshot from before the class lock was granted, so it
-   * could miss a cancel-with-shift that committed while this transaction waited.
+   * could miss a change that committed while this transaction waited.
    */
   private async planContext(
     db: Prisma.TransactionClient,
@@ -2045,10 +1931,10 @@ export class CurriculumSchedulingService {
     fromDate: string,
     lock: boolean,
   ): Promise<PlanContext> {
-    const [closures, last] = await Promise.all([
-      closuresBetween(db, dateOnly(unit.fromDate), dateOnly(unit.toDate)),
-      lock ? this.lockedAnchor(db, classId, unit) : this.anchor(db, classId, unit),
-    ]);
+    const closures = tetBreaks(dateOnly(unit.fromDate), dateOnly(unit.toDate));
+    const last = lock
+      ? await this.lockedAnchor(db, classId, unit)
+      : await this.anchor(db, classId, unit);
     if (last)
       this.assert(
         last.startsAt < vietnamDayStart(fromDate),
@@ -2141,9 +2027,7 @@ export class CurriculumSchedulingService {
       dateOnly(unit.toDate),
       context.closures,
     );
-    const inRange = term.filter(
-      (item) => item.date >= input.fromDate && item.date <= input.toDate,
-    );
+    const inRange = term.filter((item) => item.date >= input.fromDate && item.date <= input.toDate);
     this.assert(inRange.length, 'NO_SESSIONS', 'No class sessions fall in the requested range');
     // Only the requested range must have a lesson for every slot: later slots are generated
     // later and continue from the class's last lesson.
