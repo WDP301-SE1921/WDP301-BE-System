@@ -226,7 +226,8 @@ describe('Dashboard seed on top of the demo dataset', () => {
     expect(
       await db.outboxEvent.count({ where: { status: { in: ['PENDING', 'PROCESSING'] } } }),
     ).toBe(0);
-  });
+    // Reads every participant with its enrollment: a few seconds on a local MySQL.
+  }, 30_000);
 
   it('creates no cancelled sessions and no session inside the Tết break', async () => {
     expect(await db.classSession.count({ where: { status: 'CANCELLED' } })).toBe(0);

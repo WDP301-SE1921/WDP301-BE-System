@@ -1547,7 +1547,10 @@ class DashboardPlan {
     for (const pkg of this.random.shuffle(this.packages)) {
       if (made >= 10) break;
       if (!pkg.confirmedAt || !pkg.classPlan.bulk) continue;
-      const until = pkg.endedAt ? studyDay(pkg.endedAt) : pkg.end;
+      // A student who quits later also ends packages that already ran out, so endedAt can fall
+      // after the package end: the pause must stay inside the package either way.
+      const until =
+        pkg.endedAt && studyDay(pkg.endedAt) < pkg.end ? studyDay(pkg.endedAt) : pkg.end;
       const earliest = addDays(pkg.start, 7);
       const latest = addDays(until, -16);
       if (latest <= earliest) continue;

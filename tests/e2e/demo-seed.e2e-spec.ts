@@ -13,7 +13,7 @@ import { validateEnvironment } from '../../src/config/configuration';
 import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
 import { DatabaseService } from '../../src/database/orm/database.service';
-import { TET_BREAKS } from '../../src/common/lunar-new-year';
+import { TET_BREAKS, tetBreaks } from '../../src/common/lunar-new-year';
 import { seedDemo } from '../../src/database/seeds/seed-demo';
 import {
   addDays,
@@ -112,11 +112,9 @@ describe('Demo seed against MySQL and shared APIs', () => {
         where: { programId: classroom.programId, status: 'APPROVED' },
         include: { lessons: true },
       });
-      const slots = slotsForRange(
-        classroom.weeklySchedules,
-        dateOnly(unit.fromDate),
-        dateOnly(unit.toDate),
-      );
+      const from = dateOnly(unit.fromDate);
+      const to = dateOnly(unit.toDate);
+      const slots = slotsForRange(classroom.weeklySchedules, from, to, tetBreaks(from, to));
       const lessons = unit.lessons
         .filter((lesson) => lesson.kind === 'LESSON')
         .sort((a, b) => a.sequence - b.sequence);
