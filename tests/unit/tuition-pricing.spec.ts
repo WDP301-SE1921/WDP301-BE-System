@@ -33,6 +33,11 @@ describe('Tết half-month price', () => {
     expect(priceTuition(fee, day('2027-01-06'), 1).tetDiscountAmount).toBeNull();
   });
 
+  it('uses the Vietnamese mùng 1 Tết shared with the Tết break (2030-02-02)', () => {
+    expect(priceTuition(fee, day('2030-02-02'), 1).tetDiscountAmount?.toString()).toBe('400000');
+    expect(priceTuition(fee, day('2030-02-03'), 1).tetDiscountAmount).toBeNull();
+  });
+
   it('rounds the discount down to whole đồng', () => {
     const odd = priceTuition(new Prisma.Decimal(850001), day('2027-02-01'), 1);
     expect(odd.tetDiscountAmount?.toString()).toBe('425000');

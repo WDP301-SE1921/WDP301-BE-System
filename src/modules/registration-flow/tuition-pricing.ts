@@ -1,22 +1,7 @@
 import { Prisma } from '@prisma/client';
 
-/**
- * Mùng 1 Tết (Lunar New Year, Vietnam) by year, as local dates. Add the next years before 2035.
- * A package month that contains this day costs half.
- */
-export const LUNAR_NEW_YEAR: readonly string[] = [
-  '2025-01-29',
-  '2026-02-17',
-  '2027-02-06',
-  '2028-01-26',
-  '2029-02-13',
-  '2030-02-03',
-  '2031-01-23',
-  '2032-02-11',
-  '2033-01-31',
-  '2034-02-19',
-  '2035-02-08',
-];
+// Mùng 1 Tết comes from the same table as the Tết break of schedule generation.
+import { LUNAR_NEW_YEAR } from '../../common/lunar-new-year';
 
 /** Share of the monthly fee taken off the package month that contains mùng 1 Tết. */
 export const TET_DISCOUNT_PERCENT = 50;
@@ -146,7 +131,9 @@ export function quoteRefund(
   const fee = (order.listAmount ?? order.quotedAmount).div(order.packageMonths);
   const parts = order.startDate ? packageMonths(order.startDate, order.packageMonths, fee) : [];
   // Legacy bills were never discounted for Tết: price every month at the fee.
-  const priced = order.listAmount ? parts : parts.map((part) => ({ ...part, price: fee, tet: false }));
+  const priced = order.listAmount
+    ? parts
+    : parts.map((part) => ({ ...part, price: fee, tet: false }));
   const notStarted = priced
     .filter((part) => part.from > asOf)
     .reduce((sum, part) => sum.add(part.price), new Prisma.Decimal(0));
