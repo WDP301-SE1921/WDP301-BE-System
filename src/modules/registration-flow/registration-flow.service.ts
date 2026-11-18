@@ -1503,7 +1503,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     this.requireRoles(user, 'STAFF', 'PARENT');
     const order = await this.db.registrationOrder.findUnique({
       where: { id },
-      include: registrationInclude,
+      include: user.role === 'PARENT' ? parentRegistrationInclude : registrationInclude,
     });
     this.assert(order, 'REGISTRATION_NOT_FOUND', 'Registration not found', HttpStatus.NOT_FOUND);
     this.assertCanReadRegistration(user, order.parentEmail);
@@ -1530,7 +1530,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     const [orders, total] = await Promise.all([
       this.db.registrationOrder.findMany({
         where,
-        include: billInclude,
+        include: parentBillInclude,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page.page - 1) * page.limit,
         take: page.limit,
@@ -1544,7 +1544,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     this.requireRoles(user, 'STAFF', 'PARENT');
     const order = await this.db.registrationOrder.findUnique({
       where: { id },
-      include: billInclude,
+      include: user.role === 'PARENT' ? parentBillInclude : billInclude,
     });
     this.assert(order, 'BILL_NOT_FOUND', 'Bill not found', HttpStatus.NOT_FOUND);
     if (user.role === 'PARENT') {
@@ -1750,7 +1750,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
     this.requireRoles(user, 'STAFF', 'PARENT');
     const order = await this.db.registrationOrder.findUnique({
       where: { id },
-      include: registrationInclude,
+      include: user.role === 'PARENT' ? parentRegistrationInclude : registrationInclude,
     });
     this.assert(order?.payment, 'RECEIPT_NOT_FOUND', 'Receipt not found', HttpStatus.NOT_FOUND);
     this.assertCanReadRegistration(user, order.parentEmail);
@@ -2643,11 +2643,21 @@ const paymentWithRefunds = {
   include: { refunds: { orderBy: { createdAt: 'asc' } } },
 } satisfies Prisma.PaymentDefaultArgs;
 
+// Internal decisions and reasons stay private until the refund is approved.
+const parentPaymentWithRefunds = {
+  include: { refunds: { where: { status: 'APPROVED' }, orderBy: { createdAt: 'asc' } } },
+} satisfies Prisma.PaymentDefaultArgs;
+
 const registrationInclude = {
   targetStudent: { select: { id: true, fullName: true, grade: true } },
   class: { include: { program: true, weeklySchedules: true } },
   payment: paymentWithRefunds,
   enrollment: true,
+} satisfies Prisma.RegistrationOrderInclude;
+
+const parentRegistrationInclude = {
+  ...registrationInclude,
+  payment: parentPaymentWithRefunds,
 } satisfies Prisma.RegistrationOrderInclude;
 
 const billInclude = {
@@ -2660,6 +2670,11 @@ const billInclude = {
   },
   class: { include: { program: true, weeklySchedules: true } },
   payment: paymentWithRefunds,
+} satisfies Prisma.RegistrationOrderInclude;
+
+const parentBillInclude = {
+  ...billInclude,
+  payment: parentPaymentWithRefunds,
 } satisfies Prisma.RegistrationOrderInclude;
 
 type BillOrder = Prisma.RegistrationOrderGetPayload<{ include: typeof billInclude }>;
@@ -2833,7 +2848,7 @@ type RefundRow = {
   decidedAt: Date | null;
 };
 
-/** Refund as shown on bills and receipts (all statuses; only APPROVED reduces the paid amount). */
+/** The caller scopes visibility: staff see all statuses, parent queries include APPROVED only. */
 export function refundView(refund: RefundRow): Record<string, unknown> {
   return {
     id: refund.id,

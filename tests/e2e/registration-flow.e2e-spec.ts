@@ -219,6 +219,8 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
 
   it('attaches enrollment immediately after staff confirmation, replays payment once and preserves parent receipts', async () => {
     expect(await db.enrollment.count({ where: { registrationOrderId: registrationId } })).toBe(0);
+    const unpaid = await call('PARENT', 'get', `registrations/${registrationId}/bill`).expect(200);
+    const quoted = (unpaid.body as Envelope<{ pricing: { total: string } }>).data.pricing.total;
     const confirm = (): request.Test =>
       call('STAFF', 'post', `registrations/${registrationId}/confirm-payment`)
         .set('Idempotency-Key', 'registration-fixture-payment')
@@ -231,6 +233,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       where: { registrationOrderId: registrationId },
     });
     expect(payment.confirmedByManagerId).toBe(staffId);
+    expect(Number(payment.amount)).toBe(Number(quoted));
     expect(
       await db.enrollment.findUniqueOrThrow({ where: { registrationOrderId: registrationId } }),
     ).toMatchObject({ studentProfileId: studentId, status: 'ACTIVE' });
@@ -248,7 +251,8 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
     const weekday = new Date(`${tomorrow}T00:00:00Z`).getUTCDay() || 7;
     const text = (email.payload as { text: string }).text;
     expect(text).toContain(`Lịch học: ${weekdayName(weekday)}, 18:00-20:00.`);
-    expect(text).toContain('Số tiền: 2.400.000 VND.');
+    // A package may include a discounted Tết month; the message must match the unpaid snapshot.
+    expect(text).toContain(`Số tiền: ${Number(quoted).toLocaleString('vi-VN')} VND.`);
   });
 
   it('refuses a new class in a program the ADMIN soft-deleted, on both class routes', async () => {

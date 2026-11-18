@@ -568,6 +568,7 @@ export class CreateRefundDto {
   @IsString()
   @MinLength(1)
   @MaxLength(300)
+  @Matches(/\S/, { message: 'reason must contain non-whitespace characters' })
   reason!: string;
 }
 

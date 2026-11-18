@@ -1292,8 +1292,11 @@ export class EnrollmentWorkflowsService {
     input: CorrectAttendanceDto,
   ): Promise<unknown> {
     roles(user, 'TEACHER', 'MANAGER');
-    if (user.role === 'TEACHER') await this.access.session(user, sessionId);
     return this.repo.transaction(async (tx) => {
+      // bookMakeup locks the same session before reading its source attendance. Lock first so
+      // RepeatableRead sees that booking's commit and cannot turn its source present concurrently.
+      await tx.$queryRaw`SELECT id FROM class_sessions WHERE id = ${sessionId} FOR UPDATE`;
+      if (user.role === 'TEACHER') await this.access.session(user, sessionId, tx);
       const session = await tx.classSession.findUniqueOrThrow({ where: { id: sessionId } });
       assertRule(
         session.status === 'COMPLETED',

@@ -178,10 +178,14 @@ export class DecisionDto extends ReasonDto {
 }
 export class ExtendEnrollmentDto {
   @ApiProperty({ minimum: 1, maximum: 90 }) @IsInt() @Min(1) @Max(90) days!: number;
-  @ApiProperty() @IsString() @MinLength(1) @MaxLength(300) reason!: string;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(300)
+  @Matches(/\S/, { message: 'reason must contain non-whitespace characters' })
+  reason!: string;
 }
 export class CorrectAttendanceDto {
-  @ApiProperty() @IsString() @MinLength(1) @MaxLength(300) reason!: string;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(300)
+  @Matches(/\S/, { message: 'reason must contain non-whitespace characters' })
+  reason!: string;
   @ApiProperty({ enum: ['PRESENT', 'ABSENT'] })
   @IsEnum({ PRESENT: 'PRESENT', ABSENT: 'ABSENT' })
   status!: 'PRESENT' | 'ABSENT';

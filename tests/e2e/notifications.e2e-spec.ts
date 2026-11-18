@@ -517,11 +517,18 @@ describe('Notification inbox, transactions and realtime', () => {
     const auth = await app.get(AuthService).login('parent@parent-mobile.test', 'ParentMobile123!');
     await expect(connect(auth.tokens.refreshToken)).rejects.toThrow('AUTH_UNAUTHORIZED');
     const client = await connect(auth.tokens.accessToken);
+    const leaked = jest.fn();
+    client.on('notification.created', leaked);
     const disconnected = event(client, 'disconnect');
     await http(auth.tokens.accessToken, 'post', 'auth/logout').expect(200);
     await notify('after-logout');
-    await app.get(NotificationsWorker).processDue();
+    // Exercise the pre-send authorization guard directly. A worker tick can be busy or can
+    // select a different pending batch; it is not a reliable barrier for revoking this socket.
+    await app
+      .get(NotificationsGateway)
+      .deliver(ids.parent, 'notification.created', { notificationId: 'after-logout' });
     await disconnected;
+    expect(leaked).not.toHaveBeenCalled();
     const live = await connect(token);
     const disabled = event(live, 'disconnect');
     await db.user.update({ where: { id: ids.parent }, data: { status: 'DISABLED' } });

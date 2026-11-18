@@ -153,6 +153,7 @@ describe('Dashboard seed on top of the demo dataset', () => {
     for (const row of grades) expect(row._count).toBeGreaterThan(40);
   });
 
+  // This checks thousands of real bulk-seed participants and assertions, not a unit fixture.
   it('keeps orders, payments, participants, makeups and grades consistent', async () => {
     const orders = await db.registrationOrder.findMany({
       include: { payment: true, enrollment: { include: { placements: true } } },
@@ -225,7 +226,7 @@ describe('Dashboard seed on top of the demo dataset', () => {
     expect(
       await db.outboxEvent.count({ where: { status: { in: ['PENDING', 'PROCESSING'] } } }),
     ).toBe(0);
-  });
+  }, 60_000);
 
   it('respects seats, schedules, leave rules and the seeding instant', async () => {
     const sessions = await db.classSession.findMany({

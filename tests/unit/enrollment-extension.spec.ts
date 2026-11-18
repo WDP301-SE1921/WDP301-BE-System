@@ -170,8 +170,9 @@ describe('attendance correction', () => {
   function service(
     session: Record<string, unknown>,
     row: Record<string, unknown> | null,
-  ): { workflows: EnrollmentWorkflowsService; tx: Record<string, Mocks> } {
+  ): { workflows: EnrollmentWorkflowsService; tx: FakeTx } {
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       classSession: { findUniqueOrThrow: jest.fn().mockResolvedValue(session) },
       sessionParticipant: {
         findFirst: jest.fn().mockResolvedValue(row),
@@ -187,7 +188,7 @@ describe('attendance correction', () => {
     // Family email lookup is not part of these rules.
     (workflows as unknown as { queueFamilyEmail: () => Promise<void> }).queueFamilyEmail =
       (): Promise<void> => Promise.resolve();
-    return { workflows, tx };
+    return { workflows, tx: tx as unknown as FakeTx };
   }
 
   const row = {
