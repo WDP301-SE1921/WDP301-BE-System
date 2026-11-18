@@ -1,3 +1,4 @@
+import { tetBreaks } from '../../common/lunar-new-year';
 import type { ClassSession, Prisma } from '@prisma/client';
 import {
   lastMonthlySlots,
@@ -43,6 +44,7 @@ export async function seedSessions(
       classroom.weeklySchedules,
       dateOnly(catalog.from),
       dateOnly(catalog.to),
+      tetBreaks(dateOnly(catalog.from), dateOnly(catalog.to)),
     );
     const last = lastMonthlySlots(slots);
     const regular = catalog.lessons[programKey].filter((lesson) => lesson.kind === 'LESSON');
@@ -60,7 +62,6 @@ export async function seedSessions(
           : regular[regularIndex++];
       if (!lesson) throw new Error(`Not enough approved content for ${classroom.name}`);
       const past = slot.startsAt < localInstant(today);
-      const cancelled = key === 'physics-8-closed' && index === slots.length - 2;
       const teacherId =
         key === 'math-8-a' && index === 4
           ? users['substitute-teacher'].id
@@ -78,12 +79,10 @@ export async function seedSessions(
           generationId: generation.id,
           startsAt: slot.startsAt,
           endsAt: slot.endsAt,
-          status: cancelled ? 'CANCELLED' : past ? 'COMPLETED' : 'SCHEDULED',
+          status: past ? 'COMPLETED' : 'SCHEDULED',
           summary: past
             ? `Đã hoàn thành: ${lesson.title}. Học sinh luyện tập và trao đổi các lỗi thường gặp.`
             : null,
-          cancelReason: cancelled ? 'Phòng học bảo trì; trung tâm đã thông báo phụ huynh.' : null,
-          cancelledAt: cancelled ? localInstant(today, 8) : null,
         },
       });
       result[key].push(session);
@@ -103,7 +102,7 @@ export async function seedSessions(
             row.effectiveFrom <= session.startsAt &&
             (!row.effectiveTo || row.effectiveTo > session.startsAt),
         );
-        if (placement?.classId !== classroom.id || cancelled) continue;
+        if (placement?.classId !== classroom.id) continue;
         await tx.sessionParticipant.upsert({
           where: { sessionId_enrollmentId: { sessionId: session.id, enrollmentId: enrollment.id } },
           update: {},

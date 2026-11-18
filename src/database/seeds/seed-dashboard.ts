@@ -4,6 +4,7 @@ import {
   lastMonthlySlots,
   slotsForRange,
 } from '../../modules/curriculum-scheduling/curriculum-scheduling.service';
+import { tetBreaks } from '../../common/lunar-new-year';
 import { moneyText, weeklySlotsText } from '../../modules/registration-flow/registration-text';
 import { SUBJECTS, TOPICS, lessonContent } from './curriculum-content';
 import {
@@ -18,13 +19,11 @@ import {
 } from './seed-calendar';
 import {
   ANNOUNCEMENTS,
-  CANCEL_REASONS,
   DECLINE_NOTES,
   FAMILY_NAMES,
   FEMALE_GIVEN,
   FEMALE_MIDDLE,
   GRADE_FEEDBACK,
-  HOLIDAYS,
   LEAVE_REASONS,
   MALE_GIVEN,
   MALE_MIDDLE,
@@ -496,6 +495,11 @@ async function loadContext(prisma: PrismaClient, today: Date, now: Date): Promis
   };
 }
 
+/** `YYYY-MM-DD` as `dd/mm`. */
+function dayMonth(date: string): string {
+  return `${date.slice(8)}/${date.slice(5, 7)}`;
+}
+
 class DashboardPlan {
   readonly rows: PlanRows = {
     users: [],
@@ -834,11 +838,9 @@ class DashboardPlan {
     const plans = this.classes
       .filter((classPlan) => classPlan.bulk)
       .map((classPlan) => {
-        const slots = slotsForRange(
-          classPlan.schedules,
-          dateOnly(classPlan.firstDay),
-          dateOnly(classPlan.lastDay),
-        );
+        const from = dateOnly(classPlan.firstDay);
+        const to = dateOnly(classPlan.lastDay);
+        const slots = slotsForRange(classPlan.schedules, from, to, tetBreaks(from, to));
         return {
           classPlan,
           history: slots.filter((slot) => slot.date < termKey),
@@ -1024,30 +1026,7 @@ class DashboardPlan {
     ];
     for (const [index, { slot, lessonId, generationId }] of lessons.entries()) {
       const day = new Date(`${slot.date}T00:00:00Z`);
-      let status: SessionStatus = slot.endsAt <= ctx.cutoff ? 'COMPLETED' : 'SCHEDULED';
-      let cancelReason: string | null = null;
-      let cancelledAt: Date | null = null;
-      const holiday = HOLIDAYS[slot.date.slice(5)];
-      if (holiday) {
-        const announced = new Date(
-          Math.max(
-            localInstant(addDays(day, -7), 10).getTime(),
-            classPlan.createdAt.getTime() + HOUR,
-          ),
-        );
-        if (announced <= ctx.cutoff) {
-          status = 'CANCELLED';
-          cancelReason = holiday;
-          cancelledAt = announced;
-        }
-      } else if (this.random.chance(0.006)) {
-        const when = new Date(slot.startsAt.getTime() - this.random.int(2, 30) * HOUR);
-        if (when <= ctx.cutoff && when > classPlan.createdAt) {
-          status = 'CANCELLED';
-          cancelReason = this.random.pick(CANCEL_REASONS);
-          cancelledAt = when;
-        }
-      }
+      const status: SessionStatus = slot.endsAt <= ctx.cutoff ? 'COMPLETED' : 'SCHEDULED';
       const session: SessionPlan = {
         id: bulkId(`session_${classPlan.key}_${index + 1}`),
         classPlan,
@@ -1058,21 +1037,12 @@ class DashboardPlan {
         day,
         status,
         summary: status === 'COMPLETED' ? this.random.pick(SESSION_SUMMARIES) : null,
-        cancelReason,
-        cancelledAt,
+        cancelReason: null,
+        cancelledAt: null,
         generationId,
         seats: 0,
       };
       classPlan.sessions.push(session);
-      if (cancelledAt)
-        this.audit({
-          actorUserId: ctx.manager.id,
-          action: 'CLASS_SESSION_CANCELLED',
-          entityType: 'ClassSession',
-          entityId: session.id,
-          afterData: { reason: cancelReason },
-          createdAt: cancelledAt,
-        });
     }
   }
 
@@ -1975,13 +1945,20 @@ class DashboardPlan {
           createdAt: localInstant(addDays(classPlan.firstDay, -3), 10),
         },
       ];
-      for (const session of classPlan.sessions)
-        if (session.cancelledAt && session.cancelReason && HOLIDAYS[dateOnly(session.day).slice(5)])
+      for (const tet of tetBreaks(dateOnly(classPlan.firstDay), dateOnly(classPlan.lastDay))) {
+        const announced = new Date(
+          Math.max(
+            localInstant(addDays(new Date(`${tet.fromDate}T00:00:00Z`), -7), 10).getTime(),
+            classPlan.createdAt.getTime() + HOUR,
+          ),
+        );
+        if (announced <= ctx.cutoff)
           notices.push({
-            title: `Lịch nghỉ lễ ngày ${dateOnly(session.day).slice(8)}/${dateOnly(session.day).slice(5, 7)}`,
-            content: `${session.cancelReason} Lớp học bình thường vào buổi kế tiếp theo lịch tuần.`,
-            createdAt: session.cancelledAt,
+            title: 'Lịch nghỉ Tết',
+            content: `Trung tâm nghỉ Tết từ ${dayMonth(tet.fromDate)} đến ${dayMonth(tet.toDate)}. Lớp học lại theo lịch tuần sau Tết.`,
+            createdAt: announced,
           });
+      }
       const extra = this.random.pick(ANNOUNCEMENTS);
       notices.push({
         ...extra,

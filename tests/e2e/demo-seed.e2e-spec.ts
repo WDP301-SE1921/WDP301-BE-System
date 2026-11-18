@@ -13,6 +13,7 @@ import { validateEnvironment } from '../../src/config/configuration';
 import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
 import { DatabaseService } from '../../src/database/orm/database.service';
+import { TET_BREAKS } from '../../src/common/lunar-new-year';
 import { seedDemo } from '../../src/database/seeds/seed-demo';
 import {
   addDays,
@@ -348,6 +349,21 @@ describe('Demo seed against MySQL and shared APIs', () => {
     expect(await db.gradingJob.count({ where: { status: { in: ['QUEUED', 'PROCESSING'] } } })).toBe(
       0,
     );
+  });
+
+  it('creates no cancelled sessions and no session inside the Tết break', async () => {
+    expect(await db.classSession.count({ where: { status: 'CANCELLED' } })).toBe(0);
+    expect(await db.centerClosure.count()).toBe(0);
+    const localDay = (at: Date): string =>
+      new Date(at.getTime() + 7 * 3_600_000).toISOString().slice(0, 10);
+    const sessions = await db.classSession.findMany({ select: { startsAt: true } });
+    expect(sessions.length).toBeGreaterThan(0);
+    const inTet = sessions.filter(({ startsAt }) =>
+      TET_BREAKS.some(
+        (row) => row.fromDate <= localDay(startsAt) && localDay(startsAt) <= row.toDate,
+      ),
+    );
+    expect(inTet).toEqual([]);
   });
 
   it('does not double-book teachers or rooms', async () => {

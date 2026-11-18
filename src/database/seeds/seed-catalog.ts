@@ -1,3 +1,4 @@
+import { tetBreaks } from '../../common/lunar-new-year';
 import { Prisma, type CurriculumUnit, type Lesson, type StudentProfile } from '@prisma/client';
 import {
   lastMonthlySlots,
@@ -314,7 +315,14 @@ export async function seedCatalog(
       }
       const classPlans = Object.values(result.classes)
         .filter((c) => c.programId === program.id && c.isActive && c.teacherId)
-        .map((c) => slotsForRange(c.weeklySchedules, dateOnly(from), dateOnly(to)));
+        .map((c) =>
+          slotsForRange(
+            c.weeklySchedules,
+            dateOnly(from),
+            dateOnly(to),
+            tetBreaks(dateOnly(from), dateOnly(to)),
+          ),
+        );
       // Preserve old demo curricula and sessions when the additive seed is rerun.
       const legacyTests = await tx.lesson.findMany({
         where: { unitId: unit.id, kind: 'MONTHLY_TEST' },

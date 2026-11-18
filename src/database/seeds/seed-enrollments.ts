@@ -1,3 +1,4 @@
+import { tetBreaks } from '../../common/lunar-new-year';
 import { Prisma, type Enrollment, type EnrollmentPlacement } from '@prisma/client';
 import { slotsForRange } from '../../modules/curriculum-scheduling/curriculum-scheduling.service';
 import type { SeedUsers } from './seed-accounts';
@@ -11,10 +12,13 @@ export interface DemoEnrollment {
 }
 
 export function nextStudyDay(classroom: DemoClass, from: Date): Date {
+  // 21 days: the Tết break lasts up to 15 days.
+  const to = dateOnly(addDays(from, 21));
   const slot = slotsForRange(
     classroom.weeklySchedules,
     dateOnly(from),
-    dateOnly(addDays(from, 7)),
+    to,
+    tetBreaks(dateOnly(from), to),
   )[0];
   if (!slot) throw new Error(`No weekly schedule for ${classroom.name}`);
   return new Date(`${slot.date}T00:00:00Z`);

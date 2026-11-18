@@ -384,12 +384,6 @@ export const SUBSTITUTE_REASONS = [
   'Giáo viên phụ trách coi thi tại trường.',
 ];
 
-export const CANCEL_REASONS = [
-  'Phòng học mất điện, trung tâm đã báo phụ huynh.',
-  'Giáo viên nghỉ ốm và không có người dạy thay phù hợp.',
-  'Mưa lớn ngập đường, trung tâm cho học sinh nghỉ.',
-];
-
 export const SESSION_SUMMARIES = [
   'Học sinh nắm được kiến thức chính, cần luyện thêm dạng bài vận dụng.',
   'Lớp sôi nổi, đa số hoàn thành bài tập tại lớp.',
@@ -431,12 +425,6 @@ export const ANNOUNCEMENTS = [
 ];
 
 /** Holidays when the center closes; month-day keys apply to every year. */
-export const HOLIDAYS: Record<string, string> = {
-  '04-30': 'Nghỉ lễ Giải phóng miền Nam 30/4.',
-  '05-01': 'Nghỉ lễ Quốc tế Lao động 1/5.',
-  '09-02': 'Nghỉ lễ Quốc khánh 2/9.',
-};
-
 export function slug(value: string): string {
   return value
     .normalize('NFD')
