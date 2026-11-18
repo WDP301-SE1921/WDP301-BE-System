@@ -84,7 +84,7 @@ Idempotency-Key: <uuid-once-per-operation>
 - Trung tâm không hủy buổi. Buổi không dạy được thì đổi sang ngày khác (`POST /academic/sessions/:id/reschedule`) hoặc đổi giáo viên (dạy thay).
 - Các route sau đã xóa và trả 404: `POST /academic/sessions/:id/cancel`, `POST /academic/sessions/:id/cancel-preview`, `POST /academic/sessions/bulk-cancel-preview`, `POST /academic/sessions/bulk-cancel`, `GET|POST /academic/center-closures`, `PATCH|DELETE /academic/center-closures/:id`.
 - Dữ liệu cũ vẫn trả về khi đọc: buổi `status: "CANCELLED"` kèm `cancelReason`, thông báo `SESSION_CANCELLED`, gia hạn `source: "SESSION_CANCELLED"`. Bảng `center_closures` và `session_bulk_cancels` còn trong schema nhưng không được đọc hay ghi.
-- Bộ lọc `status` của `GET /academic/scheduled-sessions` chỉ nhận `SCHEDULED` và `COMPLETED`.
+- Bộ lọc `status` của `GET /academic/scheduled-sessions` vẫn nhận `CANCELLED` để xem buổi hủy cũ.
 
 ## Quy tắc và lỗi cần hiển thị
 

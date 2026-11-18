@@ -174,7 +174,8 @@ export class SessionQueryDto {
   @ApiPropertyOptional() @IsOptional() @IsString() teacherId?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() lessonId?: string;
-  @ApiPropertyOptional({ enum: ['SCHEDULED', 'COMPLETED'] }) @IsOptional() @IsIn(['SCHEDULED', 'COMPLETED']) status?: 'SCHEDULED' | 'COMPLETED';
+  // CANCELLED stays accepted: sessions cancelled before 19/11/2026 can still be listed.
+  @ApiPropertyOptional({ enum: ['SCHEDULED', 'COMPLETED', 'CANCELLED'] }) @IsOptional() @IsIn(['SCHEDULED', 'COMPLETED', 'CANCELLED']) status?: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
   @ApiPropertyOptional({
     description: 'Return pagination metadata; omitted keeps the legacy array.',
   })

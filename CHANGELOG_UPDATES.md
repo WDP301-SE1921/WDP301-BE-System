@@ -142,7 +142,7 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - Đã xóa, trả 404: `POST /academic/sessions/:id/cancel`, `sessions/:id/cancel-preview`, `sessions/bulk-cancel-preview`, `sessions/bulk-cancel`, `GET|POST /academic/center-closures`, `PATCH|DELETE /academic/center-closures/:id`. Mất luôn gia hạn bù khi hủy (`extendTerm` của hủy buổi); gia hạn từ đơn nghỉ dài hạn và gia hạn tay giữ nguyên.
 - Sinh lịch (`session-preview`, `session-generations`) bỏ qua kỳ nghỉ Tết **23 tháng Chạp → mùng 7** (bảng `TET_BREAKS` trong `src/common/lunar-new-year.ts`, 2025–2035). Bài kế tiếp rơi vào buổi đầu sau Tết.
 - Giảm Tết 50% giữ nguyên, đọc chung bảng mùng 1 với kỳ nghỉ. Mùng 1 Tết 2030 sửa thành 02/02 (lịch Việt Nam).
-- Không đổi schema. Buổi `CANCELLED` cũ, `cancelReason`, thông báo `SESSION_CANCELLED`, gia hạn `SESSION_CANCELLED` vẫn đọc được. Bộ lọc `status` của `scheduled-sessions` chỉ nhận `SCHEDULED`, `COMPLETED`.
+- Không đổi schema. Buổi `CANCELLED` cũ, `cancelReason`, thông báo `SESSION_CANCELLED`, gia hạn `SESSION_CANCELLED` vẫn đọc được.
 - Seed không còn buổi hủy, không có buổi trong kỳ nghỉ Tết; seed dashboard thông báo "Lịch nghỉ Tết" thay cho thông báo nghỉ lễ.
 
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)

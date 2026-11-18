@@ -3,8 +3,8 @@ const DAY_MS = 86_400_000;
 /**
  * Sessions the weekly schedule plans from `startDate` (inclusive) to `endDate` (exclusive).
  * Both are calendar dates stored at UTC midnight; `weekday` is ISO (1 = Monday, 7 = Sunday).
- * Center days off and cancelled sessions are not subtracted: this is the plan a monthly fee is
- * quoted against, so a bill can say "3 months ≈ 26 sessions".
+ * The Tết break and legacy cancelled sessions are not subtracted: this is the plan a monthly fee
+ * is quoted against (the Tết month is discounted instead), so a bill can say "3 months ≈ 26 sessions".
  */
 export function plannedSessionCount(
   schedules: ReadonlyArray<{ weekday: number }>,

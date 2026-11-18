@@ -335,3 +335,14 @@ describe('generate reads the anchor lesson with a lock', () => {
     expect(created.data.map((row) => row.lessonId)).toEqual(['L4', 'L5', 'L6']);
   });
 });
+
+describe('session list filter keeps its contract', () => {
+  it('still accepts status=CANCELLED so old clients can list legacy cancelled sessions', async () => {
+    const { plainToInstance } = await import('class-transformer');
+    const { validate } = await import('class-validator');
+    const { SessionQueryDto } =
+      await import('../../src/modules/curriculum-scheduling/curriculum-scheduling.dto');
+    const errors = await validate(plainToInstance(SessionQueryDto, { status: 'CANCELLED' }));
+    expect(errors).toEqual([]);
+  });
+});
