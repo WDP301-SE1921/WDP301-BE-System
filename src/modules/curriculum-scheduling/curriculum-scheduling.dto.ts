@@ -18,28 +18,38 @@ import {
   MinLength,
 } from 'class-validator';
 
+/**
+ * A curriculum has no period of its own (Đợt F, 2026-11-19): a version applies from the day
+ * the manager approves it until the next version is approved. `fromDate`/`toDate` stay
+ * accepted so older clients do not get a 400, but they are ignored.
+ */
+const IGNORED_PERIOD =
+  'Ignored. The server sets the period: a version applies from its approval day until the next version is approved.';
+
 export class CreateCurriculumUnitDto {
   @ApiProperty() @IsString() @MinLength(1) programId!: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
-  @ApiProperty({ example: '2026-11-01' })
+  @ApiPropertyOptional({ description: IGNORED_PERIOD, deprecated: true })
+  @IsOptional()
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
-  fromDate!: string;
-  @ApiProperty({ example: '2026-11-30' })
+  fromDate?: string;
+  @ApiPropertyOptional({ description: IGNORED_PERIOD, deprecated: true })
+  @IsOptional()
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
-  toDate!: string;
+  toDate?: string;
 }
 
 export class UpdateCurriculumUnitDto {
   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) expectedRevision?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(1) @MaxLength(255) title?: string;
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: IGNORED_PERIOD, deprecated: true })
   @IsOptional()
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   fromDate?: string;
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: IGNORED_PERIOD, deprecated: true })
   @IsOptional()
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
@@ -165,7 +175,14 @@ export class MonthlyTestDto {
 }
 
 export class ScheduleRangeDto {
-  @ApiProperty() @IsString() @MinLength(1) curriculumUnitId!: string;
+  @ApiPropertyOptional({
+    description:
+      'Omit to let the server choose: the version the class already teaches, else the approved version of its program.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  curriculumUnitId?: string;
   @ApiProperty({ example: '2026-11-01' })
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)

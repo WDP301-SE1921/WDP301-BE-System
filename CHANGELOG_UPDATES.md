@@ -179,6 +179,16 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - Nhập bài học (`POST /academic/curriculum-units/:id/import-preview`, `import-commit`) nhận thêm `.xlsx` và cột tùy chọn `outcomeCodes` / "Mã mục tiêu" (nhiều mã, cách nhau dấu phẩy hoặc chấm phẩy). Lỗi dòng mới: `UNKNOWN_OUTCOME_CODE` (`codes` là các mã không có trong bộ CLO của khóa), `TOO_MANY_OUTCOME_CODES`. Dòng preview có `outcomeCodes: string[]`; `rows` của commit phải gửi lại đúng `outcomeCodes`. Lỗi file của nhập bài học vẫn là `400 CSV_INVALID` (`CSV_REQUIRED` khi thiếu file)
 - Nhập bài học, thêm: lỗi dòng `AMBIGUOUS_OUTCOME_CODE` (`field: outcomeCodes`, `codes`) khi một mã có ở các bộ CLO khác cấp độ. Mã được tra theo bộ APPROVED mới nhất của khóa, không có thì bộ DRAFT mới nhất (hòa thì theo version rồi id). `monthKey` dạng `YYYY-MM-DD` từ ô ngày Excel được cắt thành `YYYY-MM`. Tiêu đề cột của file CLO so khớp không phân biệt hoa thường và dấu
 
+### 1.27. Giáo trình không còn kỳ áp dụng (đợt F, 19/11)
+- `POST /academic/curriculum-units`, `PATCH /academic/curriculum-units/:id`, `POST /academic/curriculum-units/:id/revisions`: `fromDate`/`toDate` thành tùy chọn và **bị bỏ qua** (client cũ gửi vẫn không lỗi 400). Bản nháp lưu ngày tạm (hôm nay → `2099-12-31`).
+- `version` đánh số theo khóa học (số lớn nhất của khóa + 1), không theo kỳ.
+- Duyệt (`POST …/approve`): bản được duyệt áp dụng từ hôm nay (giờ Việt Nam), `toDate` = `2099-12-31`. Mọi bản `APPROVED` khác của khóa chuyển ngay sang `ARCHIVED` với `archiveReason: "SUPERSEDED"`, `supersededById`, `toDate` = hôm qua (không nhỏ hơn `fromDate`), audit `CURRICULUM_UNIT_AUTO_ARCHIVED` (`triggeredBy: "APPROVAL"`).
+- Bỏ các mã lỗi `FUTURE_CURRICULUM_PERIOD_REQUIRED`, `CURRICULUM_EFFECTIVE_PERIOD_CONFLICT`, `RANGE_OUTSIDE_UNIT`; `INVALID_DATE_RANGE`/`DATE_RANGE_TOO_LONG` không còn áp cho giáo trình.
+- Xem trước/sinh lịch: không xét ngày của giáo trình. Bắt đầu lần đầu cần bản `APPROVED`; lớp đang học một bản đã bị thay vẫn xếp tiếp tới bài cuối (trước đây bị `UNIT_NOT_APPROVED`). Dời buổi và tạo buổi cũ không xét kỳ.
+- `GET /me/students/:id/curriculum` (phụ huynh): mỗi lớp gắn với bản của buổi gần nhất của lớp; lớp chưa có buổi gắn với bản đang áp dụng của khóa. Shape không đổi.
+- `POST /classes/:id/session-preview`, `session-generations`: `curriculumUnitId` thành tùy chọn. Bỏ trống thì server lấy bản lớp đang học (bản của buổi gần nhất), lớp chưa có buổi thì lấy bản `APPROVED` của khóa; không có thì 409 `UNIT_NOT_APPROVED`.
+- Worker tự lưu trữ theo ngày giữ nguyên cho dữ liệu cũ. Không có migration.
+
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
 
 | STT | Lỗi / Điểm nghẽn ban đầu | Tệp tin liên quan | Nguyên nhân | Giải pháp khắc phục triệt để |

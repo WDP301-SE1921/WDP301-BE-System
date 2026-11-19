@@ -141,21 +141,8 @@ describe('legacy lesson endpoints respect the complete curriculum workflow', () 
   it.each([
     ['2099-10-31T16:59:00Z', '2099-10-31T18:00:00Z'],
     ['2099-11-30T16:00:00Z', '2099-11-30T17:00:01Z'],
-  ])(
-    'blocks legacy sessions outside inclusive Vietnam curriculum dates (%s)',
-    async (startsAt, endsAt) => {
-      findLesson.mockResolvedValue({ ...legacyLesson, unitId: 'unit', unit: approvedUnit });
-      await expect(
-        service.createSession(manager, { ...session, startsAt, endsAt }),
-      ).rejects.toMatchObject({ code: 'RANGE_OUTSIDE_UNIT' });
-      expect(createSession).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([
     ['2099-10-31T17:00:00Z', '2099-10-31T18:00:00Z'],
-    ['2099-11-30T16:00:00Z', '2099-11-30T17:00:00Z'],
-  ])('accepts legacy sessions on the Vietnam period boundary (%s)', async (startsAt, endsAt) => {
+  ])('ignores the stored curriculum period for a session (%s)', async (startsAt, endsAt) => {
     findLesson.mockResolvedValue({ ...legacyLesson, unitId: 'unit', unit: approvedUnit });
     await service.createSession(manager, { ...session, startsAt, endsAt });
     expect(createSession).toHaveBeenCalledTimes(1);

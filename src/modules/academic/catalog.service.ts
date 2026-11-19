@@ -16,10 +16,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { assignedTeacherWhere } from '../registration-flow/class-teacher';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
 import { loadProgramForNewClass } from '../registration-flow/class-program';
-import {
-  assertCurriculumSessionDates,
-  lockCurriculumProgram,
-} from '../curriculum-scheduling/curriculum-lifecycle';
+import { lockCurriculumProgram } from '../curriculum-scheduling/curriculum-lifecycle';
 import { AcademicRepository } from './academic.repository';
 import { AcademicAccessService, assertRule, roles, studyDate } from './academic-access.service';
 import {
@@ -197,7 +194,7 @@ export class CatalogService {
       });
       const lesson = await tx.lesson.findUniqueOrThrow({
         where: { id: input.lessonId },
-        include: { unit: { select: { status: true, fromDate: true, toDate: true } } },
+        include: { unit: { select: { status: true } } },
       });
       assertRule(
         lesson.kind !== 'MONTHLY_TEST',
@@ -217,7 +214,6 @@ export class CatalogService {
         'Use an approved lesson from the class program',
       );
       assertProgramFrequency(classroom.program, classroom.weeklySchedules.length, classroom.id);
-      if (lesson.unit) assertCurriculumSessionDates(lesson.unit, start, end);
       const teacher = await tx.user.findFirst({
         where: { id: input.teacherId, role: 'TEACHER', status: 'ACTIVE', deletedAt: null },
       });

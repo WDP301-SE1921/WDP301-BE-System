@@ -14,10 +14,10 @@ Luồng này bổ sung cho đăng ký học tại trung tâm. API dùng prefix `
 
 | API | Role | Body / kết quả chính |
 | --- | --- | --- |
-| `POST /academic/curriculum-units` | CURRICULUM_DESIGNER | `{ "programId": "...", "title": "Toán 8 - học phần 1", "fromDate": "2027-01-04", "toDate": "2027-01-31" }`; trả học phần `DRAFT` |
+| `POST /academic/curriculum-units` | CURRICULUM_DESIGNER | `{ "programId": "...", "title": "Giáo trình Toán 8" }`; trả học phần `DRAFT`. `fromDate`/`toDate` bị bỏ qua (đợt F) |
 | `GET /academic/curriculum-units?programId=...` | MANAGER, CURRICULUM_DESIGNER, TEACHER | Liệt kê; giáo viên chỉ thấy học phần đã duyệt thuộc môn/khối lớp được phân công |
 | `GET /academic/curriculum-units/:id` | Như trên | Chi tiết và các bài; mọi Thiết kế GT xem và sửa được mọi bản nháp (Q6, chống ghi đè bằng `expectedRevision`) |
-| `PATCH /academic/curriculum-units/:id` | CURRICULUM_DESIGNER | Sửa `title`, `fromDate`, `toDate` khi còn DRAFT |
+| `PATCH /academic/curriculum-units/:id` | CURRICULUM_DESIGNER | Sửa `title` khi còn DRAFT (`fromDate`/`toDate` bị bỏ qua) |
 | `POST /academic/curriculum-units/:id/lessons` | CURRICULUM_DESIGNER | `{ "sequence": 1, "title": "Bài 1", "content": "..." }` |
 | `PATCH /academic/curriculum-units/:id/lessons/:lessonId` | CURRICULUM_DESIGNER | Sửa bài học DRAFT với cùng các trường |
 | `POST /academic/curriculum-units/:id/monthly-tests` | CURRICULUM_DESIGNER | `{ "monthKey": "2027-01", "title": "Kiểm tra tháng 1", "content": "..." }`; tạo mới hoặc cập nhật tháng đó |
@@ -47,7 +47,7 @@ Content-Type: application/json
 }
 ```
 
-`fromDate` là ngày bắt đầu. Lần bắt đầu đầu tiên (bài 1) phải nằm trong kỳ áp dụng của giáo trình (ngoài kỳ: 409 `RANGE_OUTSIDE_UNIT`); lớp đã học giáo trình này nối tiếp được cả khi kỳ đã qua. `toDate` không còn cần: nếu client cũ vẫn gửi thì bị bỏ qua. Lịch tự chạy tới bài cuối của giáo trình (một bài một buổi, bỏ kỳ nghỉ Tết) và có thể vượt ngày kết thúc kỳ; tối đa 24 tháng kể từ `fromDate` (quá: 400 `SCHEDULE_TOO_LONG`). Kết quả trả thêm `endDate` (ngày buổi cuối, `toDate` bằng giá trị này), `lessonCount` (số buổi), `mode` (`FIRST_LESSON` | `CONTINUE`), `unscheduledLessons` luôn rỗng.
+`curriculumUnitId` tùy chọn (đợt F): bỏ trống thì server lấy bản lớp đang học (bản của buổi gần nhất), lớp chưa có buổi thì lấy bản `APPROVED` của khóa; khóa chưa có bản duyệt: 409 `UNIT_NOT_APPROVED`. `fromDate` là ngày bắt đầu, không xét ngày của giáo trình (đợt F). Bắt đầu lần đầu cần bản `APPROVED`; lớp đang học một bản đã bị thay vẫn nối tiếp được tới bài cuối. `toDate` không còn cần: nếu client cũ vẫn gửi thì bị bỏ qua. Lịch tự chạy tới bài cuối của giáo trình (một bài một buổi, bỏ kỳ nghỉ Tết) và có thể vượt ngày kết thúc kỳ; tối đa 24 tháng kể từ `fromDate` (quá: 400 `SCHEDULE_TOO_LONG`). Kết quả trả thêm `endDate` (ngày buổi cuối, `toDate` bằng giá trị này), `lessonCount` (số buổi), `mode` (`FIRST_LESSON` | `CONTINUE`), `unscheduledLessons` luôn rỗng.
 
 `data.slots` gồm `date`, `startsAt`, `endsAt`, `lessonId`, `lessonTitle`, `kind`, `monthKey`, `conflicts` và `makeupCandidates`. `startsAt`/`endsAt` là UTC; hiển thị theo `Asia/Ho_Chi_Minh`. `makeupCandidates` chỉ chứa buổi **đã được sinh** ở lớp khác, cùng bài, diễn ra sau buổi gốc và vẫn ở tương lai; việc học bù thực tế vẫn phải qua API đăng ký học bù và kiểm tra sĩ số/quyền.
 
@@ -89,11 +89,11 @@ Idempotency-Key: <uuid-once-per-operation>
 
 ## Quy tắc và lỗi cần hiển thị
 
-- Chỉ ngày bắt đầu (`fromDate`) phải nằm trong kỳ áp dụng của giáo trình (lớp đã học giáo trình này thì nối tiếp được cả khi kỳ đã qua). Lần tạo lịch đầu của lớp bắt đầu từ bài 1; lịch chạy tới bài cuối, có thể vượt ngày kết thúc kỳ.
+- Không xét ngày của giáo trình (đợt F). Lần tạo lịch đầu của lớp bắt đầu từ bài 1; lịch chạy tới bài cuối.
 - Duyệt yêu cầu bài học có `sequence` liên tục từ 1 và bài kiểm tra cho mỗi tháng có buổi học. Nếu lớp được tạo sau khi duyệt, bước xem trước/sinh lịch vẫn kiểm tra lại đủ nội dung.
 - Hai lớp dùng cùng ID bài nhưng có thể học khác ngày. Buổi học bù chỉ có ứng viên nếu lớp khác đã sinh buổi cùng ID bài; riêng ranh giới tháng có thể làm vị trí bài kiểm tra giữa các lớp khác nhau.
 - `INSUFFICIENT_LESSONS`, `LESSON_SEQUENCE_GAP`, `MISSING_MONTHLY_TEST`, `NO_SCHEDULED_CLASS`: hoàn thiện giáo trình/lịch trước khi duyệt.
-- `UNIT_NOT_APPROVED`, `CURRICULUM_MISMATCH`, `CLASS_NEEDS_SCHEDULE`, `INVALID_TEACHER`, `RANGE_OUTSIDE_UNIT`, `CURRICULUM_COMPLETED`, `SCHEDULE_TOO_LONG`, `CLASS_CURRICULUM_LOCKED` (lớp đã có buổi của giáo trình khác, 409, `details.currentUnitId`, `details.currentUnitTitle`): sửa lựa chọn khi xem trước.
+- `UNIT_NOT_APPROVED`, `CURRICULUM_MISMATCH`, `CLASS_NEEDS_SCHEDULE`, `INVALID_TEACHER`, `CURRICULUM_COMPLETED`, `SCHEDULE_TOO_LONG`, `CLASS_CURRICULUM_LOCKED` (lớp đã có buổi của giáo trình khác, 409, `details.currentUnitId`, `details.currentUnitTitle`): sửa lựa chọn khi xem trước.
 - `SCHEDULE_CONFLICT`: có buổi của lớp hoặc giáo viên trùng giờ; xem `conflicts` ở API xem trước.
 - Khi lớp đã có buổi học tương lai, API cấu hình lớp chặn đổi lịch tuần hoặc đổi giáo viên để lịch đã sinh không lệch cấu hình.
 - `UNIT_LOCKED`: nội dung đã duyệt; tạo phiên bản mới. Buổi đã sinh tiếp tục trỏ tới phiên bản cũ.
@@ -109,10 +109,12 @@ Schema và migration mới chỉ bổ sung bảng/cột. Dữ liệu `Lesson`, `
 - Mở đăng ký, kích hoạt lại lớp, giáo viên xác nhận lịch, xem trước/sinh lịch và tạo buổi cũ (`POST /academic/sessions`) đều kiểm tra lại. `POST /academic/classes` cũ tạo lớp ở trạng thái đóng đăng ký.
 - Đổi số buổi khi lớp đang hoạt động có lịch khác số mới thì bị chặn, không tự thêm/xóa khung giờ hay buổi đã sinh. Bản xem trước lập trước khi đổi số buổi sẽ báo `PREVIEW_STALE`.
 
-**Một giáo trình hiệu lực mỗi ngày.** Theo `programId`, khoảng `[fromDate, toDate]` tính cả hai đầu. Nhiều bản nháp/chờ duyệt giao ngày vẫn được lưu; khi Manager duyệt, server khóa khóa học rồi chặn bản giao ngày với bản đã duyệt hoặc bản đã tự lưu trữ vì sang kỳ (kể cả bản tạo độc lập, kể cả duyệt đồng thời). Không tự cắt ngày bản cũ.
+**Một giáo trình đang áp dụng mỗi khóa (đợt F, 19/11).** Giáo trình không còn kỳ do người dùng nhập. Khi Manager duyệt một bản, server khóa khóa học, chuyển mọi bản `APPROVED` khác của khóa sang `ARCHIVED`/`SUPERSEDED` (`toDate` = hôm qua, không nhỏ hơn `fromDate`), rồi cho bản mới `fromDate` = hôm nay, `toDate` = `2099-12-31`. Lớp đang học bản cũ học tiếp tới hết bài; lớp tạo lịch sau đó dùng bản mới.
+
+*Dữ liệu trước đợt F* (kỳ do người dùng nhập) vẫn theo luật cũ dưới đây cho tới lần duyệt kế tiếp của khóa:
 
 - Duyệt trước bản tương lai không lưu trữ bản đang dùng. Từ 00:00 giờ Việt Nam ngày bản mới bắt đầu, worker (chạy khi khởi động và mỗi phút) chuyển bản cũ đã kết thúc sang `ARCHIVED` với `archiveReason: "SUPERSEDED"`, `supersededById`, `archivedAt` và audit `CURRICULUM_UNIT_AUTO_ARCHIVED`; chạy lại không tạo audit trùng. Lưu trữ thủ công qua `DELETE` có `archiveReason: "MANUAL"` và không kích hoạt chuyển kỳ.
-- Bản tự lưu trữ vẫn hiện cho giáo viên của khóa và trong outline phụ huynh của kỳ đã học; buổi đã sinh giữ `lessonId` cũ. `POST /academic/curriculum-units/:id/revisions` nhận nguồn `APPROVED` hoặc `ARCHIVED` từng được duyệt, kỳ mới vẫn phải sau hôm nay và sau kỳ nguồn.
+- Bản tự lưu trữ vẫn hiện cho giáo viên của khóa và trong outline phụ huynh của kỳ đã học; buổi đã sinh giữ `lessonId` cũ. `POST /academic/curriculum-units/:id/revisions` nhận nguồn `APPROVED` hoặc `ARCHIVED` từng được duyệt, từ đợt F không cần ngày.
 - Trước khi triển khai, chạy `pnpm db:report-course-curriculum` (chỉ đọc) để liệt kê khóa chưa cấu hình/lớp lệch số buổi và các bản đã duyệt giao ngày; xử lý theo quyết định nghiệp vụ, không tự sửa ngày hay xóa lịch sử. Migration chỉ tự điền số buổi khi mọi lớp đang hoạt động của khóa có cùng số khung giờ hợp lệ.
 
 | Mã lỗi | Khi nào | `details` |
@@ -120,8 +122,6 @@ Schema và migration mới chỉ bổ sung bảng/cột. Dữ liệu `Lesson`, `
 | 409 `PROGRAM_FREQUENCY_NOT_CONFIGURED` | Dùng lịch có dữ liệu khi khóa chưa cấu hình | `programId` |
 | 409 `CLASS_WEEKLY_SESSION_COUNT_MISMATCH` | Số khung giờ khác số buổi của khóa | `programId`, `classId`, `expected`, `actual` |
 | 409 `PROGRAM_FREQUENCY_CHANGE_CONFLICT` | Đổi số buổi làm lệch lớp đang hoạt động | `programId`, `expected`, `conflictingClasses[]` (`id`, `name`, `actual`) |
-| 409 `CURRICULUM_EFFECTIVE_PERIOD_CONFLICT` | Duyệt bản giao ngày với bản đã duyệt cùng khóa | `programId`, `conflicts[]` (`id`, `title`, `fromDate`, `toDate`) |
-| 409 `RANGE_OUTSIDE_UNIT` | Tạo buổi cũ ngoài kỳ của giáo trình | — |
 
 ## Phòng, giáo viên và xác nhận lịch
 

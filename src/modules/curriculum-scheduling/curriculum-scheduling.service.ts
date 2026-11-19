@@ -35,10 +35,11 @@ import { CsvFileError } from '../../common/csv/read-csv';
 import { reviewerReason, reviewerTiers, subjectKey } from './reviewer-eligibility';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
 import {
-  archiveSupersededCurricula,
-  assertNoCurriculumOverlap,
+  approvedPeriod,
+  draftPeriod,
   lockCurriculumProgram,
   publishedCurriculumWhere,
+  supersedeOtherCurricula,
 } from './curriculum-lifecycle';
 import {
   planLessonSlots,
@@ -106,7 +107,6 @@ export class CurriculumSchedulingService {
 
   async createUnit(user: AuthenticatedUser, input: CreateCurriculumUnitDto): Promise<unknown> {
     this.requireRole(user, 'CURRICULUM_DESIGNER');
-    this.assertRange(input.fromDate, input.toDate);
     const program = await this.db.program.findUnique({ where: { id: input.programId } });
     // A program the ADMIN soft-deleted keeps `isActive`: it reads as not found, like in the list.
     this.assert(
@@ -131,16 +131,19 @@ export class CurriculumSchedulingService {
       create: { grade: program.grade, subjectKey: key, subject: program.subject.trim() },
       update: {},
     });
-    return this.db.curriculumUnit.create({
-      data: {
-        trackId: track.id,
-        programId: program.id,
-        designerId: user.id,
-        title: input.title.trim(),
-        fromDate: localDate(input.fromDate),
-        toDate: localDate(input.toDate),
-      },
-      include: unitInclude,
+    return this.transaction(async (tx) => {
+      await lockCurriculumProgram(tx, program.id);
+      return tx.curriculumUnit.create({
+        data: {
+          trackId: track.id,
+          programId: program.id,
+          designerId: user.id,
+          version: await this.nextVersion(tx, program.id),
+          title: input.title.trim(),
+          ...draftPeriod(),
+        },
+        include: unitInclude,
+      });
     });
   }
 
@@ -188,19 +191,11 @@ export class CurriculumSchedulingService {
         ? [{ classroom, startDate: enrollment.startDate, endDate: enrollment.endDate }]
         : [];
     });
-    if (!scopes.length)
+    const classesOfUnit = await this.unitsOfClasses(scopes.map((scope) => scope.classroom));
+    if (!classesOfUnit.size)
       return { studentId, items: [], page: page.page, limit: page.limit, total: 0 };
     const where: Prisma.CurriculumUnitWhereInput = {
-      AND: [
-        publishedCurriculumWhere,
-        {
-          OR: scopes.map((scope) => ({
-            programId: scope.classroom.programId,
-            fromDate: { lt: scope.endDate },
-            toDate: { gte: scope.startDate },
-          })),
-        },
-      ],
+      AND: [publishedCurriculumWhere, { id: { in: [...classesOfUnit.keys()] } }],
       ...(page.programId ? { programId: page.programId } : {}),
       ...(page.search ? { title: { contains: page.search } } : {}),
       ...(page.toDate ? { fromDate: { lte: new Date(page.toDate) } } : {}),
@@ -238,18 +233,51 @@ export class CurriculumSchedulingService {
       page: page.page,
       limit: page.limit,
       total,
-      items: units.map((unit) => ({
-        ...unit,
-        classes: scopes
-          .filter(
-            (scope) =>
-              scope.classroom.programId === unit.programId &&
-              unit.fromDate < scope.endDate &&
-              unit.toDate >= scope.startDate,
-          )
-          .map((scope) => ({ id: scope.classroom.id, name: scope.classroom.name })),
-      })),
+      items: units.map((unit) => ({ ...unit, classes: classesOfUnit.get(unit.id) ?? [] })),
     };
+  }
+
+  /**
+   * The curriculum version each class teaches (Đợt F): the version of its latest session, or
+   * the program's approved version while the class has no session yet. Keyed by unit id.
+   */
+  private async unitsOfClasses(
+    classes: Array<{ id: string; name: string; programId: string }>,
+  ): Promise<Map<string, Array<{ id: string; name: string }>>> {
+    const classIds = [...new Set(classes.map((item) => item.id))];
+    const taught = await this.db.classSession.findMany({
+      where: { classId: { in: classIds }, status: { not: 'CANCELLED' } },
+      orderBy: [{ startsAt: 'desc' }, { id: 'desc' }],
+      distinct: ['classId'],
+      select: { classId: true, lesson: { select: { unitId: true } } },
+    });
+    const unitOfClass = new Map(
+      taught.flatMap((row) =>
+        row.lesson.unitId ? [[row.classId, row.lesson.unitId] as const] : [],
+      ),
+    );
+    const waiting = [
+      ...new Set(classes.filter((item) => !unitOfClass.has(item.id)).map((item) => item.programId)),
+    ];
+    const current = waiting.length
+      ? await this.db.curriculumUnit.findMany({
+          where: { programId: { in: waiting }, status: 'APPROVED' },
+          orderBy: [{ fromDate: 'desc' }, { version: 'desc' }, { id: 'desc' }],
+          select: { id: true, programId: true },
+        })
+      : [];
+    const currentOfProgram = new Map<string, string>();
+    for (const unit of current)
+      if (!currentOfProgram.has(unit.programId)) currentOfProgram.set(unit.programId, unit.id);
+    const result = new Map<string, Array<{ id: string; name: string }>>();
+    for (const item of classes) {
+      const unitId = unitOfClass.get(item.id) ?? currentOfProgram.get(item.programId);
+      if (!unitId) continue;
+      const list = result.get(unitId) ?? [];
+      if (!list.some((row) => row.id === item.id)) list.push({ id: item.id, name: item.name });
+      result.set(unitId, list);
+    }
+    return result;
   }
 
   async listUnits(user: AuthenticatedUser, filter: CurriculumUnitFilterDto): Promise<unknown> {
@@ -335,16 +363,11 @@ export class CurriculumSchedulingService {
     return this.transaction(async (tx) => {
       const unit = await this.lockEditableUnit(tx, user, id);
       this.checkRevision(unit, input.expectedRevision);
-      const from = input.fromDate ?? dateOnly(unit.fromDate);
-      const to = input.toDate ?? dateOnly(unit.toDate);
-      this.assertRange(from, to);
-      await this.assertFutureRevisionPeriod(tx, unit, from);
+      // fromDate/toDate are ignored: the period is set when the manager approves (Đợt F).
       return tx.curriculumUnit.update({
         where: { id },
         data: {
           ...(input.title === undefined ? {} : { title: input.title.trim() }),
-          fromDate: localDate(from),
-          toDate: localDate(to),
           revision: { increment: 1 },
         },
         include: unitInclude,
@@ -866,7 +889,6 @@ export class CurriculumSchedulingService {
     return this.transaction(async (tx) => {
       const unit = await this.lockEditableUnit(tx, user, id);
       this.validateDraft(unit);
-      await this.assertFutureRevisionPeriod(tx, unit, dateOnly(unit.fromDate));
       await this.assertResponsibleReviewer(tx, input.reviewerTeacherId, unit.programId);
       const result = await tx.curriculumUnit.update({
         where: { id },
@@ -997,7 +1019,6 @@ export class CurriculumSchedulingService {
         select: { id: true },
       });
       this.assert(reviewer, 'FORBIDDEN', 'Reviewer account is not active', HttpStatus.FORBIDDEN);
-      await this.assertFutureRevisionPeriod(tx, unit, dateOnly(unit.fromDate));
       const note = input.note?.trim() || null;
       this.assert(
         input.approved || note,
@@ -1237,8 +1258,6 @@ export class CurriculumSchedulingService {
         'TECHNICAL_REVIEW_REQUIRED',
         'The selected teacher must approve the curriculum before manager confirmation',
       );
-      await this.assertFutureRevisionPeriod(tx, unit, dateOnly(unit.fromDate));
-      await assertNoCurriculumOverlap(tx, unit);
       const regular = unit.lessons
         .filter((lesson) => lesson.kind === 'LESSON')
         .sort((a, b) => a.sequence - b.sequence);
@@ -1257,13 +1276,18 @@ export class CurriculumSchedulingService {
         where: { unitId: id, kind: 'LESSON' },
         data: { status: 'APPROVED' },
       });
+      // The new version applies from today; every other approved version stops now (Đợt F).
+      // Supersede first, so the old version's period ends before this one takes its dates.
+      const now = new Date();
+      await supersedeOtherCurricula(tx, { id, programId }, user.id, now);
       await tx.curriculumUnit.update({
         where: { id },
         data: {
           status: 'APPROVED',
-          approvedAt: new Date(),
-          reviewedAt: new Date(),
+          approvedAt: now,
+          reviewedAt: now,
           reviewedById: user.id,
+          ...approvedPeriod(now),
         },
         include: unitInclude,
       });
@@ -1283,7 +1307,6 @@ export class CurriculumSchedulingService {
         'Giáo trình đã được duyệt.',
         `CURRICULUM_APPROVED:${id}:${unit.revision}`,
       );
-      await archiveSupersededCurricula(tx, programId);
       return tx.curriculumUnit.findUniqueOrThrow({ where: { id }, include: unitInclude });
     });
   }
@@ -1294,7 +1317,6 @@ export class CurriculumSchedulingService {
     input: ReviseCurriculumUnitDto,
   ): Promise<unknown> {
     this.requireRole(user, 'CURRICULUM_DESIGNER');
-    this.assertRange(input.fromDate, input.toDate);
     const programId = await this.unitProgramId(id);
     return this.transaction(async (tx) => {
       await lockCurriculumProgram(tx, programId);
@@ -1307,30 +1329,16 @@ export class CurriculumSchedulingService {
         'Only a previously approved unit can be revised',
       );
       await this.assertProgramHasOutcomes(tx, unit.programId);
-      this.assert(
-        input.fromDate > vietnamToday() && input.fromDate > dateOnly(unit.toDate),
-        'FUTURE_CURRICULUM_PERIOD_REQUIRED',
-        'Choose a future period after the current curriculum ends',
-        HttpStatus.BAD_REQUEST,
-      );
-      const latest = await tx.curriculumUnit.aggregate({
-        where: {
-          programId: unit.programId,
-          fromDate: localDate(input.fromDate),
-          toDate: localDate(input.toDate),
-        },
-        _max: { version: true },
-      });
+      // The new version replaces this one when the manager approves it (Đợt F).
       const copy = await tx.curriculumUnit.create({
         data: {
           trackId: unit.trackId,
           programId: unit.programId,
           designerId: user.id,
           basedOnId: id,
-          version: (latest._max.version ?? 0) + 1,
+          version: await this.nextVersion(tx, unit.programId),
           title: input.title.trim(),
-          fromDate: localDate(input.fromDate),
-          toDate: localDate(input.toDate),
+          ...draftPeriod(),
         },
       });
       await tx.lesson.createMany({
@@ -1380,7 +1388,7 @@ export class CurriculumSchedulingService {
   ): Promise<unknown> {
     this.requireRole(user, 'MANAGER');
     const [unit, classroom] = await Promise.all([
-      this.loadUnit(input.curriculumUnitId),
+      this.loadUnit(input.curriculumUnitId ?? (await this.scheduleUnitId(this.db, classId))),
       this.loadClass(classId),
     ]);
     const context = await this.planContext(this.db, classId, unit, input.fromDate, false);
@@ -1481,9 +1489,11 @@ export class CurriculumSchedulingService {
         );
         return this.generationResult(tx, prior.id);
       }
+      // Resolved after the program and class locks, like the anchor below.
+      const unitId = input.curriculumUnitId ?? (await this.scheduleUnitId(tx, classId));
       const [unit, classroom] = await Promise.all([
         tx.curriculumUnit.findUnique({
-          where: { id: input.curriculumUnitId },
+          where: { id: unitId },
           include: unitInclude,
         }),
         tx.class.findUnique({
@@ -2010,13 +2020,6 @@ export class CurriculumSchedulingService {
       'MONTH_CHANGE_NOT_SUPPORTED',
       'Move the session within its original month',
     );
-    if (session.lesson.unit)
-      this.assert(
-        local(startsAt) >= dateOnly(session.lesson.unit.fromDate) &&
-          local(startsAt) <= dateOnly(session.lesson.unit.toDate),
-        'RANGE_OUTSIDE_UNIT',
-        'New date is outside the curriculum unit',
-      );
     const targetDay = localDate(local(startsAt));
     this.assert(
       session.participants
@@ -2213,8 +2216,13 @@ export class CurriculumSchedulingService {
     input: ScheduleRangeDto,
     context: PlanContext,
   ): { slots: PlannedSlot[]; startLesson: Lesson | null; endDate: string; lessonCount: number } {
+    // A class starts on the approved version. A class already teaching a version that a newer
+    // one replaced keeps it to the last lesson (Đợt F).
     this.assert(
-      unit.status === 'APPROVED',
+      unit.status === 'APPROVED' ||
+        (context.anchorSequence !== null &&
+          unit.status === 'ARCHIVED' &&
+          unit.archiveReason === 'SUPERSEDED'),
       'UNIT_NOT_APPROVED',
       'Curriculum unit must be approved',
     );
@@ -2223,14 +2231,6 @@ export class CurriculumSchedulingService {
       !classroom.program.subjectRecord || classroom.program.subjectRecord.isActive,
       'SUBJECT_INACTIVE',
       'Subject is inactive',
-    );
-    this.assert(
-      input.fromDate >= dateOnly(unit.fromDate) &&
-        // Only a first start must lie inside the period; a class that already taught this
-        // curriculum keeps going to the last lesson even after the period ended.
-        (context.anchorSequence !== null || input.fromDate <= dateOnly(unit.toDate)),
-      'RANGE_OUTSIDE_UNIT',
-      'Start date is outside the period of the curriculum unit',
     );
     this.assert(
       classroom.programId === unit.programId,
@@ -2387,6 +2387,31 @@ export class CurriculumSchedulingService {
     });
   }
 
+  /**
+   * The version a schedule uses when the client does not name one (Đợt F): the version of the
+   * class's latest session, else the approved version of its program.
+   */
+  private async scheduleUnitId(db: Prisma.TransactionClient, classId: string): Promise<string> {
+    const last = await db.classSession.findFirst({
+      where: { classId, status: { not: 'CANCELLED' } },
+      orderBy: [{ startsAt: 'desc' }, { id: 'desc' }],
+      select: { lesson: { select: { unitId: true } } },
+    });
+    if (last?.lesson.unitId) return last.lesson.unitId;
+    const classroom = await db.class.findUnique({
+      where: { id: classId },
+      select: { programId: true },
+    });
+    this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
+    const current = await db.curriculumUnit.findFirst({
+      where: { programId: classroom.programId, status: 'APPROVED' },
+      orderBy: [{ fromDate: 'desc' }, { version: 'desc' }, { id: 'desc' }],
+      select: { id: true },
+    });
+    this.assert(current, 'UNIT_NOT_APPROVED', 'The program has no approved curriculum');
+    return current.id;
+  }
+
   private async loadUnit(id: string): Promise<UnitWithLessons> {
     const unit = await this.db.curriculumUnit.findUnique({ where: { id }, include: unitInclude });
     this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
@@ -2466,19 +2491,13 @@ export class CurriculumSchedulingService {
     );
   }
 
-  private async assertFutureRevisionPeriod(
-    tx: Prisma.TransactionClient,
-    unit: UnitWithLessons,
-    fromDate: string,
-  ): Promise<void> {
-    if (!unit.basedOnId) return;
-    const original = await tx.curriculumUnit.findUnique({ where: { id: unit.basedOnId } });
-    this.assert(
-      original && fromDate > vietnamToday() && fromDate > dateOnly(original.toDate),
-      'FUTURE_CURRICULUM_PERIOD_REQUIRED',
-      'Choose a future period after the original curriculum ends',
-      HttpStatus.BAD_REQUEST,
-    );
+  /** Versions count per program (Đợt F): a curriculum no longer has periods to number within. */
+  private async nextVersion(tx: Prisma.TransactionClient, programId: string): Promise<number> {
+    const latest = await tx.curriculumUnit.aggregate({
+      where: { programId },
+      _max: { version: true },
+    });
+    return (latest._max.version ?? 0) + 1;
   }
 
   private assertEditable(user: AuthenticatedUser, unit: UnitWithLessons): void {
@@ -2556,10 +2575,6 @@ function lessonRef(lesson: Pick<Lesson, 'id' | 'title' | 'sequence'>): {
   sequence: number;
 } {
   return { id: lesson.id, title: lesson.title, sequence: lesson.sequence };
-}
-
-function vietnamToday(): string {
-  return new Date(Date.now() + HCM_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 export function lastMonthlySlots(slots: Array<{ date: string }>): Map<string, number> {

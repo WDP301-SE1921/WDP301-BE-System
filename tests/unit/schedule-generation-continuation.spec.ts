@@ -46,6 +46,7 @@ type UnitOptions = {
   lessonCount?: number;
   weekdays?: number[];
   term?: { fromDate: string; toDate: string };
+  status?: 'APPROVED' | 'ARCHIVED';
 };
 
 // Unit period 2030-01-07..2030-12-31, Mon/Wed/Fri 18:00, six lessons by default.
@@ -60,7 +61,8 @@ function unitAndClass(options: UnitOptions): { unit: unknown; classroom: unknown
   const unit = {
     id: 'unit-1',
     programId: 'program-1',
-    status: 'APPROVED',
+    status: options.status ?? 'APPROVED',
+    archiveReason: options.status === 'ARCHIVED' ? 'SUPERSEDED' : null,
     fromDate: new Date(`${options.term?.fromDate ?? '2030-01-07'}T00:00:00Z`),
     toDate: new Date(`${options.term?.toDate ?? '2030-12-31'}T00:00:00Z`),
     lessons,
@@ -199,16 +201,22 @@ describe('schedule runs from the start date to the last lesson (D1)', () => {
     ]);
   });
 
-  it('runs past the end of the unit period: only the start date must lie inside it', async () => {
+  it('ignores the stored period of the curriculum: any start date runs to the last lesson', async () => {
     const term = { fromDate: '2030-01-07', toDate: '2030-01-10' };
     const long = await planSetup({ term }).preview('2030-01-07');
     expect(long.lessonCount).toBe(6);
     expect(long.endDate).toBe('2030-01-18');
-    for (const fromDate of ['2030-01-06', '2030-01-11']) {
-      expect(await rejection(planSetup({ term }).preview(fromDate))).toMatchObject({
-        code: 'RANGE_OUTSIDE_UNIT',
-      });
-    }
+    for (const fromDate of ['2030-01-04', '2030-01-11'])
+      expect((await planSetup({ term }).preview(fromDate)).mode).toBe('FIRST_LESSON');
+  });
+
+  it('a replaced version only continues classes that already teach it (Đợt F)', async () => {
+    const status = 'ARCHIVED' as const;
+    expect(await rejection(planSetup({ status }).preview('2030-01-14'))).toMatchObject({
+      code: 'UNIT_NOT_APPROVED',
+    });
+    const last = { date: '2030-01-11', lessonId: 'L2', sequence: 2 };
+    expect((await planSetup({ status, last }).preview('2030-01-14')).mode).toBe('CONTINUE');
   });
 
   it('refuses to start before sessions this class already has', async () => {
@@ -457,5 +465,44 @@ describe('session list filter keeps its contract', () => {
       await import('../../src/modules/curriculum-scheduling/curriculum-scheduling.dto');
     const errors = await validate(plainToInstance(SessionQueryDto, { status: 'CANCELLED' }));
     expect(errors).toEqual([]);
+  });
+});
+
+describe('schedule without a named curriculum (Đợt F)', () => {
+  type Resolver = { scheduleUnitId: (db: unknown, classId: string) => Promise<string> };
+  function resolver(lastUnitId: string | null, currentId: string | null) {
+    const db = {
+      classSession: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(lastUnitId ? { lesson: { unitId: lastUnitId } } : null),
+      },
+      class: { findUnique: jest.fn().mockResolvedValue({ programId: 'program-1' }) },
+      curriculumUnit: {
+        findFirst: jest.fn().mockResolvedValue(currentId ? { id: currentId } : null),
+      },
+    };
+    const service = new CurriculumSchedulingService(db as never, {} as never);
+    return { db, resolve: () => (service as unknown as Resolver).scheduleUnitId(db, 'class-1') };
+  }
+
+  it('keeps the version the class already teaches', async () => {
+    const { db, resolve } = resolver('unit-old', 'unit-new');
+    await expect(resolve()).resolves.toBe('unit-old');
+    expect(db.curriculumUnit.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('starts a new class on the approved version of its program', async () => {
+    const { db, resolve } = resolver(null, 'unit-new');
+    await expect(resolve()).resolves.toBe('unit-new');
+    expect(db.curriculumUnit.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { programId: 'program-1', status: 'APPROVED' } }),
+    );
+  });
+
+  it('refuses when the program has no approved curriculum', async () => {
+    await expect(resolver(null, null).resolve()).rejects.toMatchObject({
+      code: 'UNIT_NOT_APPROVED',
+    });
   });
 });

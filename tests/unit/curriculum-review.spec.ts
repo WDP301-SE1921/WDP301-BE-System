@@ -218,25 +218,41 @@ describe('curriculum teacher review and manager confirmation', () => {
     });
   });
 
-  it('checks all published periods under the program lock before approving lessons', async () => {
-    const { service, db } = setup({ technicalReviewedAt: new Date() });
-    db.curriculumUnit.findMany.mockResolvedValueOnce([
-      {
-        id: 'other',
-        title: 'Kỳ đã duyệt',
-        fromDate: new Date('2026-10-31'),
-        toDate: new Date('2026-11-30'),
-      },
-    ]);
-    await expect(service.approveUnit(manager, 'unit')).rejects.toMatchObject({
-      code: 'CURRICULUM_EFFECTIVE_PERIOD_CONFLICT',
-      details: { programId: 'program', conflicts: [{ id: 'other' }] },
-    });
-    expect(String((db.$queryRaw.mock.calls[0] as unknown[])[0])).toContain('FROM programs');
-    expect(String((db.$queryRaw.mock.calls[1] as unknown[])[0])).toContain('FROM curriculum_units');
-    expect(db.lesson.updateMany).not.toHaveBeenCalled();
-    expect(db.curriculumUnit.update).not.toHaveBeenCalled();
-    expect(db.auditLog.create).not.toHaveBeenCalled();
+  it('replaces the approved version under the program lock and applies from today', async () => {
+    jest.useFakeTimers({ now: new Date('2026-11-19T03:00:00Z'), doNotFake: ['nextTick'] });
+    try {
+      const { service, db } = setup({ technicalReviewedAt: new Date() });
+      db.curriculumUnit.findMany.mockResolvedValueOnce([
+        { id: 'other', fromDate: new Date('2026-09-01T00:00:00Z') },
+      ]);
+      await service.approveUnit(manager, 'unit');
+      expect(String((db.$queryRaw.mock.calls[0] as unknown[])[0])).toContain('FROM programs');
+      expect(String((db.$queryRaw.mock.calls[1] as unknown[])[0])).toContain(
+        'FROM curriculum_units',
+      );
+      expect(db.curriculumUnit.update).toHaveBeenNthCalledWith(1, {
+        where: { id: 'other' },
+        data: containing({
+          status: 'ARCHIVED',
+          archiveReason: 'SUPERSEDED',
+          supersededById: 'unit',
+          toDate: new Date('2026-11-18T00:00:00Z'),
+        }),
+      });
+      expect(db.curriculumUnit.update).toHaveBeenNthCalledWith(
+        2,
+        containing({
+          where: { id: 'unit' },
+          data: containing({
+            status: 'APPROVED',
+            fromDate: new Date('2026-11-19T00:00:00Z'),
+            toDate: new Date('2099-12-31T00:00:00Z'),
+          }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('manager return invalidates the earlier teacher approval', async () => {
@@ -459,18 +475,30 @@ describe('curriculum teacher review and manager confirmation', () => {
   });
 });
 
-describe('future curriculum revisions and separate tests', () => {
+describe('curriculum revisions and separate tests', () => {
   beforeEach(() => jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-14T18:00:00Z')));
   afterEach(() => jest.restoreAllMocks());
 
-  it('requires a period after both today in Vietnam and the source period', async () => {
+  it('makes the next version of the program without asking for a period', async () => {
     const { service, db } = setup({ status: 'APPROVED' });
-    for (const fromDate of ['2026-10-15', '2026-10-31']) {
-      await expect(
-        service.reviseUnit(designer, 'unit', { title: 'Kỳ sau', fromDate, toDate: '2026-11-30' }),
-      ).rejects.toMatchObject({ code: 'FUTURE_CURRICULUM_PERIOD_REQUIRED' });
-    }
-    expect(db.curriculumUnit.create).not.toHaveBeenCalled();
+    db.curriculumUnit.aggregate.mockResolvedValueOnce({ _max: { version: 3 } });
+    // Old clients still send dates: they are ignored.
+    await service.reviseUnit(designer, 'unit', {
+      title: 'Bản sau',
+      fromDate: '2026-10-15',
+      toDate: '2026-11-30',
+    });
+    expect(db.curriculumUnit.aggregate).toHaveBeenCalledWith({
+      where: { programId: 'program' },
+      _max: { version: true },
+    });
+    expect(db.curriculumUnit.create).toHaveBeenCalledWith({
+      data: containing({
+        version: 4,
+        // Draft placeholder; the real period starts on approval.
+        toDate: new Date('2099-12-31T00:00:00Z'),
+      }),
+    });
   });
 
   it('copies only regular lessons to a new period without changing the original', async () => {
@@ -482,18 +510,9 @@ describe('future curriculum revisions and separate tests', () => {
       content: 'Đề',
       sequence: 1,
     });
-    await service.reviseUnit(designer, 'unit', {
-      title: 'Toán 8 kỳ sau',
-      fromDate: '2026-11-01',
-      toDate: '2026-11-30',
-    });
+    await service.reviseUnit(designer, 'unit', { title: 'Toán 8 bản sau' });
     expect(db.curriculumUnit.create).toHaveBeenCalledWith({
-      data: containing({
-        title: 'Toán 8 kỳ sau',
-        basedOnId: 'unit',
-        fromDate: new Date('2026-11-01T00:00:00Z'),
-        toDate: new Date('2026-11-30T00:00:00Z'),
-      }),
+      data: containing({ title: 'Toán 8 bản sau', basedOnId: 'unit', version: 1 }),
     });
     expect(db.lesson.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({ kind: 'LESSON', unitId: 'future-unit', title: 'Bài 1' })],
@@ -503,15 +522,9 @@ describe('future curriculum revisions and separate tests', () => {
 
   it('copies a previously approved archived source without changing its publication history', async () => {
     const { service, db } = setup({ status: 'ARCHIVED', approvedAt: new Date('2026-09-20') });
-    await service.reviseUnit(designer, 'unit', {
-      title: 'Kỳ tiếp theo',
-      fromDate: '2026-11-01',
-      toDate: '2026-11-30',
-    });
+    await service.reviseUnit(designer, 'unit', { title: 'Bản tiếp theo' });
     expect(db.curriculumUnit.create).toHaveBeenCalledWith(
-      containing({
-        data: containing({ basedOnId: 'unit', fromDate: new Date('2026-11-01') }),
-      }),
+      containing({ data: containing({ basedOnId: 'unit' }) }),
     );
     expect(db.curriculumUnit.update).not.toHaveBeenCalled();
   });
@@ -519,11 +532,7 @@ describe('future curriculum revisions and separate tests', () => {
   it('does not treat an archived unit without approval history as a revision source', async () => {
     const { service, db } = setup({ status: 'ARCHIVED', approvedAt: null });
     await expect(
-      service.reviseUnit(designer, 'unit', {
-        title: 'Kỳ tiếp theo',
-        fromDate: '2026-11-01',
-        toDate: '2026-11-30',
-      }),
+      service.reviseUnit(designer, 'unit', { title: 'Bản tiếp theo' }),
     ).rejects.toMatchObject({ code: 'UNIT_NOT_APPROVED' });
     expect(db.curriculumUnit.create).not.toHaveBeenCalled();
   });

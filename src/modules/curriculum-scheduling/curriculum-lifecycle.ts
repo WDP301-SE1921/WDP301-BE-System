@@ -1,6 +1,4 @@
-import { HttpStatus } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { AppError } from '../../common/errors/app.error';
 
 const DAY_MS = 86_400_000;
 const VIETNAM_OFFSET_MS = 7 * 3_600_000;
@@ -24,47 +22,78 @@ export async function lockCurriculumProgram(
   await tx.$queryRaw`SELECT id FROM programs WHERE id = ${programId} FOR UPDATE`;
 }
 
-export function assertCurriculumSessionDates(
-  unit: { fromDate: Date; toDate: Date },
-  startsAt: Date,
-  endsAt: Date,
-): void {
-  const start = unit.fromDate.getTime() - VIETNAM_OFFSET_MS;
-  const endExclusive = unit.toDate.getTime() + DAY_MS - VIETNAM_OFFSET_MS;
-  if (startsAt.getTime() < start || endsAt.getTime() > endExclusive)
-    throw new AppError(
-      'RANGE_OUTSIDE_UNIT',
-      'Session dates are outside the curriculum period',
-      HttpStatus.CONFLICT,
-    );
+/** A version stays in use until the next one is approved (Đợt F, 2026-11-19). */
+export const OPEN_PERIOD_END = '2099-12-31';
+
+function vietnamDay(now: Date): Date {
+  return new Date(`${vietnamDate(now)}T00:00:00.000Z`);
 }
 
-/** Caller holds the program lock, before any unit/class lock or publication write. */
-export async function assertNoCurriculumOverlap(
+/** Placeholder period of a draft; the real one is set when the manager approves. */
+export function draftPeriod(now = new Date()): { fromDate: Date; toDate: Date } {
+  return { fromDate: vietnamDay(now), toDate: new Date(`${OPEN_PERIOD_END}T00:00:00.000Z`) };
+}
+
+/** An approved version applies from its approval day (Vietnam) until it is replaced. */
+export function approvedPeriod(now = new Date()): { fromDate: Date; toDate: Date } {
+  return draftPeriod(now);
+}
+
+/**
+ * Approving a version replaces every other approved version of the program at once. Classes
+ * that already teach a replaced version keep it to the last lesson. Caller holds the program
+ * lock and runs this before giving the approved version its period.
+ */
+export async function supersedeOtherCurricula(
   tx: Prisma.TransactionClient,
-  unit: { id: string; programId: string; fromDate: Date; toDate: Date },
+  approved: { id: string; programId: string },
+  actorUserId: string,
+  now = new Date(),
 ): Promise<void> {
-  const conflicts = await tx.curriculumUnit.findMany({
-    where: {
-      programId: unit.programId,
-      id: { not: unit.id },
-      fromDate: { lte: unit.toDate },
-      toDate: { gte: unit.fromDate },
-      ...publishedCurriculumWhere,
-    },
-    select: { id: true, title: true, fromDate: true, toDate: true },
+  const yesterday = new Date(vietnamDay(now).getTime() - DAY_MS);
+  const others = await tx.curriculumUnit.findMany({
+    where: { programId: approved.programId, id: { not: approved.id }, status: 'APPROVED' },
+    select: { id: true, fromDate: true },
     orderBy: [{ fromDate: 'asc' }, { id: 'asc' }],
   });
-  if (conflicts.length)
-    throw new AppError(
-      'CURRICULUM_EFFECTIVE_PERIOD_CONFLICT',
-      'Another published curriculum covers these dates',
-      HttpStatus.CONFLICT,
-      { programId: unit.programId, conflicts },
-    );
+  for (const unit of others) {
+    // Its period ends the day before the replacement; never before the day it started.
+    const toDate = unit.fromDate > yesterday ? unit.fromDate : yesterday;
+    await tx.curriculumUnit.update({
+      where: { id: unit.id },
+      data: {
+        status: 'ARCHIVED',
+        archivedAt: now,
+        archiveReason: 'SUPERSEDED',
+        supersededById: approved.id,
+        toDate,
+        revision: { increment: 1 },
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: 'CURRICULUM_UNIT_AUTO_ARCHIVED',
+        entityType: 'CurriculumUnit',
+        entityId: unit.id,
+        beforeData: { status: 'APPROVED' },
+        afterData: {
+          status: 'ARCHIVED',
+          archiveReason: 'SUPERSEDED',
+          supersededById: approved.id,
+          archivedAt: now.toISOString(),
+          toDate: toDate.toISOString().slice(0, 10),
+          triggeredBy: 'APPROVAL',
+        },
+      },
+    });
+  }
 }
 
-/** Reconcile every missed transition using the nearest published successor. */
+/**
+ * Legacy data only: units approved before Đợt F carry hand-typed periods. Reconcile every
+ * missed transition using the nearest published successor.
+ */
 export async function archiveSupersededCurricula(
   tx: Prisma.TransactionClient,
   programId: string,

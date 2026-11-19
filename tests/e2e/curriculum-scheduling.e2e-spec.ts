@@ -14,7 +14,6 @@ import { AuthService } from '../../src/modules/auth/auth.service';
 import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
 import { GradingWorkerService } from '../../src/modules/academic/grading-worker.service';
-import { CurriculumLifecycleWorker } from '../../src/modules/curriculum-scheduling/curriculum-lifecycle.worker';
 
 const DB_NAME = `edugrade_schedule_test_${process.pid}_${Date.now().toString(36)}`;
 const DB_SERVER = new URL(
@@ -419,9 +418,10 @@ describe('Shared curriculum and generated sessions', () => {
     )
       .send({ title: 'Học phần tháng 2', fromDate: '2027-02-01', toDate: '2027-02-28' })
       .expect(201);
+    // Đợt F: dates are ignored; versions count per program.
     expect((revision.body as Envelope<{ status: string; version: number }>).data).toMatchObject({
       status: 'DRAFT',
-      version: 1,
+      version: 2,
     });
     const sessionId = generated.sessions[0].id;
     await call('TEACHER', 'post', `sessions/${sessionId}/roster`).send({}).expect(201);
@@ -552,107 +552,91 @@ describe('Shared curriculum and generated sessions', () => {
       .expect(200);
   }, 90_000);
 
-  it('serializes independent overlapping approvals by program and preserves archived history', async () => {
+  it('approving a version replaces the approved one of the program at once (Đợt F)', async () => {
     const { program } = await programWithReviewer('Khóa kiểm tra hiệu lực');
-    const first = await prepareUnit(program.id, 'Kỳ A', '2027-10-01', '2027-10-31');
-    const second = await prepareUnit(program.id, 'Kỳ B', '2027-10-31', '2027-11-30');
+    const vietnamToday = new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+    // Dates sent by old clients are ignored.
+    const first = await prepareUnit(program.id, 'Bản A', '2027-10-01', '2027-10-31');
+    await call('MANAGER', 'post', `curriculum-units/${first.id}/approve`).send({}).expect(201);
+    expect(await db.curriculumUnit.findUnique({ where: { id: first.id } })).toMatchObject({
+      status: 'APPROVED',
+      fromDate: new Date(vietnamToday),
+      toDate: new Date('2099-12-31'),
+    });
+
+    // Two versions approved at the same time: the program lock serializes them, one replaces
+    // the other, and exactly one version stays approved.
+    const second = await prepareUnit(program.id, 'Bản B', '2027-10-31', '2027-11-30');
+    const third = await prepareUnit(program.id, 'Bản C', '2027-10-31', '2027-11-30');
     const responses = await Promise.all(
-      [first, second].map((unit) =>
+      [second, third].map((unit) =>
         call('MANAGER', 'post', `curriculum-units/${unit.id}/approve`).send({}),
       ),
     );
-    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
-    const winner = responses[0].status === 201 ? first : second;
-    const loser = responses[0].status === 409 ? first : second;
-    expect(responses.find((response) => response.status === 409)?.body).toMatchObject({
-      error: { code: 'CURRICULUM_EFFECTIVE_PERIOD_CONFLICT' },
+    expect(responses.map((response) => response.status)).toEqual([201, 201]);
+    const approved = await db.curriculumUnit.findMany({
+      where: { programId: program.id, status: 'APPROVED' },
     });
-    expect(await db.curriculumUnit.findUnique({ where: { id: loser.id } })).toMatchObject({
-      status: 'PENDING_REVIEW',
+    expect(approved).toHaveLength(1);
+    const winner = approved[0];
+    expect([second.id, third.id]).toContain(winner.id);
+    expect(await db.curriculumUnit.findUnique({ where: { id: first.id } })).toMatchObject({
+      status: 'ARCHIVED',
+      archiveReason: 'SUPERSEDED',
     });
-    expect(await db.lesson.count({ where: { unitId: loser.id, status: 'APPROVED' } })).toBe(0);
     expect(
       await db.auditLog.count({
-        where: { action: 'CURRICULUM_UNIT_APPROVED', entityId: loser.id },
+        where: { action: 'CURRICULUM_UNIT_AUTO_ARCHIVED', entityId: first.id },
       }),
-    ).toBe(0);
+    ).toBe(1);
 
-    const successorStart = new Date(new Date(winner.toDate).getTime() + 86_400_000)
-      .toISOString()
-      .slice(0, 10);
-    const successor = await prepareUnit(program.id, 'Kỳ tiếp nối', successorStart, '2027-12-31');
-    await call('MANAGER', 'post', `curriculum-units/${successor.id}/approve`).send({}).expect(201);
-    expect(await db.curriculumUnit.findUnique({ where: { id: winner.id } })).toMatchObject({
-      status: 'APPROVED',
-    });
+    // Another program of the same subject and grade is not touched.
     const { program: differentProgram } = await programWithReviewer('Khóa khác chung môn khối');
     const other = await prepareUnit(
       differentProgram.id,
-      'Kỳ khóa khác',
-      winner.fromDate,
-      winner.toDate,
+      'Bản khóa khác',
+      '2027-10-01',
+      '2027-10-31',
     );
     await call('MANAGER', 'post', `curriculum-units/${other.id}/approve`).send({}).expect(201);
-
-    const worker = app.get(CurriculumLifecycleWorker);
-    const transitionAt = new Date(new Date(successorStart).getTime() - 7 * 3_600_000);
-    await worker.tick(new Date(transitionAt.getTime() - 1));
     expect(await db.curriculumUnit.findUnique({ where: { id: winner.id } })).toMatchObject({
       status: 'APPROVED',
     });
-    await worker.tick(transitionAt);
-    await worker.tick(transitionAt);
-    expect(await db.curriculumUnit.findUnique({ where: { id: winner.id } })).toMatchObject({
-      status: 'ARCHIVED',
-      archiveReason: 'SUPERSEDED',
-      supersededById: successor.id,
-      fromDate: new Date(winner.fromDate),
-      toDate: new Date(winner.toDate),
-    });
-    expect(
-      await db.auditLog.count({
-        where: { action: 'CURRICULUM_UNIT_AUTO_ARCHIVED', entityId: winner.id },
-      }),
-    ).toBe(1);
-    const historicalStart = new Date(new Date(winner.fromDate).getTime() + 86_400_000)
-      .toISOString()
-      .slice(0, 10);
-    const backdated = await prepareUnit(program.id, 'Bản hồi tố', historicalStart, winner.toDate);
-    const rejected = await call('MANAGER', 'post', `curriculum-units/${backdated.id}/approve`)
-      .send({})
-      .expect(409);
-    expect(rejected.body).toMatchObject({
-      error: { code: 'CURRICULUM_EFFECTIVE_PERIOD_CONFLICT' },
-    });
-    await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${winner.id}/revisions`)
-      .send({ title: 'Sao chép bản lưu trữ', fromDate: '2028-01-01', toDate: '2028-01-31' })
+
+    // A replaced version can still be copied, without dates, and stays visible to teachers.
+    await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${first.id}/revisions`)
+      .send({ title: 'Sao chép bản lưu trữ' })
       .expect(201);
     const history = await call('TEACHER', 'get', `curriculum-units?programId=${program.id}`).expect(
       200,
     );
-    expect((history.body as Envelope<Array<Id>>).data.map((unit) => unit.id)).toContain(winner.id);
-    await call('TEACHER', 'get', `curriculum-units/${winner.id}`).expect(200);
+    expect((history.body as Envelope<Array<Id>>).data.map((unit) => unit.id)).toContain(first.id);
+    await call('TEACHER', 'get', `curriculum-units/${first.id}`).expect(200);
   }, 90_000);
 
-  it('retains a parent outline after late approval archives a past period, excluding manual removals', async () => {
+  it('shows parents the version the class teaches, excluding manual removals (Đợt F)', async () => {
     const { program, classroom } = await programWithReviewer('Khóa lịch sử phụ huynh');
     const localDay = new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
     const day = (offset: number): string =>
       new Date(new Date(localDay).getTime() + offset * 86_400_000).toISOString().slice(0, 10);
-    const old = await prepareUnit(program.id, 'Kỳ đã học', day(-30), day(-1));
+    const old = await prepareUnit(program.id, 'Bản lớp đang học', day(-30), day(-1));
     await call('MANAGER', 'post', `curriculum-units/${old.id}/approve`).send({}).expect(201);
-    const current = await prepareUnit(program.id, 'Kỳ hiện tại', day(0), day(30));
+    const lesson = await db.lesson.findFirstOrThrow({ where: { unitId: old.id } });
+    const session = await db.classSession.create({
+      data: {
+        classId: classroom.id,
+        lessonId: lesson.id,
+        teacherId: ids.TEACHER,
+        startsAt: new Date(`${day(-7)}T11:00:00Z`),
+        endsAt: new Date(`${day(-7)}T12:30:00Z`),
+      },
+    });
+    const current = await prepareUnit(program.id, 'Bản mới', day(0), day(30));
     await call('MANAGER', 'post', `curriculum-units/${current.id}/approve`).send({}).expect(201);
     expect(await db.curriculumUnit.findUnique({ where: { id: old.id } })).toMatchObject({
       status: 'ARCHIVED',
       archiveReason: 'SUPERSEDED',
     });
-    const removed = await prepareUnit(program.id, 'Kỳ đã gỡ', day(31), day(35));
-    await call('MANAGER', 'post', `curriculum-units/${removed.id}/approve`).send({}).expect(201);
-    await request(server)
-      .delete(`/api/v1/academic/curriculum-units/${removed.id}`)
-      .set('Authorization', `Bearer ${tokens.MANAGER}`)
-      .expect(200);
     const order = await db.registrationOrder.create({
       data: {
         type: 'FIRST_CHILD',
@@ -678,14 +662,28 @@ describe('Shared curriculum and generated sessions', () => {
         endDate: new Date(day(40)),
       },
     });
-    const outline = await call('PARENT', 'get', `me/students/${ids.student}/curriculum`).expect(
-      200,
-    );
-    const unitIds = (outline.body as Envelope<{ items: Array<Id> }>).data.items.map(
-      (unit) => unit.id,
-    );
-    expect(unitIds).toEqual(expect.arrayContaining([old.id, current.id]));
-    expect(unitIds).not.toContain(removed.id);
+    const outlineIds = async (): Promise<string[]> => {
+      const outline = await call(
+        'PARENT',
+        'get',
+        // The student also learns in classes of the earlier tests.
+        `me/students/${ids.student}/curriculum?programId=${program.id}`,
+      ).expect(200);
+      return (outline.body as Envelope<{ items: Array<Id> }>).data.items.map((unit) => unit.id);
+    };
+    // The class keeps teaching the replaced version.
+    expect(await outlineIds()).toEqual([old.id]);
+    // Without sessions the class follows the approved version.
+    await db.classSession.delete({ where: { id: session.id } });
+    expect(await outlineIds()).toEqual([current.id]);
+
+    const removed = await prepareUnit(program.id, 'Bản đã gỡ', day(31), day(35));
+    await call('MANAGER', 'post', `curriculum-units/${removed.id}/approve`).send({}).expect(201);
+    await request(server)
+      .delete(`/api/v1/academic/curriculum-units/${removed.id}`)
+      .set('Authorization', `Bearer ${tokens.MANAGER}`)
+      .expect(200);
+    expect(await outlineIds()).not.toContain(removed.id);
     expect(await db.curriculumUnit.findUnique({ where: { id: removed.id } })).toMatchObject({
       archiveReason: 'MANUAL',
     });

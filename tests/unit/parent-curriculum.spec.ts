@@ -17,42 +17,65 @@ interface Placement {
 }
 
 interface UnitQuery {
-  where: { AND: [unknown, { OR: { programId: string }[] }] };
+  where: {
+    status?: string;
+    programId?: { in: string[] };
+    AND?: [unknown, { id: { in: string[] } }];
+  };
 }
 
 interface Harness {
   service: CurriculumSchedulingService;
   enrollmentQuery: jest.Mock<Promise<unknown[]>, [{ where: Record<string, unknown> }]>;
-  programs: () => string[];
+  /** Unit ids the page query asked for. */
+  unitIds: () => string[];
+  currentLookups: () => string[][];
 }
 
-function setup(enrollment: { startDate: Date; endDate: Date; placements: Placement[] }): Harness {
+/**
+ * `taught`: unit of each class's latest session. A class without one follows the
+ * program's approved version, named `current-<programId>` here.
+ */
+function setup(
+  enrollment: { startDate: Date; endDate: Date; placements: Placement[] },
+  taught: Record<string, string> = {},
+): Harness {
   const enrollmentQuery = jest.fn<Promise<unknown[]>, [{ where: Record<string, unknown> }]>(() =>
     Promise.resolve([{ ...enrollment, class: ORIGINAL }]),
   );
-  const unitQuery = jest.fn<Promise<unknown[]>, [UnitQuery]>(() =>
-    Promise.resolve([
-      {
-        id: 'unit-1',
-        programId: enrollment.placements.at(-1)?.class.programId ?? ORIGINAL.programId,
-        fromDate: enrollment.startDate,
-        toDate: enrollment.endDate,
-        lessons: [],
-      },
-    ]),
-  );
+  const unitQuery = jest.fn<Promise<unknown[]>, [UnitQuery]>(({ where }) => {
+    if (where.programId)
+      return Promise.resolve(
+        where.programId.in.map((programId) => ({ id: `current-${programId}`, programId })),
+      );
+    const ids = where.AND?.[1].id.in ?? [];
+    return Promise.resolve(ids.map((id) => ({ id, programId: 'any', lessons: [] })));
+  });
   const db = {
     studentProfile: { count: (): Promise<number> => Promise.resolve(1) },
     enrollment: { findMany: enrollmentQuery },
+    classSession: {
+      findMany: ({ where }: { where: { classId: { in: string[] } } }): Promise<unknown[]> =>
+        Promise.resolve(
+          where.classId.in
+            .filter((classId) => taught[classId])
+            .map((classId) => ({ classId, lesson: { unitId: taught[classId] } })),
+        ),
+    },
     curriculumUnit: { findMany: unitQuery, count: (): Promise<number> => Promise.resolve(1) },
   };
   const service = new CurriculumSchedulingService(
     db as unknown as DatabaseService,
     {} as NotificationEventsService,
   );
-  const programs = (): string[] =>
-    unitQuery.mock.calls[0]?.[0].where.AND[1].OR.map(({ programId }) => programId) ?? [];
-  return { service, enrollmentQuery, programs };
+  const calls = (): UnitQuery[] => unitQuery.mock.calls.map(([query]) => query);
+  return {
+    service,
+    enrollmentQuery,
+    unitIds: () => calls().find((query) => query.where.AND)?.where.AND?.[1].id.in ?? [],
+    currentLookups: () =>
+      calls().flatMap((query) => (query.where.programId ? [query.where.programId.in] : [])),
+  };
 }
 
 describe('parent curriculum outline', () => {
@@ -66,7 +89,7 @@ describe('parent curriculum outline', () => {
 
   it('includes an upcoming term, using the class placed when the term starts', async () => {
     const startDate = new Date('2026-12-01T00:00:00.000Z');
-    const { service, enrollmentQuery, programs } = setup({
+    const { service, enrollmentQuery, unitIds } = setup({
       startDate,
       endDate: new Date('2027-03-01T00:00:00.000Z'),
       placements: [
@@ -77,12 +100,12 @@ describe('parent curriculum outline', () => {
     const page = await service.studentCurriculum(PARENT, 'child-1', PAGE);
 
     expect(enrollmentQuery.mock.calls[0]?.[0].where).not.toHaveProperty('startDate');
-    expect(programs()).toEqual([TRANSFER.programId]);
+    expect(unitIds()).toEqual([`current-${TRANSFER.programId}`]);
     expect(page.items[0]?.classes).toEqual([{ id: TRANSFER.id, name: TRANSFER.name }]);
   });
 
   it('uses the current placement of an in-term enrollment', async () => {
-    const { service, programs } = setup({
+    const { service, unitIds } = setup({
       startDate: new Date('2026-09-01T00:00:00.000Z'),
       endDate: new Date('2027-01-01T00:00:00.000Z'),
       placements: [
@@ -97,11 +120,11 @@ describe('parent curriculum outline', () => {
 
     await service.studentCurriculum(PARENT, 'child-1', PAGE);
 
-    expect(programs()).toEqual([TRANSFER.programId]);
+    expect(unitIds()).toEqual([`current-${TRANSFER.programId}`]);
   });
 
   it('falls back to the class of the registration when there is no placement', async () => {
-    const { service, programs } = setup({
+    const { service, unitIds } = setup({
       startDate: new Date('2026-12-01T00:00:00.000Z'),
       endDate: new Date('2027-03-01T00:00:00.000Z'),
       placements: [],
@@ -109,6 +132,23 @@ describe('parent curriculum outline', () => {
 
     await service.studentCurriculum(PARENT, 'child-1', PAGE);
 
-    expect(programs()).toEqual([ORIGINAL.programId]);
+    expect(unitIds()).toEqual([`current-${ORIGINAL.programId}`]);
+  });
+
+  it('shows the version a class already teaches, not a newer approved one (Đợt F)', async () => {
+    const { service, unitIds, currentLookups } = setup(
+      {
+        startDate: new Date('2026-09-01T00:00:00.000Z'),
+        endDate: new Date('2027-01-01T00:00:00.000Z'),
+        placements: [],
+      },
+      { [ORIGINAL.id]: 'unit-old' },
+    );
+
+    const page = await service.studentCurriculum(PARENT, 'child-1', PAGE);
+
+    expect(unitIds()).toEqual(['unit-old']);
+    expect(currentLookups()).toEqual([]);
+    expect(page.items[0]?.classes).toEqual([{ id: ORIGINAL.id, name: ORIGINAL.name }]);
   });
 });
