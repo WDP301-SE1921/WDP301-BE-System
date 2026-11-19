@@ -1,6 +1,7 @@
 import { tetBreaks } from '../../common/lunar-new-year';
 import { Prisma, type Enrollment, type EnrollmentPlacement } from '@prisma/client';
 import { slotsForRange } from '../../modules/curriculum-scheduling/curriculum-scheduling.service';
+import { priceTuition } from '../../modules/registration-flow/tuition-pricing';
 import type { SeedUsers } from './seed-accounts';
 import type { DemoClass, SeedCatalog } from './seed-catalog';
 import { addDays, addMonths, dateOnly, demoId, localInstant } from './seed-calendar';
@@ -115,7 +116,7 @@ export async function seedEnrollments(
         targetStudentId: student.id,
         classId: classroom.id,
         packageMonths: item.months,
-        quotedAmount: classroom.monthlyFee.mul(item.months),
+        ...priceTuition(classroom.monthlyFee, startDate, item.months),
         billSnapshot: billSnapshot(classroom, student, parent),
         startDate,
         endDate,
@@ -238,7 +239,7 @@ export async function seedEnrollments(
         targetStudentId: student.id,
         classId: classroom.id,
         packageMonths: 1,
-        quotedAmount: classroom.monthlyFee,
+        ...priceTuition(classroom.monthlyFee, startDate, 1),
         billSnapshot: billSnapshot(classroom, student, parent),
         startDate,
         endDate: addMonths(startDate, 1),

@@ -6,7 +6,14 @@ import {
 } from '../../modules/curriculum-scheduling/curriculum-scheduling.service';
 import type { SeedUsers } from './seed-accounts';
 import { SUBJECTS, TOPICS, lessonContent } from './curriculum-content';
-import { addDays, dateOnly, demoId, localInstant, monthStart } from './seed-calendar';
+import {
+  addDays,
+  dateOnly,
+  demoId,
+  localInstant,
+  maximumWeeklySlots,
+  monthStart,
+} from './seed-calendar';
 
 export type DemoClass = Prisma.ClassGetPayload<{
   include: { program: true; weeklySchedules: true };
@@ -38,6 +45,7 @@ export async function seedCatalog(
   const createdAt = localInstant(addDays(from, -14), 9);
   const result: SeedCatalog = { classes: {}, units: {}, lessons: {}, students: {}, from, to };
   const rooms: string[] = [];
+  const roomCapacities = new Map<string, number>();
   for (const [index, name] of [
     'Phòng A101',
     'Phòng A102',
@@ -58,7 +66,25 @@ export async function seedCatalog(
       },
     });
     rooms.push(room.id);
+    roomCapacities.set(room.id, room.capacity);
   }
+
+  const fullRoom = await tx.room.upsert({
+    where: { name: 'Phòng D201 - Nhóm nhỏ (2 chỗ)' },
+    update: {},
+    create: {
+      id: demoId('room_full'),
+      name: 'Phòng D201 - Nhóm nhỏ (2 chỗ)',
+      capacity: 2,
+      isActive: true,
+      createdAt,
+    },
+  });
+  roomCapacities.set(fullRoom.id, fullRoom.capacity);
+  if (fullRoom.capacity !== 2 || !fullRoom.isActive)
+    throw new Error(
+      'The demo full-class room already exists with incompatible capacity or status.',
+    );
 
   for (const subject of SUBJECTS) {
     const record = await tx.subject.upsert({
@@ -101,7 +127,7 @@ export async function seedCatalog(
           id: demoId(`class_${key}-a`),
           programId: program.id,
           name: `${subject.name} ${grade}A`,
-          capacity: 20,
+          capacity: roomCapacities.get(rooms[subject.room])!,
           monthlyFee: subject.fee,
           teacherId: users[subject.teacher].id,
           roomId: rooms[subject.room],
@@ -131,7 +157,6 @@ export async function seedCatalog(
       end: '20:00',
       teacher: users['substitute-teacher'].id,
       room: rooms[4],
-      capacity: 20,
       open: true,
       active: true,
     },
@@ -143,8 +168,7 @@ export async function seedCatalog(
       start: '20:00',
       end: '21:30',
       teacher: users.teacher.id,
-      room: rooms[0],
-      capacity: 2,
+      room: fullRoom.id,
       open: true,
       active: true,
     },
@@ -157,7 +181,6 @@ export async function seedCatalog(
       end: '21:30',
       teacher: users['physics-teacher'].id,
       room: rooms[1],
-      capacity: 20,
       open: false,
       active: true,
     },
@@ -170,7 +193,6 @@ export async function seedCatalog(
       end: '20:00',
       teacher: users['chemistry-teacher'].id,
       room: rooms[2],
-      capacity: 20,
       open: false,
       active: false,
     },
@@ -182,8 +204,7 @@ export async function seedCatalog(
       start: '14:00',
       end: '16:00',
       teacher: null,
-      room: null,
-      capacity: 20,
+      room: rooms[4],
       open: false,
       active: true,
     },
@@ -197,7 +218,7 @@ export async function seedCatalog(
         id: demoId(`class_${item.key}`),
         programId: base.programId,
         name: item.name,
-        capacity: item.capacity,
+        capacity: roomCapacities.get(item.room)!,
         monthlyFee: base.monthlyFee,
         teacherId: item.teacher,
         roomId: item.room,
@@ -332,6 +353,7 @@ export async function seedCatalog(
       });
       const regularCount = Math.max(
         TOPICS[key].length,
+        maximumWeeklySlots(from, to, tetBreaks(dateOnly(from), dateOnly(to))),
         ...classPlans.map((slots) =>
           legacyTests.length ? slots.length - lastMonthlySlots(slots).size : slots.length,
         ),

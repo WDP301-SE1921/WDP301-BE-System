@@ -36,7 +36,8 @@
         "test:ai": "ts-node --transpile-only scripts/test-ai-grading.ts",
         "test:ai:file": "node --env-file=.env -r ts-node/register/transpile-only scripts/test-ai-file-grading.ts",
         "push:generate-keys": "web-push generate-vapid-keys",
-        "db:seed:curriculum": "ts-node --transpile-only src/database/seed-curriculum.ts"
+        "db:seed:curriculum": "ts-node --transpile-only src/database/seed-curriculum.ts",
+        "db:seed:repair": "ts-node --transpile-only src/database/seed-repair.ts"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1141.0",

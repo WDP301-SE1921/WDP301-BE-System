@@ -6,6 +6,7 @@ import { addDays, localInstant, monthStart, referenceDate } from './seeds/seed-c
 import { seedCenterProfile } from './seeds/seed-center';
 import { demoReferenceDate, seedDashboard } from './seeds/seed-dashboard';
 import { seedDemo } from './seeds/seed-demo';
+import { hasCurrentDashboardManifest } from './seeds/seed-manifest';
 
 /** Adds the bulk dashboard layer; seeds the demo first when the database has none. */
 async function seedDashboardData(): Promise<void> {
@@ -15,12 +16,16 @@ async function seedDashboardData(): Promise<void> {
   const prisma = new PrismaClient({ datasourceUrl: config.databaseUrl });
   try {
     const passwordHash = await bcrypt.hash(config.password, 12);
-    if (!(await demoReferenceDate(prisma))) {
+    const demoDate = await demoReferenceDate(prisma, config.referenceDate);
+    const hasDashboard = await hasCurrentDashboardManifest(prisma, demoDate);
+    if (hasDashboard && !demoDate)
+      throw new Error('Dashboard manifest exists without its demo dataset.');
+    if (!demoDate) {
       console.log('Demo dataset not found; running the demo seed first.');
       await seedDemo(prisma, passwordHash, config.referenceDate);
     }
-    await seedCenterProfile(prisma, config.center, true);
     const result = await seedDashboard(prisma, passwordHash);
+    await seedCenterProfile(prisma, config.center, true);
     console.log(
       result.created
         ? `Dashboard seed completed for reference date ${result.referenceDate}.`

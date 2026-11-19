@@ -1509,11 +1509,18 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       }),
     ]);
     const bucket = (
-      rows: { method: PaymentMethod | null; _sum: { amount: Prisma.Decimal | null }; _count: { _all: number } }[],
+      rows: {
+        method: PaymentMethod | null;
+        _sum: { amount: Prisma.Decimal | null };
+        _count: { _all: number };
+      }[],
       method: PaymentMethod | null,
     ): { count: number; amount: string } => {
       const row = rows.find((item) => item.method === method);
-      return { count: row?._count._all ?? 0, amount: (row?._sum.amount ?? new Prisma.Decimal(0)).toFixed(2) };
+      return {
+        count: row?._count._all ?? 0,
+        amount: (row?._sum.amount ?? new Prisma.Decimal(0)).toFixed(2),
+      };
     };
     const cashIn = bucket(payments, 'CASH');
     const cashOut = bucket(refunds, 'CASH');
@@ -2626,7 +2633,11 @@ interface StudentTermEnrollment extends TermEnrollment {
  * Highest number of enrollments that occupy the class on any single day of [startDate, endDate).
  * Occupancy only changes on an enrollment start date, so those dates are the only points to test.
  */
-function peakOccupancy(enrollments: TermEnrollment[], startDate: Date, endDate: Date): number {
+export function peakOccupancy(
+  enrollments: TermEnrollment[],
+  startDate: Date,
+  endDate: Date,
+): number {
   const dated = enrollments.filter(
     (item): item is { classId: string; startDate: Date; endDate: Date } =>
       !!item.startDate && !!item.endDate,
@@ -2900,7 +2911,6 @@ export function refundView(refund: RefundRow): Record<string, unknown> {
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   CASH: 'Tiền mặt',
   BANK_TRANSFER: 'Chuyển khoản',
-
 };
 
 const TERM_LABELS = {

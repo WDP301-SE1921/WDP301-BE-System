@@ -6,8 +6,10 @@ import { seedEnrollments } from './seed-enrollments';
 import { seedSessions, seedLeavesAndMakeups } from './seed-sessions';
 import { seedAssessments } from './seed-assessments';
 import { seedOperations } from './seed-operations';
-import { demoId, localInstant, referenceDate } from './seed-calendar';
+import { DEMO_PREFIX, demoId, localInstant, referenceDate } from './seed-calendar';
 import { CURRICULUM_EDITION } from './curriculum-content';
+import { DEMO_SEED_VERSION, readDemoManifest } from './seed-manifest';
+import { assertSeedIntegrity } from './seed-integrity';
 
 export interface DemoSeedResult {
   referenceDate: string;
@@ -23,32 +25,11 @@ export async function seedDemo(
 ): Promise<DemoSeedResult> {
   return prisma.$transaction(
     async (tx) => {
-      const manifest = await tx.auditLog.findUnique({ where: { id: demoId('manifest') } });
-      const stored = manifest?.afterData;
-      if (
-        manifest &&
-        (!stored ||
-          typeof stored !== 'object' ||
-          Array.isArray(stored) ||
-          stored.curriculumEdition !== CURRICULUM_EDITION)
-      ) {
-        throw new Error(
-          'This demo contains an older curriculum edition. Run pnpm db:seed:curriculum --apply to add sourced drafts without overwriting existing lessons, or seed a fresh development database.',
-        );
-      }
-      const savedDate =
-        stored &&
-        typeof stored === 'object' &&
-        !Array.isArray(stored) &&
-        typeof stored.referenceDate === 'string'
-          ? stored.referenceDate
-          : undefined;
-      if (savedDate && date && savedDate !== date)
-        throw new Error(
-          `Demo already uses SEED_REFERENCE_DATE=${savedDate}. Re-running preserves its dates; use a separate database or pnpm reseed to replace all data with a new reference date.`,
-        );
-      const today = referenceDate(savedDate ?? date);
+      const manifest = await readDemoManifest(tx, date);
+      const today = referenceDate(manifest?.referenceDate ?? date);
       const users = await seedAccounts(tx, passwordHash, true, localInstant(today, 9), env);
+      // The manifest is the completed snapshot. App edits and publications stay authoritative.
+      if (manifest) return { referenceDate: manifest.referenceDate, users };
       const catalog = await seedCatalog(tx, users, today);
       await seedLearningOutcomes(tx, users, catalog);
       const enrollments = await seedEnrollments(tx, users, catalog, today);
@@ -56,6 +37,7 @@ export async function seedDemo(
       await seedLeavesAndMakeups(tx, users, enrollments, sessions, today);
       await seedAssessments(tx, users, catalog, enrollments, today);
       await seedOperations(tx, users, catalog, today);
+      await assertSeedIntegrity(tx, DEMO_PREFIX);
       await tx.auditLog.upsert({
         where: { id: demoId('manifest') },
         update: {},
@@ -68,7 +50,7 @@ export async function seedDemo(
           afterData: {
             referenceDate: today.toISOString().slice(0, 10),
             source: 'Chân trời sáng tạo - Nhà xuất bản Giáo dục Việt Nam',
-            version: 2,
+            version: DEMO_SEED_VERSION,
             curriculumEdition: CURRICULUM_EDITION,
           },
           createdAt: localInstant(today, 9),

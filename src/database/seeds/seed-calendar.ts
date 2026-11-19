@@ -46,3 +46,22 @@ export function localInstant(date: Date, hour = 0, minute = 0): Date {
 export function studyDay(instant: Date): Date {
   return referenceDate(new Date(instant.getTime() + OFFSET_MS).toISOString().slice(0, 10));
 }
+
+/** Reserve enough lessons for any two-day weekly timetable before publishing a demo unit. */
+export function maximumWeeklySlots(
+  from: Date,
+  to: Date,
+  breaks: readonly { fromDate: string; toDate: string }[],
+  daysPerWeek = 2,
+): number {
+  const counts = Array<number>(7).fill(0);
+  for (let day = new Date(from); day <= to; day = addDays(day, 1)) {
+    const key = dateOnly(day);
+    if (!breaks.some((range) => range.fromDate <= key && key <= range.toDate))
+      counts[day.getUTCDay()]++;
+  }
+  return counts
+    .sort((a, b) => b - a)
+    .slice(0, daysPerWeek)
+    .reduce((sum, count) => sum + count, 0);
+}

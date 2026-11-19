@@ -1,12 +1,20 @@
 import { createHash } from 'node:crypto';
-import type { Prisma, PrismaClient, User } from '@prisma/client';
+import { Prisma, type PrismaClient, type User } from '@prisma/client';
 import {
   lastMonthlySlots,
   slotsForRange,
 } from '../../modules/curriculum-scheduling/curriculum-scheduling.service';
 import { tetBreaks } from '../../common/lunar-new-year';
 import { moneyText, weeklySlotsText } from '../../modules/registration-flow/registration-text';
-import { SUBJECTS, TOPICS, lessonContent } from './curriculum-content';
+import { priceTuition } from '../../modules/registration-flow/tuition-pricing';
+import { CURRICULUM_EDITION, SUBJECTS, TOPICS, lessonContent } from './curriculum-content';
+import {
+  DASHBOARD_SEED_VERSION,
+  DEMO_SEED_VERSION,
+  hasCurrentDashboardManifest,
+  readDemoManifest,
+} from './seed-manifest';
+import { assertSeedIntegrity } from './seed-integrity';
 import {
   addDays,
   addMonths,
@@ -95,11 +103,11 @@ interface ProgramInfo {
   fee: number;
   trackId: string;
   designerId: string;
-  currentDesignerId: string;
   reviewerTeacherId: string;
   currentUnitId: string;
+  currentApprovedAt: Date;
   currentLessons: string[];
-  maxSequence: number;
+  outcomeByTopic: Map<string, string>;
   tests: Map<string, string>;
   historyLessons: string[];
 }
@@ -278,6 +286,7 @@ export interface PlanRows {
   weeklySchedules: Prisma.ClassWeeklyScheduleCreateManyInput[];
   units: Prisma.CurriculumUnitCreateManyInput[];
   lessons: Prisma.LessonCreateManyInput[];
+  lessonOutcomes: Prisma.LessonOutcomeCreateManyInput[];
   generations: Prisma.ScheduleGenerationCreateManyInput[];
   sessions: Prisma.ClassSessionCreateManyInput[];
   orders: Prisma.RegistrationOrderCreateManyInput[];
@@ -314,38 +323,44 @@ export async function seedDashboard(
   passwordHash: string,
   options: DashboardSeedOptions = {},
 ): Promise<DashboardSeedResult> {
-  const date = await demoReferenceDate(prisma);
-  if (!date)
-    throw new Error(
-      'Demo dataset not found. Run pnpm seed (SEED_MODE=demo) before the dashboard seed.',
-    );
-  if (await prisma.auditLog.findUnique({ where: { id: bulkId('manifest') } }))
-    return { referenceDate: date, created: false, rows: {} };
-  const context = await loadContext(prisma, referenceDate(date), options.now ?? new Date());
-  const plan = new DashboardPlan(context, passwordHash).build();
-  await prisma.$transaction(
+  return prisma.$transaction(
     async (tx) => {
-      if (await tx.auditLog.findUnique({ where: { id: bulkId('manifest') } }))
-        throw new Error('Another process applied the dashboard seed at the same time.');
+      await tx.$queryRaw`SELECT id FROM audit_logs WHERE id = ${demoId('manifest')} FOR UPDATE`;
+      const manifest = await readDemoManifest(tx);
+      if (!manifest)
+        throw new Error('Demo dataset not found. Run pnpm seed (SEED_MODE=demo) first.');
+      if (await hasCurrentDashboardManifest(tx, manifest.referenceDate))
+        return { referenceDate: manifest.referenceDate, created: false, rows: {} };
+      const context = await loadContext(
+        tx,
+        referenceDate(manifest.referenceDate),
+        options.now ?? new Date(),
+      );
+      const plan = new DashboardPlan(context, passwordHash).build();
       await insertRows(tx, plan.rows);
+      await assertSeedIntegrity(tx, BULK_PREFIX);
+      return { referenceDate: manifest.referenceDate, created: true, rows: rowCounts(plan.rows) };
     },
-    { maxWait: 30_000, timeout: 900_000 },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      maxWait: 30_000,
+      timeout: 900_000,
+    },
   );
-  return { referenceDate: date, created: true, rows: rowCounts(plan.rows) };
 }
 
-export async function demoReferenceDate(prisma: PrismaClient): Promise<string | undefined> {
-  const manifest = await prisma.auditLog.findUnique({ where: { id: demoId('manifest') } });
-  const stored = manifest?.afterData;
-  return stored &&
-    typeof stored === 'object' &&
-    !Array.isArray(stored) &&
-    typeof stored.referenceDate === 'string'
-    ? stored.referenceDate
-    : undefined;
+export async function demoReferenceDate(
+  prisma: PrismaClient,
+  requestedDate?: string,
+): Promise<string | undefined> {
+  return (await readDemoManifest(prisma, requestedDate))?.referenceDate;
 }
 
-async function loadContext(prisma: PrismaClient, today: Date, now: Date): Promise<SeedContext> {
+async function loadContext(
+  prisma: Prisma.TransactionClient,
+  today: Date,
+  now: Date,
+): Promise<SeedContext> {
   const findUser = async (key: string): Promise<User> => {
     const user = await prisma.user.findFirst({
       where: { id: { startsWith: demoId(`user_${key}_`) } },
@@ -364,15 +379,31 @@ async function loadContext(prisma: PrismaClient, today: Date, now: Date): Promis
     const teacher = await findUser(subject.teacher);
     for (const grade of [6, 7, 8, 9]) {
       const key = `${subject.key}-${grade}`;
-      const unit = await prisma.curriculumUnit.findUnique({
-        where: { id: demoId(`unit_${key}_v2`) },
+      const unit = await prisma.curriculumUnit.findFirst({
+        where: { programId: demoId(`program_${key}`), status: 'APPROVED' },
+        orderBy: [{ fromDate: 'desc' }, { version: 'desc' }, { id: 'asc' }],
         include: { lessons: true },
       });
       if (!unit || unit.status !== 'APPROVED')
-        throw new Error(`Approved demo curriculum ${key} is missing. Run pnpm reseed first.`);
+        throw new Error(
+          `Approved curriculum ${key} is missing. Publish the program curriculum before adding dashboard data.`,
+        );
       const regular = unit.lessons
         .filter((lesson) => lesson.kind === 'LESSON')
         .sort((a, b) => a.sequence - b.sequence);
+      const outcomes = await prisma.learningOutcome.findMany({
+        where: { outcomeSetId: demoId(`outcome_set_${key}_v1`) },
+        select: { id: true },
+      });
+      const outcomeIds = new Set(outcomes.map((outcome) => outcome.id));
+      const outcomeByTopic = new Map(
+        TOPICS[key].map((topic, index) => {
+          const id = demoId(`outcome_${key}_${index + 1}`);
+          if (!outcomeIds.has(id))
+            throw new Error(`Demo CLO ${id} is missing; existing content was preserved.`);
+          return [topic.title, id];
+        }),
+      );
       programs.set(key, {
         key,
         subjectKey: subject.key,
@@ -382,11 +413,11 @@ async function loadContext(prisma: PrismaClient, today: Date, now: Date): Promis
         fee: subject.fee,
         trackId: unit.trackId,
         designerId: designers[subject.designer].id,
-        currentDesignerId: unit.designerId,
         reviewerTeacherId: teacher.id,
         currentUnitId: unit.id,
+        currentApprovedAt: unit.approvedAt ?? unit.createdAt,
         currentLessons: regular.map((lesson) => lesson.id),
-        maxSequence: regular.at(-1)?.sequence ?? 0,
+        outcomeByTopic,
         tests: new Map(
           unit.lessons
             .filter((lesson) => lesson.kind === 'MONTHLY_TEST' && lesson.monthKey)
@@ -510,6 +541,7 @@ class DashboardPlan {
     weeklySchedules: [],
     units: [],
     lessons: [],
+    lessonOutcomes: [],
     generations: [],
     sessions: [],
     orders: [],
@@ -772,7 +804,7 @@ class DashboardPlan {
         id: bulkId(`class_${definition.key}`),
         program,
         name: className(subject.name, program.grade, definition.variant),
-        capacity: definition.capacity,
+        capacity: room.capacity,
         fee: program.fee + definition.feeDelta,
         isOpen: definition.isOpen,
         isActive: definition.isActive,
@@ -852,7 +884,10 @@ class DashboardPlan {
       const history = Math.max(0, ...mine.map((plan) => plan.history.length));
       if (history) this.createHistoryUnit(program, history);
       const needed = Math.max(0, ...mine.map((plan) => regularNeeded(program, plan.current)));
-      this.appendCurrentLessons(program, needed);
+      if (needed > program.currentLessons.length)
+        throw new Error(
+          `Approved curriculum ${program.key} has too few lessons. Publish a new version before adding dashboard classes; existing approved content was preserved.`,
+        );
     }
     for (const plan of plans) this.createClassSessions(plan.classPlan, plan.history, plan.current);
   }
@@ -871,21 +906,24 @@ class DashboardPlan {
       programId: program.id,
       designerId: program.designerId,
       version: 1,
-      revision: 1,
+      revision: 2,
       submittedAt,
       reviewedAt: approvedAt,
       reviewedById: ctx.manager.id,
-      reviewNote: 'Trung tâm xác nhận áp dụng học phần hè đã được giáo viên duyệt.',
+      reviewNote: 'Lịch sử duyệt mô phỏng cho dữ liệu demo; không thay thế thẩm định giáo trình.',
       reviewerTeacherId: program.reviewerTeacherId,
       technicalReviewedAt,
-      technicalReviewNote: 'Giáo viên phụ trách đã duyệt nội dung chuyên môn.',
+      technicalReviewNote: 'Duyệt mô phỏng cho dữ liệu demo; nguồn CLO vẫn chờ giáo viên xác minh.',
       title: `${program.subjectName} ${program.grade} - Học phần ${dateOnly(ctx.historyStart).slice(0, 7)} đến ${dateOnly(toDate).slice(0, 7)}`,
       fromDate: ctx.historyStart,
       toDate,
-      status: 'APPROVED',
+      status: 'ARCHIVED',
       approvedAt,
+      archivedAt: program.currentApprovedAt,
+      archiveReason: 'SUPERSEDED',
+      supersededById: program.currentUnitId,
       createdAt,
-      updatedAt: approvedAt,
+      updatedAt: program.currentApprovedAt,
     });
     const topics = TOPICS[program.key];
     for (let index = 0; index < count; index++) {
@@ -909,6 +947,10 @@ class DashboardPlan {
         createdAt,
       });
       program.historyLessons.push(lessonId);
+      this.rows.lessonOutcomes.push({
+        lessonId,
+        outcomeId: program.outcomeByTopic.get(topic.title)!,
+      });
     }
     this.audit({
       actorUserId: program.designerId,
@@ -933,32 +975,19 @@ class DashboardPlan {
       entityId: id,
       createdAt: approvedAt,
     });
-  }
-
-  /** Classes of one program share the approved unit, which needs a lesson for every slot. */
-  private appendCurrentLessons(program: ProgramInfo, needed: number): void {
-    const missing = needed - program.currentLessons.length;
-    const topics = TOPICS[program.key];
-    const createdAt = localInstant(addDays(this.ctx.termStart, -12), 9);
-    for (let index = 0; index < missing; index++) {
-      const sequence = program.maxSequence + index + 1;
-      const topic = topics[index % topics.length];
-      const id = bulkId(`lesson_${program.key}_current_${sequence}`);
-      this.rows.lessons.push({
-        id,
-        programId: program.id,
-        designerId: program.currentDesignerId,
-        unitId: program.currentUnitId,
-        title: `${topic.title} - Ôn tập cuối học phần`,
-        content: lessonContent(topic, 'Ôn tập cuối học phần'),
-        sequence,
-        kind: 'LESSON',
-        status: 'APPROVED',
-        createdAt,
-      });
-      program.currentLessons.push(id);
-    }
-    if (missing > 0) program.maxSequence += missing;
+    this.audit({
+      actorUserId: ctx.manager.id,
+      action: 'CURRICULUM_UNIT_AUTO_ARCHIVED',
+      entityType: 'CurriculumUnit',
+      entityId: id,
+      beforeData: { status: 'APPROVED' },
+      afterData: {
+        status: 'ARCHIVED',
+        archiveReason: 'SUPERSEDED',
+        supersededById: program.currentUnitId,
+      },
+      createdAt: program.currentApprovedAt,
+    });
   }
 
   private createClassSessions(
@@ -2284,6 +2313,7 @@ class DashboardPlan {
     quotedAmount: string;
   } {
     const parent = student.parent;
+    const price = priceTuition(new Prisma.Decimal(classPlan.fee), start, months);
     return {
       type: 'EXISTING_STUDENT_NEW_SUBJECT',
       parentEmail: parent.email,
@@ -2293,7 +2323,8 @@ class DashboardPlan {
       targetStudentId: student.id,
       classId: classPlan.id,
       packageMonths: months,
-      quotedAmount: String(classPlan.fee * months),
+      ...price,
+      quotedAmount: price.quotedAmount.toString(),
       billSnapshot: {
         parent: { displayName: parent.person.fullName, email: parent.email, phone: parent.phone },
         student: { id: student.id, fullName: student.fullName, grade: student.grade },
@@ -2370,7 +2401,9 @@ class DashboardPlan {
       afterData: {
         referenceDate: dateOnly(this.ctx.today),
         generatedAt: this.ctx.cutoff.toISOString(),
-        version: 1,
+        version: DASHBOARD_SEED_VERSION,
+        demoSeedVersion: DEMO_SEED_VERSION,
+        curriculumEdition: CURRICULUM_EDITION,
         rows: rowCounts(this.rows),
       },
       // Dated before the six-month window so it never shows up as recent activity.
@@ -2392,6 +2425,7 @@ async function insertRows(tx: Prisma.TransactionClient, rows: PlanRows): Promise
   await write(rows.weeklySchedules, (data) => tx.classWeeklySchedule.createMany({ data }));
   await write(rows.units, (data) => tx.curriculumUnit.createMany({ data }));
   await write(rows.lessons, (data) => tx.lesson.createMany({ data }));
+  await write(rows.lessonOutcomes, (data) => tx.lessonOutcome.createMany({ data }));
   await write(rows.generations, (data) => tx.scheduleGeneration.createMany({ data }));
   await write(rows.sessions, (data) => tx.classSession.createMany({ data }));
   await write(rows.orders, (data) => tx.registrationOrder.createMany({ data }));

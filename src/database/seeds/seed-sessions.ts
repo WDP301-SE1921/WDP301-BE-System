@@ -9,6 +9,7 @@ import type { SeedUsers } from './seed-accounts';
 import type { SeedCatalog } from './seed-catalog';
 import type { DemoEnrollment } from './seed-enrollments';
 import { addDays, dateOnly, demoId, localInstant, studyDay } from './seed-calendar';
+import { findMakeupTarget } from './seed-makeup';
 
 export async function seedSessions(
   tx: Prisma.TransactionClient,
@@ -212,6 +213,9 @@ export async function seedLeavesAndMakeups(
   }
 
   const nga = enrollments.find((item) => item.key === 'nga-math')!.enrollment;
+  const studentProfileId = nga.studentProfileId;
+  if (!studentProfileId || !nga.startDate || !nga.endDate)
+    throw new Error('Makeup fixtures require a linked student and an enrollment term.');
   const originals = sessions['math-8-a'];
   const pastSources = originals.filter(
     (source) =>
@@ -227,20 +231,40 @@ export async function seedLeavesAndMakeups(
       nga.endDate &&
       addDays(studyDay(source.startsAt), 1) < nga.endDate,
   );
-  const bookings = [
-    { status: 'COMPLETED' as const, source: pastSources.at(-3) },
-    { status: 'MISSED' as const, source: pastSources.at(-2) },
-    { status: 'BOOKED' as const, source: futureSources[0] },
-    { status: 'CANCELLED' as const, source: futureSources[1] },
-  ];
-  for (const { status, source } of bookings) {
-    if (!source) throw new Error(`Insufficient sessions for ${status} makeup fixture`);
+  const usedSources = new Set<string>();
+  for (const status of ['COMPLETED', 'MISSED', 'BOOKED', 'CANCELLED'] as const) {
     const bookingId = demoId(`makeup_${status}`);
     if (await tx.makeupBooking.findUnique({ where: { id: bookingId } })) continue;
     const targetClass = await tx.class.findUniqueOrThrow({
       where: { id: sessions['math-8-b'][0].classId },
+      include: { room: true },
     });
-    const targetDay = addDays(studyDay(source.startsAt), 1);
+    if (!targetClass.room?.isActive || targetClass.capacity !== targetClass.room.capacity)
+      throw new Error('Makeup fixtures require an active room with matching class capacity.');
+    const past = status === 'COMPLETED' || status === 'MISSED';
+    let source: ClassSession | undefined;
+    let window: { startsAt: Date; endsAt: Date } | undefined;
+    for (const candidate of past ? [...pastSources].reverse() : futureSources) {
+      if (usedSources.has(candidate.id)) continue;
+      window = await findMakeupTarget(tx, {
+        sourceStartsAt: candidate.startsAt,
+        startDate: nga.startDate,
+        endDate: nga.endDate,
+        today,
+        past,
+        classId: targetClass.id,
+        roomId: targetClass.room.id,
+        teacherId: users['substitute-teacher'].id,
+        studentProfileId,
+      });
+      if (window) {
+        source = candidate;
+        break;
+      }
+    }
+    if (!source || !window)
+      throw new Error(`No valid session outside holidays/conflicts for ${status} makeup fixture.`);
+    usedSources.add(source.id);
     // Manual additional sessions avoid assuming parallel classes teach a lesson on the same date.
     const target = await tx.classSession.upsert({
       where: { id: demoId(`makeup_session_${status}`) },
@@ -251,8 +275,7 @@ export async function seedLeavesAndMakeups(
         lessonId: source.lessonId,
         teacherId: users['substitute-teacher'].id,
         roomId: targetClass.roomId,
-        startsAt: localInstant(targetDay, 14),
-        endsAt: localInstant(targetDay, 16),
+        ...window,
         status: status === 'COMPLETED' || status === 'MISSED' ? 'COMPLETED' : 'SCHEDULED',
         summary:
           status === 'COMPLETED' || status === 'MISSED'
