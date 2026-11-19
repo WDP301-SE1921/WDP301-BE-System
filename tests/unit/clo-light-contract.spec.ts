@@ -2,6 +2,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { Prisma } from '@prisma/client';
 import {
+  AssignmentDto,
   LearningOutcomeWriteDto,
   OutcomeSourceReviewDto,
 } from '../../src/modules/academic/academic.dto';
@@ -96,6 +97,46 @@ describe('LearningOutcomeWriteDto with optional sources (B3)', () => {
   it('accepts an optional expectedRevision and rejects a bad one', async () => {
     expect(await errorsOf({ ...base, expectedRevision: 2 })).toEqual([]);
     expect(await errorsOf({ ...base, expectedRevision: 0 })).toEqual(['expectedRevision']);
+  });
+});
+
+describe('AssignmentDto outcomeIds (B14)', () => {
+  const assignment = {
+    classId: 'class',
+    title: 'Bài 1',
+    instructions: '',
+    dueAt: '2099-10-01T12:00:00Z',
+    maxAttempts: 1,
+    questions: [{ kind: 'ESSAY', prompt: 'Q?', maxScore: 1 }],
+  };
+  async function assignmentErrors(body: Record<string, unknown>): Promise<string[]> {
+    const dto = plainToInstance(AssignmentDto, { ...assignment, ...body });
+    return (await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).map(
+      (error) => error.property,
+    );
+  }
+
+  it('accepts assignment-level CLOs, none, or an empty list', async () => {
+    expect(await assignmentErrors({ outcomeIds: ['clo-1', 'clo-2'] })).toEqual([]);
+    expect(await assignmentErrors({})).toEqual([]);
+    expect(await assignmentErrors({ outcomeIds: [] })).toEqual([]);
+  });
+
+  it('refuses duplicates, blanks, non-strings and more than 50 CLOs', async () => {
+    expect(await assignmentErrors({ outcomeIds: ['clo-1', 'clo-1'] })).toEqual(['outcomeIds']);
+    expect(await assignmentErrors({ outcomeIds: [''] })).toEqual(['outcomeIds']);
+    expect(await assignmentErrors({ outcomeIds: [1] })).toEqual(['outcomeIds']);
+    expect(await assignmentErrors({ outcomeIds: 'clo-1' })).toEqual(['outcomeIds']);
+    const many = Array.from({ length: 51 }, (_, index) => 'clo-' + String(index));
+    expect(await assignmentErrors({ outcomeIds: many })).toEqual(['outcomeIds']);
+  });
+
+  it('still accepts the deprecated per-question outcomeId', async () => {
+    expect(
+      await assignmentErrors({
+        questions: [{ kind: 'ESSAY', prompt: 'Q?', maxScore: 1, outcomeId: 'clo-1' }],
+      }),
+    ).toEqual([]);
   });
 });
 

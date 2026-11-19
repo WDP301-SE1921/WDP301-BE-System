@@ -43,6 +43,7 @@ export async function seedLearningOutcomes(
           designerId: users[subject.designer].id,
         },
       });
+      const outcomeByTopic: Array<{ title: string; id: string }> = [];
       for (const [index, topic] of TOPICS[key].entries()) {
         const outcome = await tx.learningOutcome.upsert({
           where: { id: demoId(`outcome_${key}_${index + 1}`) },
@@ -64,6 +65,7 @@ export async function seedLearningOutcomes(
               'Đề xuất từ chủ đề demo của trung tâm. Chưa đối chiếu tới từng yêu cầu cần đạt và chưa được giáo viên duyệt.',
           },
         });
+        outcomeByTopic.push({ title: topic.title, id: outcome.id });
         for (const lesson of catalog.lessons[key].filter((item) =>
           item.title.startsWith(topic.title),
         )) {
@@ -74,6 +76,22 @@ export async function seedLearningOutcomes(
           });
         }
       }
+      // Rule since 2026-11-19: proposal drafts (catalog.ts, math-8 only here) need a CLO too.
+      if (key === 'math-8')
+        for (const version of [3, 4])
+          await tx.lessonOutcome.upsert({
+            where: {
+              lessonId_outcomeId: {
+                lessonId: demoId(`lesson_${key}_v${version}`),
+                outcomeId: outcomeByTopic[0].id,
+              },
+            },
+            update: {},
+            create: {
+              lessonId: demoId(`lesson_${key}_v${version}`),
+              outcomeId: outcomeByTopic[0].id,
+            },
+          });
     }
   }
 }

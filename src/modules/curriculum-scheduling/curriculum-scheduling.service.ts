@@ -30,7 +30,7 @@ import {
   ParentCurriculumQueryDto,
 } from '../academic/academic-list.dto';
 import { parentEnrollmentSelect, parentSessionWhere } from './parent-session-access';
-import { parseCurriculumCsv } from './curriculum-csv';
+import { MAX_CODES_PER_ROW, parseCurriculumCsv } from './curriculum-csv';
 import { CsvFileError } from '../../common/csv/read-csv';
 import { reviewerReason, reviewerTiers, subjectKey } from './reviewer-eligibility';
 import { assertProgramFrequency } from '../registration-flow/program-frequency';
@@ -41,7 +41,8 @@ import {
   publishedCurriculumWhere,
 } from './curriculum-lifecycle';
 import {
-  lessonQueue,
+  planLessonSlots,
+  scheduleLimit,
   slotsForRange,
   vietnamDate,
   vietnamDayStart,
@@ -60,10 +61,15 @@ const unitInclude = {
   program: { select: { id: true, name: true, subject: true, grade: true, sessionsPerWeek: true } },
   track: true,
   reviewerTeacher: { select: { id: true, email: true, displayName: true } },
-  lessons: { orderBy: [{ kind: 'asc' }, { sequence: 'asc' }] },
+  lessons: {
+    orderBy: [{ kind: 'asc' }, { sequence: 'asc' }],
+    // Only the ids: enough for the "every lesson has a CLO" check.
+    include: { outcomeLinks: { select: { outcomeId: true } } },
+  },
 } satisfies Prisma.CurriculumUnitInclude;
 
 type UnitWithLessons = Prisma.CurriculumUnitGetPayload<{ include: typeof unitInclude }>;
+type OutcomeLookup = { id: string; setId: string; ambiguous: boolean };
 type ClassWithSchedule = Prisma.ClassGetPayload<{
   include: { program: { include: { subjectRecord: true } }; weeklySchedules: true; teacher: true };
 }>;
@@ -110,6 +116,7 @@ export class CurriculumSchedulingService {
       HttpStatus.NOT_FOUND,
     );
     this.assert(program.isActive, 'PROGRAM_INACTIVE', 'Program is inactive');
+    await this.assertProgramHasOutcomes(this.db, program.id);
     if (program.subjectId) {
       const subject = await this.db.subject.findUnique({ where: { id: program.subjectId } });
       this.assert(
@@ -506,21 +513,22 @@ export class CurriculumSchedulingService {
     this.assert(
       file?.buffer && file.buffer.length > 0,
       'CSV_REQUIRED',
-      'Upload a CSV file',
+      'Upload a CSV or Excel (.xlsx) file',
       HttpStatus.BAD_REQUEST,
     );
     let rows;
     try {
-      rows = parseCurriculumCsv(file.buffer);
+      rows = await parseCurriculumCsv(file.buffer, file.originalname ?? 'import.csv');
     } catch (error) {
       throw new AppError(
         'CSV_INVALID',
-        error instanceof Error ? error.message : 'Invalid CSV',
+        error instanceof Error ? error.message : 'Invalid file',
         HttpStatus.BAD_REQUEST,
         error instanceof CsvFileError ? error.details() : undefined,
       );
     }
-    const errors = this.importErrors(unit, rows, mode);
+    const known = await this.programOutcomeCodes(this.db, unit.programId, rows);
+    const errors = this.importErrors(unit, rows, mode, known);
     const preview = await this.db.curriculumImportPreview.create({
       data: {
         unitId: id,
@@ -611,6 +619,7 @@ export class CurriculumSchedulingService {
         title: string;
         content: string;
         monthKey: string | null;
+        outcomeCodes?: string[];
       }>;
       const rowValues = (row: {
         rowNumber: number;
@@ -619,6 +628,7 @@ export class CurriculumSchedulingService {
         title: string;
         content: string;
         monthKey?: string | null;
+        outcomeCodes?: string[];
       }): unknown[] => [
         row.rowNumber,
         row.kind,
@@ -626,13 +636,15 @@ export class CurriculumSchedulingService {
         row.title,
         row.content,
         row.monthKey ?? null,
+        row.outcomeCodes ?? [],
       ];
       this.assert(
         JSON.stringify(previewRows.map(rowValues)) === JSON.stringify(input.rows.map(rowValues)),
         'IMPORT_PREVIEW_STALE',
         'Import rows differ from the preview; preview again',
       );
-      const errors = this.importErrors(unit, input.rows, input.mode);
+      const known = await this.programOutcomeCodes(tx, unit.programId, input.rows);
+      const errors = this.importErrors(unit, input.rows, input.mode, known);
       this.assert(
         !errors.some((error) => error.code === 'TESTS_MANAGED_BY_TEACHER'),
         'TESTS_MANAGED_BY_TEACHER',
@@ -645,6 +657,18 @@ export class CurriculumSchedulingService {
         `Import has ${errors.length} validation errors`,
         HttpStatus.BAD_REQUEST,
       );
+      // Lock every set whose links change (old links of a replaced unit and new ones) first.
+      const lockIds = input.rows.flatMap((row) =>
+        (row.outcomeCodes ?? []).map((code) => known.get(code.toUpperCase())!.setId),
+      );
+      if (input.mode === 'REPLACE') {
+        const old = await tx.lessonOutcome.findMany({
+          where: { lesson: { unitId: id, kind: 'LESSON' } },
+          select: { outcome: { select: { outcomeSetId: true } } },
+        });
+        lockIds.push(...old.map((link) => link.outcome.outcomeSetId));
+      }
+      await this.lockOutcomeSets(tx, lockIds);
       if (input.mode === 'REPLACE') {
         const [sessions, feedback, revisions] = await Promise.all([
           tx.classSession.count({ where: { lesson: { unitId: id } } }),
@@ -673,6 +697,7 @@ export class CurriculumSchedulingService {
           content: row.content.trim(),
         })),
       });
+      await this.linkImportedOutcomes(tx, id, input.rows, known);
       const updated = await tx.curriculumUnit.update({
         where: { id },
         data: { revision: { increment: 1 } },
@@ -697,12 +722,96 @@ export class CurriculumSchedulingService {
     });
   }
 
+  /**
+   * Resolves CLO codes (upper-cased) against the program's APPROVED, else DRAFT, sets: per code the
+   * newest set version wins (then id). A code found at that status in sets of different levels
+   * is ambiguous and becomes a row error, so preview and commit always agree.
+   */
+  private async programOutcomeCodes(
+    client: Pick<Prisma.TransactionClient, 'learningOutcome'>,
+    programId: string,
+    rows: Array<{ outcomeCodes?: string[] }>,
+  ): Promise<Map<string, OutcomeLookup>> {
+    // Legacy files carry no codes: skip the lookup.
+    if (!rows.some((row) => row.outcomeCodes?.length)) return new Map();
+    const outcomes = await client.learningOutcome.findMany({
+      where: { outcomeSet: { programId, status: { in: ['DRAFT', 'APPROVED'] } } },
+      select: {
+        id: true,
+        code: true,
+        outcomeSetId: true,
+        outcomeSet: { select: { status: true, version: true, level: true } },
+      },
+    });
+    const byCode = new Map<string, typeof outcomes>();
+    for (const outcome of outcomes) {
+      const key = outcome.code.toUpperCase();
+      byCode.set(key, [...(byCode.get(key) ?? []), outcome]);
+    }
+    const known = new Map<string, OutcomeLookup>();
+    for (const [key, found] of byCode) {
+      const approved = found.filter((item) => item.outcomeSet.status === 'APPROVED');
+      const pool = approved.length ? approved : found;
+      const [newest] = [...pool].sort(
+        (a, b) =>
+          b.outcomeSet.version - a.outcomeSet.version ||
+          a.outcomeSetId.localeCompare(b.outcomeSetId),
+      );
+      known.set(key, {
+        id: newest.id,
+        setId: newest.outcomeSetId,
+        ambiguous: new Set(pool.map((item) => item.outcomeSet.level)).size > 1,
+      });
+    }
+    return known;
+  }
+
+  /** Locks outcome sets in one fixed order, like setLessonOutcomes, so a concurrent approval waits. */
+  private async lockOutcomeSets(tx: Prisma.TransactionClient, setIds: string[]): Promise<void> {
+    for (const setId of [...new Set(setIds)].sort())
+      await tx.$queryRaw`SELECT id FROM outcome_sets WHERE id = ${setId} FOR UPDATE`;
+  }
+
+  /**
+   * Links the lessons created by an import to their CLOs, with the setLessonOutcomes rules: CLOs
+   * of the unit's own program, new lessons are DRAFT. The sets are already locked by the caller.
+   */
+  private async linkImportedOutcomes(
+    tx: Prisma.TransactionClient,
+    unitId: string,
+    rows: Array<{ sequence?: number | null; outcomeCodes?: string[] }>,
+    known: Map<string, OutcomeLookup>,
+  ): Promise<void> {
+    const wanted = rows
+      .filter((row) => row.sequence != null && row.outcomeCodes?.length)
+      .map((row) => ({
+        sequence: row.sequence as number,
+        outcomeIds: (row.outcomeCodes ?? []).map((code) => known.get(code.toUpperCase())!.id),
+      }));
+    if (!wanted.length) return;
+    const lessons = await tx.lesson.findMany({
+      where: { unitId, kind: 'LESSON', sequence: { in: wanted.map((item) => item.sequence) } },
+      select: { id: true, sequence: true },
+    });
+    const lessonAt = new Map(lessons.map((lesson) => [lesson.sequence, lesson.id]));
+    await tx.lessonOutcome.createMany({
+      data: wanted.flatMap((item) => {
+        const lessonId = lessonAt.get(item.sequence);
+        return lessonId
+          ? [...new Set(item.outcomeIds)].map((outcomeId) => ({ lessonId, outcomeId }))
+          : [];
+      }),
+      skipDuplicates: true,
+    });
+  }
+
   private importErrors(
     unit: UnitWithLessons,
-    rows: Array<ImportRowDto | ReturnType<typeof parseCurriculumCsv>[number]>,
+    rows: Array<ImportRowDto | Awaited<ReturnType<typeof parseCurriculumCsv>>[number]>,
     mode: string,
-  ): Array<{ rowNumber: number; field: string; code: string }> {
-    const errors: Array<{ rowNumber: number; field: string; code: string }> = [];
+    known: Map<string, OutcomeLookup>,
+  ): Array<{ rowNumber: number; field: string; code: string; codes?: string[] }> {
+    const errors: Array<{ rowNumber: number; field: string; code: string; codes?: string[] }> = [];
     const lessonStart =
       mode === 'APPEND' ? unit.lessons.filter((row) => row.kind === 'LESSON').length + 1 : 1;
     let expected = lessonStart;
@@ -717,6 +826,29 @@ export class CurriculumSchedulingService {
         errors.push({ rowNumber: row.rowNumber, field: 'title', code: 'INVALID_TITLE' });
       if (!row.content?.trim() || row.content.length > 50000)
         errors.push({ rowNumber: row.rowNumber, field: 'content', code: 'INVALID_CONTENT' });
+      const codes = row.outcomeCodes ?? [];
+      const unknown = codes.filter((code) => !known.has(code.toUpperCase()));
+      const ambiguous = codes.filter((code) => known.get(code.toUpperCase())?.ambiguous);
+      if (codes.length > MAX_CODES_PER_ROW)
+        errors.push({
+          rowNumber: row.rowNumber,
+          field: 'outcomeCodes',
+          code: 'TOO_MANY_OUTCOME_CODES',
+        });
+      else if (unknown.length)
+        errors.push({
+          rowNumber: row.rowNumber,
+          field: 'outcomeCodes',
+          code: 'UNKNOWN_OUTCOME_CODE',
+          codes: unknown,
+        });
+      else if (ambiguous.length)
+        errors.push({
+          rowNumber: row.rowNumber,
+          field: 'outcomeCodes',
+          code: 'AMBIGUOUS_OUTCOME_CODE',
+          codes: ambiguous,
+        });
       if (row.kind === 'LESSON') {
         if (row.sequence !== expected)
           errors.push({ rowNumber: row.rowNumber, field: 'sequence', code: 'INVALID_SEQUENCE' });
@@ -873,6 +1005,7 @@ export class CurriculumSchedulingService {
         'Explain the changes required before returning the curriculum',
         HttpStatus.BAD_REQUEST,
       );
+      if (input.approved) this.validateDraft(unit);
       const result = await tx.curriculumUnit.update({
         where: { id },
         data: {
@@ -1017,7 +1150,33 @@ export class CurriculumSchedulingService {
 
   private validateDraft(unit: UnitWithLessons): void {
     const first = this.draftErrors(unit)[0];
-    if (first) this.assert(false, first.code, first.message);
+    if (first)
+      this.assert(
+        false,
+        first.code,
+        first.message,
+        HttpStatus.CONFLICT,
+        first.lessonIds ? { lessonIds: first.lessonIds } : undefined,
+      );
+  }
+
+  /** A curriculum is written against CLOs: the program needs a CLO set with at least one outcome. */
+  private async assertProgramHasOutcomes(
+    db: Pick<Prisma.TransactionClient, 'outcomeSet'>,
+    programId: string,
+  ): Promise<void> {
+    const sets = await db.outcomeSet.count({
+      where: {
+        programId,
+        status: { in: ['DRAFT', 'APPROVED'] },
+        outcomes: { some: {} },
+      },
+    });
+    this.assert(
+      sets > 0,
+      'OUTCOMES_REQUIRED',
+      'Create the course learning outcomes (CLO) before the curriculum',
+    );
   }
 
   private checkRevision(unit: UnitWithLessons, expectedRevision?: number): void {
@@ -1029,8 +1188,10 @@ export class CurriculumSchedulingService {
       );
   }
 
-  private draftErrors(unit: UnitWithLessons): Array<{ code: string; message: string }> {
-    const errors: Array<{ code: string; message: string }> = [];
+  private draftErrors(
+    unit: UnitWithLessons,
+  ): Array<{ code: string; message: string; lessonIds?: string[] }> {
+    const errors: Array<{ code: string; message: string; lessonIds?: string[] }> = [];
     const regular = unit.lessons
       .filter((lesson) => lesson.kind === 'LESSON')
       .sort((a, b) => a.sequence - b.sequence);
@@ -1041,6 +1202,18 @@ export class CurriculumSchedulingService {
         code: 'LESSON_SEQUENCE_GAP',
         message: 'Lessons must be numbered consecutively',
       });
+    // Units that are already approved or archived keep their history: no new rule for them.
+    if (unit.status === 'DRAFT' || unit.status === 'PENDING_REVIEW') {
+      const lessonIds = regular
+        .filter((lesson) => !lesson.outcomeLinks?.length)
+        .map((lesson) => lesson.id);
+      if (lessonIds.length)
+        errors.push({
+          code: 'LESSON_OUTCOME_MISSING',
+          message: 'Every lesson must be linked to at least one CLO',
+          lessonIds,
+        });
+    }
     return errors;
   }
 
@@ -1050,6 +1223,8 @@ export class CurriculumSchedulingService {
     return this.transaction(async (tx) => {
       await lockCurriculumProgram(tx, programId);
       await tx.$queryRaw`SELECT id FROM curriculum_units WHERE id = ${id} FOR UPDATE`;
+      // Lock the lessons so the CLO-link check below reads committed links, not a stale snapshot.
+      await tx.$queryRaw`SELECT id FROM lessons WHERE unitId = ${id} FOR UPDATE`;
       const unit = await tx.curriculumUnit.findUnique({ where: { id }, include: unitInclude });
       this.assert(unit, 'UNIT_NOT_FOUND', 'Curriculum unit not found', HttpStatus.NOT_FOUND);
       this.assert(
@@ -1077,6 +1252,7 @@ export class CurriculumSchedulingService {
         'LESSON_SEQUENCE_GAP',
         'Lesson sequence must start at 1 without gaps',
       );
+      this.validateDraft(unit);
       await tx.lesson.updateMany({
         where: { unitId: id, kind: 'LESSON' },
         data: { status: 'APPROVED' },
@@ -1130,6 +1306,7 @@ export class CurriculumSchedulingService {
         'UNIT_NOT_APPROVED',
         'Only a previously approved unit can be revised',
       );
+      await this.assertProgramHasOutcomes(tx, unit.programId);
       this.assert(
         input.fromDate > vietnamToday() && input.fromDate > dateOnly(unit.toDate),
         'FUTURE_CURRICULUM_PERIOD_REQUIRED',
@@ -1216,7 +1393,7 @@ export class CurriculumSchedulingService {
         unitId: unit.id,
         actorUserId: user.id,
         fromDate: localDate(input.fromDate),
-        toDate: localDate(input.toDate),
+        toDate: localDate(outlook.endDate),
         snapshotHash: this.scheduleSnapshot(unit, classroom, context),
         expiresAt: new Date(Date.now() + 15 * 60_000),
       },
@@ -1238,12 +1415,14 @@ export class CurriculumSchedulingService {
       classId,
       curriculumUnitId: unit.id,
       fromDate: input.fromDate,
-      toDate: input.toDate,
-      // CONTINUE: follows the class's last lesson of this unit (C4); TERM_POSITION: first
-      // generation, lesson by slot position from the start of the term.
-      mode: context.anchorSequence === null ? 'TERM_POSITION' : 'CONTINUE',
+      endDate: outlook.endDate,
+      toDate: outlook.endDate,
+      lessonCount: outlook.lessonCount,
+      // CONTINUE: follows the class's last lesson of this unit (C4); FIRST_LESSON: starts at
+      // lesson 1. The schedule always runs to the last lesson (D1).
+      mode: context.anchorSequence === null ? 'FIRST_LESSON' : 'CONTINUE',
       startLesson: outlook.startLesson && lessonRef(outlook.startLesson),
-      unscheduledLessons: outlook.unscheduledLessons.map(lessonRef),
+      unscheduledLessons: [],
       summary: {
         total: slots.length,
         lessons: slots.filter((slot) => slot.kind === 'LESSON').length,
@@ -1280,7 +1459,6 @@ export class CurriculumSchedulingService {
           classId,
           curriculumUnitId: input.curriculumUnitId,
           fromDate: input.fromDate,
-          toDate: input.toDate,
         }),
       )
       .digest('hex');
@@ -1322,6 +1500,8 @@ export class CurriculumSchedulingService {
       // Read after the program and class locks, so the anchor lesson cannot change under this
       // generation.
       const context = await this.planContext(tx, classId, unit, input.fromDate, true);
+      const outlook = this.planWithOutlook(unit, classroom, input, context);
+      const slots = outlook.slots;
       if (input.previewId) {
         const preview = await tx.schedulePreview.findUnique({ where: { id: input.previewId } });
         this.assert(
@@ -1330,14 +1510,13 @@ export class CurriculumSchedulingService {
             preview.classId === classId &&
             preview.unitId === unit.id &&
             dateOnly(preview.fromDate) === input.fromDate &&
-            dateOnly(preview.toDate) === input.toDate &&
+            dateOnly(preview.toDate) === outlook.endDate &&
             preview.expiresAt > new Date() &&
             preview.snapshotHash === this.scheduleSnapshot(unit, classroom, context),
           'PREVIEW_STALE',
           'Schedule preview is stale; preview again',
         );
       }
-      const slots = this.plan(unit, classroom, input, context);
       const teacherIds = [...new Set(slotsTeacherIds(classroom, slots))];
       for (const teacherId of teacherIds) {
         await tx.$queryRaw`SELECT id FROM users WHERE id = ${teacherId} FOR UPDATE`;
@@ -1356,7 +1535,7 @@ export class CurriculumSchedulingService {
           key: idempotencyKey,
           requestHash,
           fromDate: localDate(input.fromDate),
-          toDate: localDate(input.toDate),
+          toDate: localDate(outlook.endDate),
         },
       });
       await tx.classSession.createMany({
@@ -1389,7 +1568,7 @@ export class CurriculumSchedulingService {
         'CLASS',
         classId,
         'Đã có lịch học mới',
-        `Lớp ${classroom.name}: đã xếp ${slots.length} buổi từ ${input.fromDate} đến ${input.toDate}.`,
+        `Lớp ${classroom.name}: đã xếp ${slots.length} buổi từ ${input.fromDate} đến ${outlook.endDate}.`,
         await this.notifications.recipients.sessions(tx, generatedSessions),
         classId,
         `generation:${generation.id}`,
@@ -1621,6 +1800,10 @@ export class CurriculumSchedulingService {
             kind: true,
             monthKey: true,
             unitId: true,
+            outcomeLinks: {
+              select: { outcome: { select: { id: true, code: true, title: true } } },
+              orderBy: { outcome: { code: 'asc' } },
+            },
           },
         },
       },
@@ -1633,7 +1816,10 @@ export class CurriculumSchedulingService {
         'Session is not assigned to this teacher',
         HttpStatus.FORBIDDEN,
       );
-    return row;
+    if (!row.lesson) return row;
+    // Additive: the CLOs of the lesson, for the assignment editor to prefill from.
+    const { outcomeLinks, ...lesson } = row.lesson;
+    return { ...row, lesson: { ...lesson, outcomes: outcomeLinks.map((link) => link.outcome) } };
   }
 
   async generationList(
@@ -1931,7 +2117,8 @@ export class CurriculumSchedulingService {
     fromDate: string,
     lock: boolean,
   ): Promise<PlanContext> {
-    const closures = tetBreaks(dateOnly(unit.fromDate), dateOnly(unit.toDate));
+    // Tết breaks over the real span of the schedule (start date + 24 months), not the unit term.
+    const closures = tetBreaks(fromDate, scheduleLimit(fromDate));
     const last = lock
       ? await this.lockedAnchor(db, classId, unit)
       : await this.anchor(db, classId, unit);
@@ -1943,11 +2130,53 @@ export class CurriculumSchedulingService {
         HttpStatus.CONFLICT,
         { lastScheduledDate: vietnamDate(last.startsAt) },
       );
+    if (!last) {
+      // A class runs one curriculum (L2): sessions of another unit of the program lock it.
+      const other = await this.otherUnitOfClass(db, classId, unit.id, lock);
+      this.assert(
+        !other,
+        'CLASS_CURRICULUM_LOCKED',
+        'The class already has sessions of another curriculum',
+        HttpStatus.CONFLICT,
+        { currentUnitId: other?.lesson.unit?.id, currentUnitTitle: other?.lesson.unit?.title },
+      );
+    }
     return {
       closures,
       anchorLessonId: last?.lesson.id ?? null,
       anchorSequence: last?.lesson.sequence ?? null,
     };
+  }
+
+  /**
+   * The unit of a non-cancelled session of the class that belongs to a unit other than
+   * `unitId`. `lock`: read with `FOR UPDATE` (generate), like `lockedAnchor`.
+   */
+  private async otherUnitOfClass(
+    db: Prisma.TransactionClient,
+    classId: string,
+    unitId: string,
+    lock: boolean,
+  ): Promise<{ lesson: { unit: { id: string; title: string } | null } } | null> {
+    const unitSelect = { lesson: { select: { unit: { select: { id: true, title: true } } } } };
+    if (!lock) {
+      return db.classSession.findFirst({
+        where: { classId, status: { not: 'CANCELLED' }, lesson: { unitId: { not: unitId } } },
+        orderBy: [{ startsAt: 'desc' }, { id: 'desc' }],
+        select: unitSelect,
+      });
+    }
+    const rows = await db.$queryRaw<Array<{ lessonId: string }>>`
+      SELECT lessonId FROM class_sessions
+      WHERE classId = ${classId} AND status <> 'CANCELLED'
+        AND lessonId IN (SELECT id FROM lessons WHERE unitId <> ${unitId})
+      ORDER BY startsAt DESC, id DESC LIMIT 1 FOR UPDATE`;
+    if (!rows[0]) return null;
+    const lesson = await db.lesson.findUnique({
+      where: { id: rows[0].lessonId },
+      select: { unit: { select: { id: true, title: true } } },
+    });
+    return { lesson: { unit: lesson?.unit ?? null } };
   }
 
   private anchor(
@@ -1978,22 +2207,12 @@ export class CurriculumSchedulingService {
     return { startsAt: last.startsAt, lesson: { id: lesson.id, sequence: lesson.sequence } };
   }
 
-  private plan(
-    unit: UnitWithLessons,
-    classroom: ClassWithSchedule,
-    input: ScheduleRangeDto,
-    context: PlanContext,
-  ): PlannedSlot[] {
-    return this.planWithOutlook(unit, classroom, input, context).slots;
-  }
-
   private planWithOutlook(
     unit: UnitWithLessons,
     classroom: ClassWithSchedule,
     input: ScheduleRangeDto,
     context: PlanContext,
-  ): { slots: PlannedSlot[]; unscheduledLessons: Lesson[]; startLesson: Lesson | null } {
-    this.assertRange(input.fromDate, input.toDate);
+  ): { slots: PlannedSlot[]; startLesson: Lesson | null; endDate: string; lessonCount: number } {
     this.assert(
       unit.status === 'APPROVED',
       'UNIT_NOT_APPROVED',
@@ -2006,9 +2225,12 @@ export class CurriculumSchedulingService {
       'Subject is inactive',
     );
     this.assert(
-      input.fromDate >= dateOnly(unit.fromDate) && input.toDate <= dateOnly(unit.toDate),
+      input.fromDate >= dateOnly(unit.fromDate) &&
+        // Only a first start must lie inside the period; a class that already taught this
+        // curriculum keeps going to the last lesson even after the period ended.
+        (context.anchorSequence !== null || input.fromDate <= dateOnly(unit.toDate)),
       'RANGE_OUTSIDE_UNIT',
-      'Requested dates are outside the unit',
+      'Start date is outside the period of the curriculum unit',
     );
     this.assert(
       classroom.programId === unit.programId,
@@ -2021,25 +2243,27 @@ export class CurriculumSchedulingService {
       'Assign an active teacher to the class',
     );
     assertProgramFrequency(classroom.program, classroom.weeklySchedules.length, classroom.id);
-    const term = slotsForRange(
-      classroom.weeklySchedules,
-      dateOnly(unit.fromDate),
-      dateOnly(unit.toDate),
-      context.closures,
-    );
-    const inRange = term.filter((item) => item.date >= input.fromDate && item.date <= input.toDate);
-    this.assert(inRange.length, 'NO_SESSIONS', 'No class sessions fall in the requested range');
-    // Only the requested range must have a lesson for every slot: later slots are generated
-    // later and continue from the class's last lesson.
-    const queue = lessonQueue(
+    const planned = planLessonSlots(
       unit.lessons.filter((row) => row.kind === 'LESSON'),
-      term,
+      classroom.weeklySchedules,
       input.fromDate,
+      context.closures,
       context.anchorSequence,
     );
-    const slots = inRange.map((item, index) => {
-      const lesson: Lesson | undefined = queue[index];
-      this.assert(lesson, 'INSUFFICIENT_LESSONS', 'Not enough approved lessons for this range');
+    this.assert(
+      planned.remaining.length,
+      'CURRICULUM_COMPLETED',
+      'The class has already been scheduled for every lesson of this curriculum',
+      HttpStatus.CONFLICT,
+    );
+    this.assert(
+      !planned.tooLong,
+      'SCHEDULE_TOO_LONG',
+      'The curriculum does not fit within 24 months from the start date',
+      HttpStatus.BAD_REQUEST,
+    );
+    const slots = planned.slots.map((item) => {
+      const lesson: Lesson = item.lesson;
       this.assert(
         lesson.status === 'APPROVED',
         'LESSON_NOT_APPROVED',
@@ -2055,12 +2279,11 @@ export class CurriculumSchedulingService {
         monthKey: item.date.slice(0, 7),
       };
     });
-    const slotsLeft = term.filter((item) => item.date > input.toDate).length;
     return {
       slots,
-      // Lessons that no slot of this term can take after this range (C4: warn, do not fail).
-      unscheduledLessons: queue.slice(inRange.length + slotsLeft),
-      startLesson: queue[0] ?? null,
+      startLesson: planned.remaining[0] ?? null,
+      endDate: slots[slots.length - 1].date,
+      lessonCount: slots.length,
     };
   }
 

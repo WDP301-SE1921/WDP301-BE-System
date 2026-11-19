@@ -43,10 +43,11 @@ Content-Type: application/json
 ```json
 {
   "curriculumUnitId": "<approvedUnitId>",
-  "fromDate": "2027-01-04",
-  "toDate": "2027-01-31"
+  "fromDate": "2027-01-04"
 }
 ```
+
+`fromDate` là ngày bắt đầu. Lần bắt đầu đầu tiên (bài 1) phải nằm trong kỳ áp dụng của giáo trình (ngoài kỳ: 409 `RANGE_OUTSIDE_UNIT`); lớp đã học giáo trình này nối tiếp được cả khi kỳ đã qua. `toDate` không còn cần: nếu client cũ vẫn gửi thì bị bỏ qua. Lịch tự chạy tới bài cuối của giáo trình (một bài một buổi, bỏ kỳ nghỉ Tết) và có thể vượt ngày kết thúc kỳ; tối đa 24 tháng kể từ `fromDate` (quá: 400 `SCHEDULE_TOO_LONG`). Kết quả trả thêm `endDate` (ngày buổi cuối, `toDate` bằng giá trị này), `lessonCount` (số buổi), `mode` (`FIRST_LESSON` | `CONTINUE`), `unscheduledLessons` luôn rỗng.
 
 `data.slots` gồm `date`, `startsAt`, `endsAt`, `lessonId`, `lessonTitle`, `kind`, `monthKey`, `conflicts` và `makeupCandidates`. `startsAt`/`endsAt` là UTC; hiển thị theo `Asia/Ho_Chi_Minh`. `makeupCandidates` chỉ chứa buổi **đã được sinh** ở lớp khác, cùng bài, diễn ra sau buổi gốc và vẫn ở tương lai; việc học bù thực tế vẫn phải qua API đăng ký học bù và kiểm tra sĩ số/quyền.
 
@@ -63,19 +64,19 @@ Idempotency-Key: <uuid-once-per-operation>
 
 `GET /academic/scheduled-sessions?studentId=...&classId=...&fromDate=2027-01-04&toDate=2027-01-31&page=1&limit=20` trả buổi học và bài (`kind`, `monthKey`, `unitId`). MANAGER/STAFF xem lớp, TEACHER chỉ xem buổi được phân công. PARENT có thể chọn một con bằng `studentId`; kết quả gồm lịch placement, học bù khác lớp và lịch sử hợp lệ, với `participations` chỉ thuộc con của Parent. Nếu Parent không gửi khoảng ngày, API mặc định từ hôm nay đến 30 ngày sau.
 
-### Gán bài khi tạo lịch (C4, từ 10/11)
+### Gán bài khi tạo lịch (D1, từ 19/11/2026)
 
-- Lớp **đã có** buổi chưa hủy mang bài của giáo trình này: khoảng mới bắt đầu bằng bài liền sau bài của buổi cuối đó, nên đổi ngày không làm mất hoặc lặp bài.
-- Lớp **chưa có** buổi nào của giáo trình: bài theo vị trí buổi tính từ đầu kỳ, bỏ kỳ nghỉ Tết, để lớp mở giữa kỳ học cùng bài với các lớp khác trong tuần.
-- `fromDate` phải sau buổi cuối đã có của cùng giáo trình; nếu không: 409 `SESSIONS_AFTER_RANGE_EXIST`, `details.lastScheduledDate`.
-- Hết bài trước khi hết buổi **trong khoảng được yêu cầu**: 409 `INSUFFICIENT_LESSONS`. Hết buổi trong kỳ mà còn bài: không lỗi, `session-preview` trả `unscheduledLessons`.
-- `session-preview` trả thêm `mode` (`CONTINUE` | `TERM_POSITION`) và `startLesson`.
+- Một buổi một bài, theo thứ tự bài 1..N, mỗi tuần theo lịch học của lớp, bỏ kỳ nghỉ Tết, cho tới khi hết bài của giáo trình. Ngày kết thúc do hệ thống tính (`endDate`).
+- Lớp **chưa có** buổi nào của giáo trình: bắt đầu từ bài 1 (`mode: FIRST_LESSON`), kể cả khi mở giữa kỳ.
+- Lớp **đã có** buổi chưa hủy mang bài của giáo trình này: bắt đầu từ bài liền sau bài của buổi cuối đó (`mode: CONTINUE`). `fromDate` phải sau buổi cuối đã có; nếu không: 409 `SESSIONS_AFTER_RANGE_EXIST`, `details.lastScheduledDate`.
+- Lớp đã xếp đủ mọi bài: 409 `CURRICULUM_COMPLETED`. Không vừa trong 24 tháng: 400 `SCHEDULE_TOO_LONG`. `INSUFFICIENT_LESSONS` không còn được trả bởi preview/generate.
+- Idempotency: `requestHash` chỉ gồm lớp, giáo trình và `fromDate`.
 - Buổi đã hủy trước 19/11/2026 (dữ liệu cũ): hủy bỏ bài ở đúng buổi cuối cùng thì bài đó quay lại ở lần tạo lịch sau; ở buổi giữa thì bài không lặp lại.
 
 ## Kỳ nghỉ Tết (từ 19/11/2026)
 
 - Trung tâm nghỉ Tết cố định từ **23 tháng Chạp (đưa ông Táo về trời) đến hết mùng 7**, theo lịch âm Việt Nam (UTC+7). Bảng ngày nằm trong `src/common/lunar-new-year.ts` (`TET_BREAKS`, 2025–2035; thêm năm mới trước 2035). Ví dụ Tết 2027: 30/01 → 12/02/2027.
-- `session-preview` và `session-generations` không tạo buổi nào trong kỳ nghỉ Tết. Bài được gán lần lượt theo buổi, nên bài kế tiếp tự rơi vào buổi đầu tiên sau Tết, và kỳ nghỉ cũng không tính vào vị trí bài trong kỳ.
+- `session-preview` và `session-generations` không tạo buổi nào trong kỳ nghỉ Tết. Bài được gán lần lượt theo buổi, nên bài kế tiếp tự rơi vào buổi đầu tiên sau Tết. Kỳ nghỉ Tết được tính trên cả khoảng thật của lịch (từ `fromDate` tới tối đa 24 tháng), không chỉ trong kỳ áp dụng của giáo trình.
 - Đổi giờ một buổi vào ngày Tết vẫn được (BE không chặn; web cảnh báo).
 - Giảm học phí Tết 50% (tháng gói chứa mùng 1 Tết) giữ nguyên và đọc cùng bảng mùng 1 (`LUNAR_NEW_YEAR`). Mùng 1 Tết 2030 là 02/02 theo lịch Việt Nam.
 
@@ -88,11 +89,11 @@ Idempotency-Key: <uuid-once-per-operation>
 
 ## Quy tắc và lỗi cần hiển thị
 
-- Học phần phải được duyệt, lớp phải đúng môn/khối, có lịch tuần và giáo viên đang hoạt động. Khoảng sinh phải nằm trong khoảng học phần. Lần tạo lịch đầu của lớp tính bài từ **đầu học phần**; các lần sau nối tiếp bài của buổi cuối, nên sinh hai đoạn liên tiếp cho cùng lớp không làm bài quay về số 1.
+- Chỉ ngày bắt đầu (`fromDate`) phải nằm trong kỳ áp dụng của giáo trình (lớp đã học giáo trình này thì nối tiếp được cả khi kỳ đã qua). Lần tạo lịch đầu của lớp bắt đầu từ bài 1; lịch chạy tới bài cuối, có thể vượt ngày kết thúc kỳ.
 - Duyệt yêu cầu bài học có `sequence` liên tục từ 1 và bài kiểm tra cho mỗi tháng có buổi học. Nếu lớp được tạo sau khi duyệt, bước xem trước/sinh lịch vẫn kiểm tra lại đủ nội dung.
 - Hai lớp dùng cùng ID bài nhưng có thể học khác ngày. Buổi học bù chỉ có ứng viên nếu lớp khác đã sinh buổi cùng ID bài; riêng ranh giới tháng có thể làm vị trí bài kiểm tra giữa các lớp khác nhau.
 - `INSUFFICIENT_LESSONS`, `LESSON_SEQUENCE_GAP`, `MISSING_MONTHLY_TEST`, `NO_SCHEDULED_CLASS`: hoàn thiện giáo trình/lịch trước khi duyệt.
-- `UNIT_NOT_APPROVED`, `CURRICULUM_MISMATCH`, `CLASS_NEEDS_SCHEDULE`, `INVALID_TEACHER`, `RANGE_OUTSIDE_UNIT`, `NO_SESSIONS`: sửa lựa chọn khi xem trước.
+- `UNIT_NOT_APPROVED`, `CURRICULUM_MISMATCH`, `CLASS_NEEDS_SCHEDULE`, `INVALID_TEACHER`, `RANGE_OUTSIDE_UNIT`, `CURRICULUM_COMPLETED`, `SCHEDULE_TOO_LONG`, `CLASS_CURRICULUM_LOCKED` (lớp đã có buổi của giáo trình khác, 409, `details.currentUnitId`, `details.currentUnitTitle`): sửa lựa chọn khi xem trước.
 - `SCHEDULE_CONFLICT`: có buổi của lớp hoặc giáo viên trùng giờ; xem `conflicts` ở API xem trước.
 - Khi lớp đã có buổi học tương lai, API cấu hình lớp chặn đổi lịch tuần hoặc đổi giáo viên để lịch đã sinh không lệch cấu hình.
 - `UNIT_LOCKED`: nội dung đã duyệt; tạo phiên bản mới. Buổi đã sinh tiếp tục trỏ tới phiên bản cũ.

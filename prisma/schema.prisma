@@ -917,6 +917,7 @@ model Assignment {
   questions          AssignmentQuestion[]
   files              AssignmentFile[]
   recipients         AssignmentRecipient[]
+  outcomeLinks       AssignmentOutcome[]
   outcomeSetId       String?               @db.VarChar(191)
   outcomeSet         OutcomeSet?           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
   createdAt          DateTime              @default(now())
@@ -973,6 +974,8 @@ model OutcomeSet {
   program      Program           @relation(fields: [programId], references: [id], onDelete: Restrict)
   outcomes     LearningOutcome[]
   assignments  Assignment[]
+  importPreviews OutcomeImportPreview[]
+  importCommits  OutcomeImportCommit[]
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
 
@@ -981,27 +984,55 @@ model OutcomeSet {
   @@map("outcome_sets")
 }
 
+model OutcomeImportPreview {
+  id           String     @id @default(cuid()) @db.VarChar(191)
+  outcomeSetId String     @db.VarChar(191)
+  actorUserId  String     @db.VarChar(191)
+  rows         Json
+  expiresAt    DateTime
+  createdAt    DateTime   @default(now())
+  outcomeSet   OutcomeSet @relation(fields: [outcomeSetId], references: [id], onDelete: Cascade)
+
+  @@index([outcomeSetId, expiresAt])
+  @@map("outcome_import_previews")
+}
+
+model OutcomeImportCommit {
+  id           String     @id @default(cuid()) @db.VarChar(191)
+  outcomeSetId String     @db.VarChar(191)
+  actorUserId  String     @db.VarChar(191)
+  key          String     @db.VarChar(191)
+  requestHash  String     @db.Char(64)
+  response     Json
+  createdAt    DateTime   @default(now())
+  outcomeSet   OutcomeSet @relation(fields: [outcomeSetId], references: [id], onDelete: Cascade)
+
+  @@unique([outcomeSetId, key])
+  @@map("outcome_import_commits")
+}
+
 model LearningOutcome {
-  id            String               @id @default(cuid()) @db.VarChar(191)
-  outcomeSetId  String               @db.VarChar(191)
-  code          String               @db.VarChar(64)
-  title         String               @db.VarChar(255)
-  statement     String               @db.Text
-  sourceTitle   String?              @db.VarChar(255)
-  sourceUrl     String?              @db.Text
-  sourceLocator String?              @db.VarChar(255)
-  sourceStatus  OutcomeSourceStatus  @default(CANDIDATE)
-  sourceNote    String?              @db.Text
-  verifiedById  String?              @db.VarChar(191)
-  verifiedAt    DateTime?
-  required      Boolean              @default(true)
+  id              String               @id @default(cuid()) @db.VarChar(191)
+  outcomeSetId    String               @db.VarChar(191)
+  code            String               @db.VarChar(64)
+  title           String               @db.VarChar(255)
+  statement       String               @db.Text
+  sourceTitle     String?              @db.VarChar(255)
+  sourceUrl       String?              @db.Text
+  sourceLocator   String?              @db.VarChar(255)
+  sourceStatus    OutcomeSourceStatus  @default(CANDIDATE)
+  sourceNote      String?              @db.Text
+  verifiedById    String?              @db.VarChar(191)
+  verifiedAt      DateTime?
+  required        Boolean              @default(true)
   /// Bumped on every write so two designers editing one CLO get REVISION_CONFLICT.
-  revision      Int                  @default(1)
-  outcomeSet    OutcomeSet           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
-  lessonLinks   LessonOutcome[]
-  questions     AssignmentQuestion[]
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
+  revision        Int                  @default(1)
+  outcomeSet      OutcomeSet           @relation(fields: [outcomeSetId], references: [id], onDelete: Restrict)
+  lessonLinks     LessonOutcome[]
+  questions       AssignmentQuestion[]
+  assignmentLinks AssignmentOutcome[]
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
 
   @@unique([outcomeSetId, code])
   @@map("learning_outcomes")
@@ -1015,6 +1046,18 @@ model LessonOutcome {
 
   @@id([lessonId, outcomeId])
   @@map("lesson_outcomes")
+}
+
+/// Assignment-level CLO links (L1). Replaces per-question outcomeId, which stays readable for old rows.
+model AssignmentOutcome {
+  assignmentId String          @db.VarChar(191)
+  outcomeId    String          @db.VarChar(191)
+  assignment   Assignment      @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  outcome      LearningOutcome @relation(fields: [outcomeId], references: [id], onDelete: Restrict)
+
+  @@id([assignmentId, outcomeId])
+  @@index([outcomeId])
+  @@map("assignment_outcomes")
 }
 
 model AssignmentRecipient {

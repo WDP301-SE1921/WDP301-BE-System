@@ -40,7 +40,7 @@ describe('weekly session calendar', () => {
 });
 
 describe('curriculum session preview', () => {
-  it('keeps lesson order when one month is generated in separate ranges', async () => {
+  it('keeps lesson order and ignores monthly tests when filling weekly slots', async () => {
     const lessons = [
       { id: 'lesson-1', title: 'Bài 1', kind: 'LESSON', sequence: 1, status: 'APPROVED' },
       { id: 'lesson-2', title: 'Bài 2', kind: 'LESSON', sequence: 2, status: 'APPROVED' },
@@ -94,18 +94,17 @@ describe('curriculum session preview', () => {
     } as unknown as DatabaseService;
     const user = { id: 'manager-1', role: 'MANAGER' } as AuthenticatedUser;
     const service = new CurriculumSchedulingService(db, {} as NotificationEventsService);
-    const first = (await service.preview(user, classroom.id, {
+    const result = (await service.preview(user, classroom.id, {
       curriculumUnitId: unit.id,
       fromDate: '2027-01-04',
-      toDate: '2027-01-06',
-    })) as { slots: Array<{ lessonId: string }> };
-    const second = (await service.preview(user, classroom.id, {
-      curriculumUnitId: unit.id,
-      fromDate: '2027-01-07',
-      toDate: '2027-01-10',
-    })) as { slots: Array<{ lessonId: string; kind: string }> };
-    expect(first.slots.map((slot) => slot.lessonId)).toEqual(['lesson-1', 'lesson-2']);
-    expect(second.slots.map((slot) => slot.lessonId)).toEqual(['lesson-3']);
-    expect(second.slots[0].kind).toBe('LESSON');
+    })) as { slots: Array<{ lessonId: string; kind: string; date: string }>; endDate: string };
+    // The monthly test is not a weekly slot: three lessons, three slots, in lesson order.
+    expect(result.slots.map((slot) => [slot.date, slot.lessonId])).toEqual([
+      ['2027-01-04', 'lesson-1'],
+      ['2027-01-06', 'lesson-2'],
+      ['2027-01-08', 'lesson-3'],
+    ]);
+    expect(result.slots.every((slot) => slot.kind === 'LESSON')).toBe(true);
+    expect(result.endDate).toBe('2027-01-08');
   });
 });

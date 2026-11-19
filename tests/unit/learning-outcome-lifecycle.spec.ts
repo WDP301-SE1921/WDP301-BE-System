@@ -34,6 +34,7 @@ describe('CLO lifecycle across curriculum periods', () => {
     const createLinks = jest.fn().mockResolvedValue({ count: 3 });
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
+      outcomeSet: { count: jest.fn().mockResolvedValue(1) },
       curriculumUnit: {
         findUnique: jest.fn().mockResolvedValue(unit),
         aggregate: jest.fn().mockResolvedValue({ _max: { version: null } }),

@@ -78,3 +78,10 @@ export class ParentCurriculumResponseDto {
   @ApiProperty() limit!: number;
   @ApiProperty() total!: number;
 }
+/** CLO measured by an assignment (`outcomes` in GET /academic/assignments and /:id, teacher and parent). */
+export class AssignmentOutcomeSummaryDto {
+  @ApiProperty() id!: string;
+  @ApiProperty() code!: string;
+  @ApiProperty() title!: string;
+  @ApiProperty() required!: boolean;
+}

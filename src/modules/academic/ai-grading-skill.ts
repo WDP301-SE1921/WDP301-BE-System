@@ -24,6 +24,12 @@ export interface GradingCurriculumLessonInput {
   content: string;
 }
 
+export interface GradingOutcomeInput {
+  code: string;
+  title: string;
+  statement: string;
+}
+
 export interface GradingQuestionInput {
   id: string;
   kind: QuestionKind;
@@ -55,6 +61,8 @@ export interface BuildGradingSkillPayloadInput {
     sessionLesson?: GradingCurriculumLessonInput | null;
   };
   programLessons?: GradingCurriculumLessonInput[];
+  /** Assignment-level CLOs; when empty (old data) the per-question outcome is used instead. */
+  assignmentOutcomes?: GradingOutcomeInput[];
   questions: GradingQuestionInput[];
   answers: unknown;
 }
@@ -117,6 +125,7 @@ export interface GradingSkillPayload {
     maxScore: number;
     learningOutcome?: { code: string; title: string; statement: string };
   }[];
+  assignmentOutcomes?: GradingOutcomeInput[];
   answers: unknown;
 }
 export function buildGradingSkillPayload(
@@ -140,6 +149,13 @@ export function buildGradingSkillPayload(
       content: truncateText(lesson.content, LESSON_CONTENT_MAX_CHARS),
     }));
 
+  const assignmentOutcomes = (input.assignmentOutcomes ?? []).map((o) => ({
+    code: o.code,
+    title: o.title,
+    statement: o.statement,
+  }));
+  const useQuestionOutcome = assignmentOutcomes.length === 0;
+
   return {
     curriculum: {
       program: input.assignment.program
@@ -159,6 +175,7 @@ export function buildGradingSkillPayload(
       kind: input.assignment.kind,
       testType: input.assignment.testType,
     },
+    ...(assignmentOutcomes.length ? { assignmentOutcomes } : {}),
     questions: input.questions.map((q) => ({
       id: q.id,
       kind: q.kind,
@@ -168,7 +185,7 @@ export function buildGradingSkillPayload(
       criteria: q.criteria ?? [],
       correctAnswer: q.correctAnswer,
       maxScore: q.maxScore,
-      ...(q.outcome
+      ...(useQuestionOutcome && q.outcome
         ? {
             learningOutcome: {
               code: q.outcome.code,

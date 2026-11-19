@@ -145,6 +145,40 @@ Tài liệu này tổng hợp toàn bộ các tính năng mới đã được tr
 - Không đổi schema. Buổi `CANCELLED` cũ, `cancelReason`, thông báo `SESSION_CANCELLED`, gia hạn `SESSION_CANCELLED` vẫn đọc được.
 - Seed không còn buổi hủy, không có buổi trong kỳ nghỉ Tết; seed dashboard thông báo "Lịch nghỉ Tết" thay cho thông báo nghỉ lễ.
 
+### 1.23. Sĩ số lớp theo phòng học (`POST|PATCH /classes`, `PATCH /rooms/:id`, 19/11)
+- `POST /classes`: `roomId` bắt buộc (thiếu hoặc rỗng → 400 `ROOM_REQUIRED`, phòng phải đang hoạt động). Sĩ số lớp = sức chứa phòng. `capacity` vẫn nhận nhưng bị bỏ qua (deprecated).
+- `PATCH /classes/:id`: gửi `roomId` thì sĩ số đổi theo phòng mới; `roomId: null` → `ROOM_REQUIRED`. Chặn `409 ROOM_CAPACITY_TOO_SMALL` với `details: { reservedSeats, roomCapacity }` khi số chỗ đã giữ (đỉnh ghi danh còn hiệu lực từ hôm nay) lớn hơn sức chứa phòng mới. Không gửi `roomId` thì không đổi gì (lớp cũ chưa có phòng vẫn sửa được); `capacity` bị bỏ qua.
+- `PATCH /rooms/:id` đổi `capacity`: cùng transaction, mọi lớp chưa xóa của phòng đổi sĩ số theo. Nếu lớp nào đã giữ nhiều chỗ hơn sức chứa mới → `409 ROOM_CAPACITY_TOO_SMALL` với `details: { classes: [{ id, name, reservedSeats }], roomCapacity }`, không đổi gì.
+- Không đổi schema, không backfill lớp cũ (sĩ số lệch phòng giữ nguyên tới khi chọn lại phòng).
+- Không đổi: kiểm tra phòng của buổi học khi đổi phòng buổi.
+
+### 1.24. Lịch học chạy từ ngày bắt đầu tới bài cuối (`POST /classes/:id/session-preview`, `session-generations`, 19/11)
+- `fromDate` là ngày bắt đầu; `toDate` tùy chọn, deprecated, bị bỏ qua. Một bài một buổi theo lịch tuần, bỏ kỳ nghỉ Tết (tính trên khoảng thật), tới hết bài LESSON của giáo trình. Lớp mới bắt đầu từ bài 1; lớp đã học thì nối tiếp sau bài cuối.
+- Chỉ `fromDate` của lần bắt đầu đầu tiên (bài 1) phải nằm trong kỳ áp dụng của giáo trình (`RANGE_OUTSIDE_UNIT`); lớp đã học giáo trình này nối tiếp được cả khi kỳ đã qua. Hết bài: 409 `CURRICULUM_COMPLETED`. Quá 24 tháng: 400 `SCHEDULE_TOO_LONG`. `INSUFFICIENT_LESSONS` không còn trả ở preview/generate.
+- Kết quả preview thêm `endDate`, `lessonCount`, `mode` (`FIRST_LESSON` | `CONTINUE`, thay `TERM_POSITION`); `toDate` = `endDate`; `unscheduledLessons` luôn `[]`. `requestHash` bỏ `toDate`; `schedulePreview`/`scheduleGeneration` lưu `toDate = endDate`. Không đổi schema. MONTHLY_TEST giữ nguyên.
+- Một lớp chạy một giáo trình: lớp đã có buổi chưa hủy của giáo trình khác (và chưa có buổi của giáo trình đang chọn) bị `409 CLASS_CURRICULUM_LOCKED`, `details: { currentUnitId, currentUnitTitle }`.
+
+### 1.25. Chuẩn đầu ra (CLO) đi trước giáo trình và bài tập (đợt D, 19/11)
+- Thứ tự bắt buộc: bộ CLO → giáo trình → bài học gắn CLO → bài tập/bài kiểm tra gắn CLO ở cấp bài tập (không gắn theo từng câu hỏi)
+- `POST /academic/curriculum-units` và `POST /academic/curriculum-units/:id/revisions`: khóa chưa có bộ CLO nào (DRAFT/APPROVED) với ít nhất 1 CLO → `409 OUTCOMES_REQUIRED` (không có `details`)
+- `submit`, `technical-review` (approved) và `approve`: còn bài `LESSON` chưa gắn CLO → `409 LESSON_OUTCOME_MISSING`, `error.details.lessonIds` là các bài còn thiếu (kiểm tra sau `EMPTY_CURRICULUM`, `LESSON_SEQUENCE_GAP`). `GET /curriculum-units/:id` trả `validation.errors[]` dạng `{ code, message, lessonIds? }`, chỉ báo lỗi này với giáo trình DRAFT/PENDING_REVIEW; giáo trình đã duyệt hoặc lưu trữ giữ nguyên lịch sử
+- `lessons[]` của giáo trình thêm `outcomeLinks: [{ outcomeId }]`. `GET /academic/scheduled-sessions/:id` (nhân viên/giáo viên, không cho phụ huynh) thêm `lesson.outcomes: [{ id, code, title }]` sắp theo mã
+- `POST|PATCH /academic/assignments` nhận `outcomeIds?: string[]` (duy nhất, tối đa 50, cùng một bộ CLO đã duyệt của chương trình lớp; sai → `409 INVALID_OUTCOME_SET`, `details.outcomeIds` là các id lỗi). PATCH thay toàn bộ liên kết. Bỏ trống thì lấy các `questions[].outcomeId` khác nhau (deprecated)
+- `POST /academic/assignments/:id/publish`: chương trình đã có bộ CLO APPROVED mà bài tập chưa có liên kết nào → `409 ASSIGNMENT_OUTCOME_REQUIRED` (bài tập về nhà và bài kiểm tra; không còn kiểm CLO theo câu hỏi)
+- `GET /academic/assignments` và `/:id` (giáo viên và phụ huynh) thêm `outcomes: [{ id, code, title, required }]` sắp theo mã, chỉ từ liên kết cấp bài tập (`[]` khi chưa có; phụ huynh không thấy đáp án hay `statement`)
+- Migration `20261119120000_assignment_outcomes`: bảng `assignment_outcomes` (khóa chính `assignmentId, outcomeId`), sao chép liên kết từ `assignment_questions.outcomeId`. Chưa áp lên database nào. Cột `assignment_questions.outcomeId` giữ nguyên
+- Seed demo: mọi bài học thường của khóa có bộ CLO (kể cả bản đề xuất đang soạn và bài bổ sung sau góp ý của Toán 8) đều gắn ít nhất 1 CLO. Khóa Vật lý chưa có bộ CLO để demo luồng làm từ đầu. Bài tập demo không có `assignment_outcomes` vì bộ CLO demo còn DRAFT (publish chỉ đòi CLO khi khóa có bộ APPROVED). E2E `curriculum-scheduling` tạo bộ CLO trước giáo trình và gắn bài trước khi gửi duyệt
+- Lớp một giáo trình (`CLASS_CURRICULUM_LOCKED`) xem mục 1.24
+
+### 1.26. Nhập CLO và bài học từ Excel (đợt E, 19/11)
+- Ba route mới cho Curriculum Designer: `GET /academic/outcome-sets/import-template` (file `.xlsx` mẫu, cột `Mã | Tên mục tiêu | Mô tả | Bắt buộc (Có/Không)`), `POST /academic/outcome-sets/:id/import-preview` (multipart, field `file`, `.xlsx` hoặc `.csv`, tối đa 5 MB và 200 dòng; không lưu CLO) và `POST /academic/outcome-sets/:id/import-commit` (body `{ previewId }`, header `Idempotency-Key`, tạo mọi CLO trong một transaction, trả `{ outcomeSetId, createdCount, outcomeIds }`). Chỉ bộ CLO nháp: bộ khác `DRAFT` → `409 OUTCOME_SET_LOCKED`
+- Preview trả `{ previewId, outcomeSetId, expiresAt, summary { rows, validRows, invalidRows }, rows[] }`; mỗi dòng `{ rowNumber, code, title, statement, required, errors[{ field, code }] }`. Mã lỗi dòng: `TITLE_REQUIRED`, `VALUE_TOO_LONG`, `VALUE_TOO_SHORT` (mã 1 ký tự), `DUPLICATE_CODE_IN_FILE`, `CODE_EXISTS`, `REQUIRED_INVALID`
+- Lỗi cấp file: `400 OUTCOME_IMPORT_FILE_INVALID` với `details { code, rows, rowErrorCount }`; `details.code` gồm `FILE_REQUIRED` (thiếu hoặc rỗng file), `SPREADSHEET_TOO_LARGE`, `SPREADSHEET_UNSUPPORTED` (không phải `.xlsx`/`.csv`), `XLSX_INVALID`, `COLUMN_MISSING` (thiếu cột "Tên mục tiêu"), cùng các mã của đọc CSV (`CSV_EMPTY`, `CSV_TOO_MANY_ROWS`, `CSV_INVALID_COLUMNS`). Commit: `400 INVALID_IMPORT` (dòng preview còn lỗi, dùng lại mã cũ), `409 OUTCOME_IMPORT_PREVIEW_STALE` (preview hết hạn sau 30 phút, của người khác hoặc bộ CLO đã đổi), lỗi `IDEMPOTENCY_*`
+- Migration `20261119130000_outcome_import`: bảng `outcome_import_previews` và `outcome_import_commits`, khóa ngoại `ON DELETE CASCADE` theo bộ CLO (xóa bộ nháp vẫn chạy). Chưa áp lên database nào. Commit đọc dữ liệu có khóa (locking raw reads)
+- Bộ đọc bảng tính dùng chung `src/common/csv/read-spreadsheet.ts`: tối đa 5 MB, 30 MB sau giải nén, 2.000 mục trong file zip. Đọc kích thước theo bảng thư mục trung tâm của zip; file zip khai gian kích thước chưa bị chặn
+- Nhập bài học (`POST /academic/curriculum-units/:id/import-preview`, `import-commit`) nhận thêm `.xlsx` và cột tùy chọn `outcomeCodes` / "Mã mục tiêu" (nhiều mã, cách nhau dấu phẩy hoặc chấm phẩy). Lỗi dòng mới: `UNKNOWN_OUTCOME_CODE` (`codes` là các mã không có trong bộ CLO của khóa), `TOO_MANY_OUTCOME_CODES`. Dòng preview có `outcomeCodes: string[]`; `rows` của commit phải gửi lại đúng `outcomeCodes`. Lỗi file của nhập bài học vẫn là `400 CSV_INVALID` (`CSV_REQUIRED` khi thiếu file)
+- Nhập bài học, thêm: lỗi dòng `AMBIGUOUS_OUTCOME_CODE` (`field: outcomeCodes`, `codes`) khi một mã có ở các bộ CLO khác cấp độ. Mã được tra theo bộ APPROVED mới nhất của khóa, không có thì bộ DRAFT mới nhất (hòa thì theo version rồi id). `monthKey` dạng `YYYY-MM-DD` từ ô ngày Excel được cắt thành `YYYY-MM`. Tiêu đề cột của file CLO so khớp không phân biệt hoa thường và dấu
+
 ## 2. Danh Sách Lỗi Đã Được Khắc Phục (Bug Fixes)
 
 | STT | Lỗi / Điểm nghẽn ban đầu | Tệp tin liên quan | Nguyên nhân | Giải pháp khắc phục triệt để |

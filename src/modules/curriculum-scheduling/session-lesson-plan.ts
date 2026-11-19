@@ -60,22 +60,55 @@ export function slotsForRange(
 
 export type PlannableLesson = { id: string; sequence: number };
 
+/** A class schedule never runs longer than this many months from its start date. */
+export const MAX_SCHEDULE_MONTHS = 24;
+
+/** Local date `months` calendar months after `from` (clamped to the end of a short month). */
+export function addMonthsLocal(from: string, months: number): string {
+  const base = localDay(from);
+  const target = new Date(
+    Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + months, 1),
+  );
+  const lastDay = new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  target.setUTCDate(Math.min(base.getUTCDate(), lastDay));
+  return dayString(target);
+}
+
+/** Last local date a schedule starting on `from` may reach. */
+export function scheduleLimit(from: string): string {
+  return addMonthsLocal(from, MAX_SCHEDULE_MONTHS);
+}
+
 /**
- * Lessons for the slots of a requested range (C4).
- * - `anchorSequence` set: the class already taught this curriculum before the range, so the
- *   range continues with the lessons after that one.
- * - otherwise: the lesson matches the slot position from the start of the term, Tết breaks
- *   excluded, so a class opened mid-term teaches what the other classes teach that week.
- * Returns the lesson queue starting at the first slot of the range.
+ * Lessons still to teach (D1): lesson 1.. for a new class, the lessons after
+ * `anchorSequence` for a class that already taught this curriculum.
  */
-export function lessonQueue<L extends PlannableLesson>(
+export function remainingLessons<L extends PlannableLesson>(
   lessons: L[],
-  termSlots: DatedSlot[],
-  fromDate: string,
   anchorSequence: number | null,
 ): L[] {
   const ordered = [...lessons].sort((a, b) => a.sequence - b.sequence);
-  if (anchorSequence !== null) return ordered.filter((row) => row.sequence > anchorSequence);
-  const before = termSlots.filter((slot) => slot.date < fromDate).length;
-  return ordered.slice(before);
+  return anchorSequence === null ? ordered : ordered.filter((row) => row.sequence > anchorSequence);
+}
+
+/**
+ * One remaining lesson per weekly slot from `fromDate`, Tết `closures` skipped, until no
+ * lesson is left. `tooLong`: the lessons do not fit within 24 months.
+ */
+export function planLessonSlots<L extends PlannableLesson>(
+  lessons: L[],
+  schedules: Array<Pick<ClassWeeklySchedule, 'weekday' | 'startTime' | 'endTime'>>,
+  fromDate: string,
+  closures: readonly ClosureRange[],
+  anchorSequence: number | null,
+): { slots: Array<DatedSlot & { lesson: L }>; remaining: L[]; tooLong: boolean } {
+  const remaining = remainingLessons(lessons, anchorSequence);
+  const available = slotsForRange(schedules, fromDate, scheduleLimit(fromDate), closures);
+  const slots = available.slice(0, remaining.length).map((slot, index) => ({
+    ...slot,
+    lesson: remaining[index],
+  }));
+  return { slots, remaining, tooLong: slots.length < remaining.length };
 }

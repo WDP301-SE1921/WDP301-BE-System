@@ -97,6 +97,28 @@ describe('AI Grading Skill & Configuration', () => {
       expect(payload.answers).toHaveLength(2);
     });
 
+    it('lists assignment CLOs once and drops per-question outcomes', () => {
+      const outcome = { code: 'EQ-01', title: 'Giải phương trình', statement: 'Giải được' };
+      const payload = buildGradingSkillPayload({
+        assignment: { id: 'a', title: 'T', instructions: '', kind: 'HOMEWORK', testType: null },
+        assignmentOutcomes: [outcome],
+        questions: [
+          {
+            id: 'q1',
+            kind: 'ESSAY',
+            prompt: 'p',
+            rubric: null,
+            correctAnswer: null,
+            maxScore: 1,
+            outcome,
+          },
+        ],
+        answers: [],
+      });
+      expect(payload.assignmentOutcomes).toEqual([outcome]);
+      expect(payload.questions[0].learningOutcome).toBeUndefined();
+    });
+
     it('truncates lesson content exceeding maximum character limit', () => {
       const longContent = 'A'.repeat(LESSON_CONTENT_MAX_CHARS + 500);
       const payload = buildGradingSkillPayload({

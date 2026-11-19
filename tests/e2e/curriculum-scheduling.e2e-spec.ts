@@ -36,6 +36,42 @@ describe('Shared curriculum and generated sessions', () => {
       [method](`/api/v1/academic/${route}`)
       .set('Authorization', `Bearer ${tokens[role]}`);
 
+  // CLO set first: a unit can only be created for a program that has outcomes.
+  const addOutcome = async (programId: string): Promise<void> => {
+    const set = await db.outcomeSet.create({
+      data: {
+        programId,
+        level: 'Lớp 8',
+        version: 1,
+        status: 'DRAFT',
+        designerId: ids.CURRICULUM_DESIGNER,
+      },
+    });
+    const outcome = await db.learningOutcome.create({
+      data: {
+        outcomeSetId: set.id,
+        code: 'T8-01',
+        title: 'Mục tiêu 1',
+        statement: 'Học sinh làm được mục tiêu 1',
+      },
+    });
+    ids[programId] = outcome.id;
+  };
+
+  // Rule since 2026-11-19: a lesson needs at least one CLO before the unit can be submitted.
+  const linkLessons = async (unitId: string): Promise<void> => {
+    const unit = await db.curriculumUnit.findUniqueOrThrow({ where: { id: unitId } });
+    const outcomeId = ids[unit.programId];
+    const lessons = await db.lesson.findMany({
+      where: { unitId, kind: 'LESSON', outcomeLinks: { none: {} } },
+      select: { id: true },
+    });
+    if (lessons.length)
+      await db.lessonOutcome.createMany({
+        data: lessons.map((lesson) => ({ lessonId: lesson.id, outcomeId })),
+      });
+  };
+
   const prepareUnit = async (
     programId: string,
     title: string,
@@ -49,6 +85,7 @@ describe('Shared curriculum and generated sessions', () => {
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${id}/lessons`)
       .send({ title: `${title} - Bài 1`, content: 'Nội dung', sequence: 1 })
       .expect(201);
+    await linkLessons(id);
     const submitted = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${id}/submit`)
       .send({ reviewerTeacherId: ids.TEACHER })
       .expect(201);
@@ -67,6 +104,7 @@ describe('Shared curriculum and generated sessions', () => {
     const program = await db.program.create({
       data: { name, grade: 8, subject: 'Toán', sessionsPerWeek: 1 },
     });
+    await addOutcome(program.id);
     const classroom = await db.class.create({
       data: {
         name: `${name} - Lớp`,
@@ -139,6 +177,8 @@ describe('Shared curriculum and generated sessions', () => {
     });
     ids.programA = programA.id;
     ids.programB = programB.id;
+    await addOutcome(programA.id);
+    await addOutcome(programB.id);
     for (const [name, programId, weekdays] of [
       ['A', programA.id, [1, 3, 5]],
       ['B', programA.id, [2, 4, 6]],
@@ -218,6 +258,13 @@ describe('Shared curriculum and generated sessions', () => {
       toDate: '2027-01-10',
     };
     await call('PARENT', 'post', 'curriculum-units').send(definition).expect(403);
+    const noOutcomes = await db.program.create({
+      data: { name: 'Toán 8 C', grade: 8, subject: 'Toán', sessionsPerWeek: 1 },
+    });
+    const refused = await call('CURRICULUM_DESIGNER', 'post', 'curriculum-units')
+      .send({ ...definition, programId: noOutcomes.id })
+      .expect(409);
+    expect(refused.body).toMatchObject({ error: { code: 'OUTCOMES_REQUIRED' } });
     const created = await call('CURRICULUM_DESIGNER', 'post', 'curriculum-units')
       .send(definition)
       .expect(201);
@@ -226,6 +273,13 @@ describe('Shared curriculum and generated sessions', () => {
       .send({ title: 'Bài 1', content: 'Nội dung 1', sequence: 1 })
       .expect(201);
     const lesson1 = (lesson.body as Envelope<Id>).data.id;
+    const unlinked = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
+      .send({ reviewerTeacherId: ids.TEACHER })
+      .expect(409);
+    expect(unlinked.body).toMatchObject({
+      error: { code: 'LESSON_OUTCOME_MISSING', details: { lessonIds: [lesson1] } },
+    });
+    await linkLessons(unitId);
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
       .send({ reviewerTeacherId: ids.TEACHER })
       .expect(201);
@@ -249,6 +303,7 @@ describe('Shared curriculum and generated sessions', () => {
     await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/approve`)
       .send({})
       .expect(403);
+    await linkLessons(unitId);
     const submitted = await call('CURRICULUM_DESIGNER', 'post', `curriculum-units/${unitId}/submit`)
       .send({ reviewerTeacherId: ids.TEACHER })
       .expect(201);
@@ -266,7 +321,7 @@ describe('Shared curriculum and generated sessions', () => {
       .send({ title: 'Sửa', content: 'Sửa', sequence: 1 })
       .expect(409);
 
-    const body = { curriculumUnitId: unitId, fromDate: '2027-01-04', toDate: '2027-01-10' };
+    const body = { curriculumUnitId: unitId, fromDate: '2027-01-04' };
     const preview = await call('MANAGER', 'post', `classes/${ids.A}/session-preview`)
       .send(body)
       .expect(201);
@@ -301,7 +356,7 @@ describe('Shared curriculum and generated sessions', () => {
     expect((repeated.body as Envelope<{ id: string }>).data.id).toBe(generated.id);
     const changed = await call('MANAGER', 'post', `classes/${ids.A}/session-generations`)
       .set('Idempotency-Key', key)
-      .send({ ...body, toDate: '2027-01-09' })
+      .send({ ...body, fromDate: '2027-01-05' })
       .expect(409);
     expect((changed.body as Envelope<never>).error?.code).toBe('IDEMPOTENCY_CONFLICT');
 

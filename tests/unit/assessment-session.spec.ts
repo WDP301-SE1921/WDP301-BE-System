@@ -229,7 +229,9 @@ describe('assignment session and type rules', () => {
       });
     });
 
-    it('publishes a draft without a CLO set or with unmapped questions', async () => {
+    it('publishes a draft without a CLO set when the program has no approved set', async () => {
+      // Wave D (L1): with an approved set, publish needs assignment CLOs (assignment-outcomes.spec.ts).
+      countSets.mockResolvedValue(0);
       findAssignment.mockResolvedValue({
         id: 'assignment',
         ...definition,

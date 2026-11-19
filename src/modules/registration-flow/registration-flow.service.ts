@@ -417,15 +417,15 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
       'Create schedules before opening registration for a class',
     );
     await this.assertTeacher(input.teacherId);
-    await this.assertRoom(input.roomId, input.capacity);
     await loadProgramForNewClass(this.db, input.programId);
+    const room = await this.assertRoom(input.roomId);
     return this.db.class.create({
       data: {
         programId: input.programId,
         name: input.name.trim(),
         teacherId: input.teacherId,
-        roomId: input.roomId,
-        capacity: input.capacity,
+        roomId: room.id,
+        capacity: room.capacity,
         monthlyFee: input.monthlyFee,
         isOpen: false,
       },
@@ -443,11 +443,22 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         include: { weeklySchedules: true },
       });
       this.assert(classroom, 'CLASS_NOT_FOUND', 'Class not found', HttpStatus.NOT_FOUND);
-      await this.assertRoom(
-        input.roomId === undefined ? (classroom.roomId ?? undefined) : (input.roomId ?? undefined),
-        input.capacity ?? classroom.capacity,
-        tx,
-      );
+      // Capacity follows the room: a new room copies its capacity, but never below the seats already reserved.
+      let capacity: number | undefined;
+      if (input.roomId !== undefined) {
+        if (input.roomId)
+          await tx.$queryRaw`SELECT id FROM rooms WHERE id = ${input.roomId} FOR SHARE`;
+        const room = await this.assertRoom(input.roomId ?? undefined, tx);
+        const reserved = (await this.reservedSeatsByClass(tx, [id])).get(id) ?? 0;
+        if (reserved > room.capacity)
+          throw new AppError(
+            'ROOM_CAPACITY_TOO_SMALL',
+            'Room capacity is below the seats already reserved in this class',
+            HttpStatus.CONFLICT,
+            { reservedSeats: reserved, roomCapacity: room.capacity },
+          );
+        capacity = room.capacity;
+      }
       if (input.teacherId !== undefined && input.teacherId !== classroom.teacherId) {
         this.assert(
           !classroom.pendingTeacherId,
@@ -512,8 +523,7 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
         data: {
           ...(input.name === undefined ? {} : { name: input.name.trim() }),
           ...(input.teacherId === undefined ? {} : { teacherId: input.teacherId }),
-          ...(input.roomId === undefined ? {} : { roomId: input.roomId }),
-          ...(input.capacity === undefined ? {} : { capacity: input.capacity }),
+          ...(input.roomId === undefined ? {} : { roomId: input.roomId, capacity }),
           ...(input.monthlyFee === undefined ? {} : { monthlyFee: input.monthlyFee }),
           ...(input.isOpen === undefined ? {} : { isOpen: input.isOpen }),
           ...(input.isActive === undefined
@@ -553,26 +563,41 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
   async updateRoom(user: AuthenticatedUser, id: string, input: UpdateRoomDto): Promise<unknown> {
     this.requireRoles(user, 'MANAGER');
     return this.transaction(async (tx) => {
+      // Lock order classes -> rooms, same as updateClass (class lock, then room), so the two cannot deadlock.
+      await tx.$queryRaw`SELECT id FROM classes WHERE roomId = ${id} AND deletedAt IS NULL ORDER BY id FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM rooms WHERE id = ${id} FOR UPDATE`;
       const room = await tx.room.findUnique({ where: { id } });
       this.assert(room, 'ROOM_NOT_FOUND', 'Room not found', HttpStatus.NOT_FOUND);
-      const largestClass = input.capacity
-        ? await tx.class.aggregate({
-            where: { roomId: id, isActive: true },
-            _max: { capacity: true },
+      const capacityChanged = input.capacity !== undefined && input.capacity !== room.capacity;
+      const roomClasses = capacityChanged
+        ? await tx.class.findMany({
+            where: { roomId: id, deletedAt: null },
+            select: { id: true, name: true },
           })
-        : null;
-      this.assert(
-        !largestClass?._max.capacity || input.capacity! >= largestClass._max.capacity,
-        'ROOM_CAPACITY_TOO_SMALL',
-        'Room capacity is below an assigned class capacity',
-      );
+        : [];
+      if (capacityChanged && roomClasses.length) {
+        const reserved = await this.reservedSeatsByClass(
+          tx,
+          roomClasses.map((row) => row.id),
+        );
+        const tooFull = roomClasses
+          .map((row) => ({ id: row.id, name: row.name, reservedSeats: reserved.get(row.id) ?? 0 }))
+          .filter((row) => row.reservedSeats > input.capacity!);
+        if (tooFull.length)
+          throw new AppError(
+            'ROOM_CAPACITY_TOO_SMALL',
+            'Room capacity is below the seats already reserved in its classes',
+            HttpStatus.CONFLICT,
+            { classes: tooFull, roomCapacity: input.capacity },
+          );
+      }
       if (input.isActive === false) {
         const future = await tx.classSession.count({
           where: { roomId: id, status: 'SCHEDULED', startsAt: { gte: new Date() } },
         });
         this.assert(!future, 'ROOM_IN_USE', 'Room has future scheduled sessions');
       }
-      return tx.room.update({
+      const updated = await tx.room.update({
         where: { id },
         data: {
           ...(input.name === undefined ? {} : { name: input.name.trim() }),
@@ -580,6 +605,12 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
           ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
         },
       });
+      if (capacityChanged && roomClasses.length)
+        await tx.class.updateMany({
+          where: { roomId: id, deletedAt: null },
+          data: { capacity: input.capacity },
+        });
+      return updated;
     });
   }
 
@@ -2405,17 +2436,37 @@ export class RegistrationFlowService implements OnModuleInit, OnModuleDestroy {
 
   private async assertRoom(
     roomId: string | undefined,
-    classCapacity: number,
     db: Prisma.TransactionClient | DatabaseService = this.db,
-  ): Promise<void> {
-    if (!roomId) return;
-    const room = await db.room.findFirst({ where: { id: roomId, isActive: true, deletedAt: null } });
+  ): Promise<{ id: string; capacity: number }> {
+    this.assert(roomId, 'ROOM_REQUIRED', 'Choose a room for the class', HttpStatus.BAD_REQUEST);
+    const room = await db.room.findFirst({
+      where: { id: roomId, isActive: true, deletedAt: null },
+    });
     this.assert(room, 'INVALID_ROOM', 'An active room is required');
-    this.assert(
-      room.capacity >= classCapacity,
-      'ROOM_CAPACITY_TOO_SMALL',
-      'Room capacity is below class capacity',
-    );
+    return room;
+  }
+
+  /** Seats reserved per class from today on: the peak of overlapping active enrollments. */
+  private async reservedSeatsByClass(
+    client: Prisma.TransactionClient | DatabaseService,
+    classIds: string[],
+  ): Promise<Map<string, number>> {
+    const today = todayLocalDate();
+    const segments = await this.placedTermEnrollments(client, {
+      status: 'ACTIVE',
+      endDate: { gt: today },
+      OR: [{ classId: { in: classIds } }, { placements: { some: { classId: { in: classIds } } } }],
+    });
+    const result = new Map<string, number>();
+    for (const classId of classIds) {
+      const own = segments.filter((item) => item.classId === classId && item.endDate);
+      const last = own.reduce<Date>(
+        (max, item) => (item.endDate && item.endDate > max ? item.endDate : max),
+        today,
+      );
+      result.set(classId, own.length ? peakOccupancy(own, today, last) : 0);
+    }
+    return result;
   }
 
   private assertCanReadRegistration(user: AuthenticatedUser, parentEmail: string): void {
@@ -2849,6 +2900,7 @@ export function refundView(refund: RefundRow): Record<string, unknown> {
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   CASH: 'Tiền mặt',
   BANK_TRANSFER: 'Chuyển khoản',
+
 };
 
 const TERM_LABELS = {
@@ -2894,7 +2946,6 @@ function atStartOfLocalDay(value: Date): Date {
 function dateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
 }
-
 
 function isoWeekday(date: Date): number {
   const day = new Date(date.getTime() + HCM_OFFSET_MS).getUTCDay();

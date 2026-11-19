@@ -1,9 +1,10 @@
-import { AiGradingRequestDto } from './academic.dto';
+import { AiGradingRequestDto, OutcomeImportCommitDto } from './academic.dto';
 import {
   Body,
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -33,6 +34,7 @@ import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
 import { OutcomeService } from './outcome.service';
+import { OutcomeImportService } from './outcome-import.service';
 import { StudentGradeQueryDto } from './academic-list.dto';
 import {
   AcademicProgramQueryDto,
@@ -108,6 +110,7 @@ export class AcademicController {
     private readonly workflows: EnrollmentWorkflowsService,
     private readonly assessment: AssessmentService,
     private readonly outcomes: OutcomeService,
+    private readonly outcomeImport: OutcomeImportService,
     private readonly assignmentImport: AssignmentImportService,
     private readonly grading: GradingWorkerService,
     private readonly reports: ReportsService,
@@ -261,6 +264,64 @@ export class AcademicController {
     @Param('id') id: string,
   ): Promise<unknown> {
     return this.outcomes.technicalApprove(user, id);
+  }
+
+  // Declared before `outcome-sets/:id` so the literal segment is not read as an id.
+  @Get('outcome-sets/import-template')
+  @ApiOperation({
+    summary: 'Curriculum designer: download the .xlsx template for importing CLOs',
+    description: 'Columns: Mã, Tên mục tiêu, Mô tả, Bắt buộc (Có/Không); one example row.',
+  })
+  async outcomeImportTemplate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Res() res: Response,
+  ): Promise<void> {
+    const file = await this.outcomeImport.template(user);
+    res.type(file.type).attachment(file.name).send(file.buffer);
+  }
+
+  @Post('outcome-sets/:id/import-preview')
+  @ApiOperation({
+    summary: 'Curriculum designer: preview CLOs from an .xlsx or .csv file; nothing is saved',
+    description:
+      'Multipart field `file`, up to 5 MB and 200 rows. Returns rows with errors[] ' +
+      '(TITLE_REQUIRED, VALUE_TOO_LONG, VALUE_TOO_SHORT, DUPLICATE_CODE_IN_FILE, CODE_EXISTS, REQUIRED_INVALID). ' +
+      'A file that cannot be read returns 400 OUTCOME_IMPORT_FILE_INVALID with details.code.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 } }),
+  )
+  outcomeImportPreview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<unknown> {
+    return this.outcomeImport.preview(user, id, file);
+  }
+
+  @Post('outcome-sets/:id/import-commit')
+  @ApiOperation({
+    summary: 'Curriculum designer: create every previewed CLO in one transaction',
+    description:
+      'Needs the Idempotency-Key header. 409 OUTCOME_SET_LOCKED when the set is not a draft; ' +
+      '409 OUTCOME_IMPORT_PREVIEW_STALE when the preview is expired, not yours or out of date; ' +
+      '400 INVALID_IMPORT when a previewed row had errors.',
+  })
+  outcomeImportCommit(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body() input: OutcomeImportCommitDto,
+  ): Promise<unknown> {
+    return this.outcomeImport.commit(user, id, input.previewId, key);
   }
 
   @Get('outcome-sets/:id')
@@ -533,7 +594,9 @@ export class AcademicController {
     return this.workflows.transfer(user, id, input);
   }
   @Post('enrollments/:id/extensions')
-  @ApiOperation({ summary: 'Staff: extend the term for free by 1-90 days with a reason (bill unchanged)' })
+  @ApiOperation({
+    summary: 'Staff: extend the term for free by 1-90 days with a reason (bill unchanged)',
+  })
   extendEnrollment(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -779,10 +842,7 @@ export class AcademicController {
   }
   @Get('reports/:id')
   @ApiOperation({ summary: 'Assigned teacher: one learning report with per-student rows' })
-  reportDetail(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-  ): Promise<unknown> {
+  reportDetail(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<unknown> {
     return this.reports.detail(user, id);
   }
   @Get('reports/:id/download') async download(

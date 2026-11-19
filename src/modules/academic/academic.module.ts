@@ -9,6 +9,7 @@ import { CatalogService } from './catalog.service';
 import { EnrollmentWorkflowsService } from './enrollment-workflows.service';
 import { AssessmentService } from './assessment.service';
 import { OutcomeService } from './outcome.service';
+import { OutcomeImportService } from './outcome-import.service';
 import { AssignmentImportService } from './assignment-import.service';
 import { GradingWorkerService } from './grading-worker.service';
 import { ReportsService } from './reports.service';
@@ -25,6 +26,7 @@ import { AnalyticsService } from './analytics.service';
     EnrollmentWorkflowsService,
     AssessmentService,
     OutcomeService,
+    OutcomeImportService,
     AssignmentImportService,
     GradingWorkerService,
     SubmissionReaderService,

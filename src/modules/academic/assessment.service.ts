@@ -29,6 +29,10 @@ import {
 } from './academic.dto';
 import { EligibleRecipientsQueryDto } from './academic-list.dto';
 
+/** CLO fields shown with an assignment (teacher and parent). */
+const OUTCOME_SUMMARY = { id: true, code: true, title: true, required: true } as const;
+type OutcomeSummary = { id: string; code: string; title: string; required: boolean };
+
 @Injectable()
 export class AssessmentService {
   constructor(
@@ -42,13 +46,14 @@ export class AssessmentService {
     await this.access.classroom(user, input.classId);
     this.validateDefinition(input);
     await this.validateSession(user, input);
-    await this.validateOutcomeMapping(input);
-    const { questions, dueAt, files, ...data } = input;
+    const outcomes = await this.validateOutcomeMapping(input);
+    const { questions, dueAt, files, ...data } = assignmentFields(input);
     await this.validateFiles(user, files ?? []);
     return this.repo.db.assignment.create({
       data: {
         ...data,
-        outcomeSetId: input.outcomeSetId ?? null,
+        outcomeSetId: outcomes.outcomeSetId,
+        outcomeLinks: { create: outcomes.outcomeIds.map((outcomeId) => ({ outcomeId })) },
         kind: input.kind ?? 'HOMEWORK',
         sessionId: input.sessionId ?? null,
         testType: input.testType ?? null,
@@ -79,15 +84,20 @@ export class AssessmentService {
         'Only a draft in the same class can be edited',
       );
       await this.validateSession(user, input, tx);
-      await this.validateOutcomeMapping(input, tx);
+      const outcomes = await this.validateOutcomeMapping(input, tx);
       await tx.assignmentQuestion.deleteMany({ where: { assignmentId: id } });
-      const { questions, dueAt, files, ...data } = input;
+      const { questions, dueAt, files, ...data } = assignmentFields(input);
       await this.validateFiles(user, files ?? [], tx, id);
       return tx.assignment.update({
         where: { id },
         data: {
           ...data,
-          outcomeSetId: input.outcomeSetId ?? null,
+          outcomeSetId: outcomes.outcomeSetId,
+          // Replace the assignment-level CLO links; a draft may have none.
+          outcomeLinks: {
+            deleteMany: {},
+            create: outcomes.outcomeIds.map((outcomeId) => ({ outcomeId })),
+          },
           kind: input.kind ?? 'HOMEWORK',
           sessionId: input.sessionId ?? null,
           testType: input.testType ?? null,
@@ -218,21 +228,50 @@ export class AssessmentService {
     }
   }
 
+  /**
+   * Validates the CLO links of an assignment (L1: CLOs belong to the whole assignment).
+   * `outcomeIds` must come from one APPROVED set of the class program; the set is taken from
+   * them when `outcomeSetId` is missing. Omitted `outcomeIds` fall back to the distinct
+   * deprecated `questions[].outcomeId` values. A draft may have no CLO at all.
+   */
   private async validateOutcomeMapping(
     input: AssignmentDto,
     tx: Prisma.TransactionClient = this.repo.db,
-  ): Promise<void> {
-    if (!input.outcomeSetId) {
+  ): Promise<{ outcomeSetId: string | null; outcomeIds: string[] }> {
+    const outcomeIds = [
+      ...new Set(
+        input.outcomeIds ??
+          input.questions.flatMap((question) => (question.outcomeId ? [question.outcomeId] : [])),
+      ),
+    ];
+    let outcomeSetId = input.outcomeSetId ?? null;
+    if (!outcomeSetId && input.outcomeIds?.length) {
+      const rows = await tx.learningOutcome.findMany({
+        where: { id: { in: outcomeIds } },
+        select: { id: true, outcomeSetId: true },
+      });
+      const setIds = [...new Set(rows.map((row) => row.outcomeSetId))];
+      const found = new Set(rows.map((row) => row.id));
+      if (rows.length !== outcomeIds.length || setIds.length !== 1)
+        throw new AppError(
+          'INVALID_OUTCOME_SET',
+          'Assignment CLOs must come from one approved set of this program',
+          HttpStatus.CONFLICT,
+          { outcomeIds: outcomeIds.filter((outcomeId) => !found.has(outcomeId)) },
+        );
+      outcomeSetId = setIds[0];
+    }
+    if (!outcomeSetId) {
       assertRule(
         input.questions.every((question) => !question.outcomeId),
         'OUTCOME_SET_REQUIRED',
         'Choose an outcome set before mapping questions',
       );
-      return;
+      return { outcomeSetId: null, outcomeIds: [] };
     }
     const classroom = await tx.class.findUniqueOrThrow({ where: { id: input.classId } });
     const set = await tx.outcomeSet.findUnique({
-      where: { id: input.outcomeSetId },
+      where: { id: outcomeSetId },
       include: { outcomes: { select: { id: true } } },
     });
     assertRule(
@@ -240,8 +279,16 @@ export class AssessmentService {
       'INVALID_OUTCOME_SET',
       'Use an approved outcome set for this program',
     );
-    // Light CLOs (Q2): mapping a question is optional, but a mapped CLO must be in the set.
     const allowed = new Set(set.outcomes.map((outcome) => outcome.id));
+    const outside = outcomeIds.filter((outcomeId) => !allowed.has(outcomeId));
+    if (input.outcomeIds && outside.length)
+      throw new AppError(
+        'INVALID_OUTCOME_SET',
+        'Assignment CLOs must come from one approved set of this program',
+        HttpStatus.CONFLICT,
+        { outcomeIds: outside },
+      );
+    // Deprecated per-question CLOs: optional, but a mapped CLO must be in the set.
     const wrong = input.questions.flatMap((question, index) =>
       question.outcomeId && !allowed.has(question.outcomeId)
         ? [{ index, outcomeId: question.outcomeId }]
@@ -258,6 +305,7 @@ export class AssessmentService {
           outcomeIds: wrong.map((item) => item.outcomeId),
         },
       );
+    return { outcomeSetId, outcomeIds };
   }
 
   async list(user: AuthenticatedUser, page: AssignmentQueryDto): Promise<unknown> {
@@ -320,6 +368,7 @@ export class AssessmentService {
             select: { id: true, name: true, program: { select: { subject: true, grade: true } } },
           },
           questions: { select: { kind: true, maxScore: true } },
+          outcomeLinks: { select: { outcome: { select: OUTCOME_SUMMARY } } },
           recipients: {
             where: recipientWhere,
             select: {
@@ -354,8 +403,9 @@ export class AssessmentService {
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       })
       .then((rows) =>
-        rows.map(({ questions, recipients, ...assignment }) => ({
+        rows.map(({ questions, recipients, outcomeLinks, ...assignment }) => ({
           ...assignment,
+          outcomes: assignmentOutcomes(outcomeLinks),
           questionCounts: {
             multipleChoice: questions.filter((q) => q.kind === 'MULTIPLE_CHOICE').length,
             essay: questions.filter((q) => q.kind === 'ESSAY').length,
@@ -597,6 +647,7 @@ export class AssessmentService {
           },
         },
         questions: { orderBy: { position: 'asc' } },
+        outcomeLinks: { select: { outcome: { select: OUTCOME_SUMMARY } } },
         recipients: {
           where:
             user.role === 'PARENT'
@@ -636,6 +687,7 @@ export class AssessmentService {
       classId: assignment.classId,
       outcomeSetId: assignment.outcomeSetId,
       learningTargets: assignment.outcomeSet?.outcomes ?? [],
+      outcomes: assignmentOutcomes(assignment.outcomeLinks),
       title: assignment.title,
       instructions: assignment.instructions,
       files: assignment.files,
@@ -871,11 +923,11 @@ export class AssessmentService {
             'Complete the answer key before publishing',
           );
       }
-      // Light CLOs (Q2): a CLO set is optional; a chosen set must still be approved for the program.
+      const classProgram = await tx.class.findUniqueOrThrow({
+        where: { id: assignment.classId },
+      });
+      // A chosen set must still be approved for the program.
       if (assignment.outcomeSetId) {
-        const classProgram = await tx.class.findUniqueOrThrow({
-          where: { id: assignment.classId },
-        });
         const set = await tx.outcomeSet.findUnique({ where: { id: assignment.outcomeSetId } });
         assertRule(
           set && set.status === 'APPROVED' && set.programId === classProgram.programId,
@@ -883,6 +935,17 @@ export class AssessmentService {
           'Assignment CLO set is no longer approved for this program',
         );
       }
+      // L1 (D4): when the program has an approved CLO set, homework and tests measure ≥1 CLO.
+      // CLOs are linked to the whole assignment; questions no longer need their own CLO.
+      const approvedSets = await tx.outcomeSet.count({
+        where: { programId: classProgram.programId, status: 'APPROVED' },
+      });
+      if (approvedSets)
+        assertRule(
+          await tx.assignmentOutcome.count({ where: { assignmentId: id } }),
+          'ASSIGNMENT_OUTCOME_REQUIRED',
+          'Choose at least one CLO for this assignment before publishing',
+        );
       const now = new Date();
       await this.validateRecipients(tx, assignment.classId, input.enrollmentIds, now);
       await tx.assignmentRecipient.createMany({
@@ -1336,6 +1399,26 @@ export class AssessmentService {
     await this.access.classroom(user, assignment.classId, tx);
     return assignment;
   }
+}
+
+/**
+ * CLOs measured by an assignment, sorted by code. Links only (no question fallback), so the
+ * response matches what publish counts; the migration copied old question CLOs. No answer data.
+ */
+export function assignmentOutcomes(links: { outcome: OutcomeSummary }[]): OutcomeSummary[] {
+  const byId = new Map(
+    links
+      .map(({ outcome }) => outcome)
+      .map(({ id, code, title, required }) => [id, { id, code, title, required }]),
+  );
+  return [...byId.values()].sort((a, b) => a.code.localeCompare(b.code, 'vi', { numeric: true }));
+}
+
+/** Assignment columns of the request; outcomeIds is written as links, not as a column. */
+function assignmentFields(input: AssignmentDto): Omit<AssignmentDto, 'outcomeIds'> {
+  const fields: Partial<AssignmentDto> = { ...input };
+  delete fields.outcomeIds;
+  return fields as Omit<AssignmentDto, 'outcomeIds'>;
 }
 
 export function validateScores(

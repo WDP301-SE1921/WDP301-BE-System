@@ -172,6 +172,7 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
               assignment: {
                 include: {
                   class: { include: { program: true } },
+                  outcomeLinks: { include: { outcome: true } },
                   session: { include: { lesson: true } },
                   questions: {
                     orderBy: { position: 'asc' },
@@ -303,6 +304,9 @@ export class GradingWorkerService implements OnModuleInit, OnModuleDestroy {
             sessionLesson: assignment.session?.lesson ?? null,
           },
           programLessons,
+          assignmentOutcomes: (assignment.outcomeLinks ?? [])
+            .map((link) => link.outcome)
+            .sort((a, b) => a.code.localeCompare(b.code)),
           questions,
           answers,
         }),

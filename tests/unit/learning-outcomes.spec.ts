@@ -11,6 +11,7 @@ describe('CLO source safeguards', () => {
   it('seeds every requested subject and grade as unverified draft', async () => {
     const sets: Array<Record<string, unknown>> = [];
     const outcomes: Array<Record<string, unknown>> = [];
+    const lessonLinks = jest.fn();
     const tx = {
       outcomeSet: {
         upsert: jest.fn(({ create }: { create: Record<string, unknown> }) => {
@@ -24,21 +25,24 @@ describe('CLO source safeguards', () => {
           return Promise.resolve({ id: create.id });
         }),
       },
-      lessonOutcome: { upsert: jest.fn() },
+      lessonOutcome: { upsert: lessonLinks },
     };
     const classes: SeedCatalog['classes'] = {};
-    const lessons: SeedCatalog['lessons'] = {};
+    const lessons = {} as Record<string, Array<{ id: string; title: string }>>;
     for (const subject of SUBJECTS.filter((item) => item.key !== 'physics')) {
       for (const grade of [6, 7, 8, 9]) {
         const key = `${subject.key}-${grade}`;
         classes[`${key}-a`] = { programId: `program-${key}` } as SeedCatalog['classes'][string];
-        lessons[key] = [];
+        lessons[key] =
+          key === 'math-8'
+            ? [{ id: 'lesson-math-8-1', title: `${TOPICS[key][0].title} - Khởi động` }]
+            : [];
       }
     }
     await seedLearningOutcomes(
       tx as unknown as Prisma.TransactionClient,
       { designer: { id: 'designer' }, 'designer-2': { id: 'designer-2' } } as unknown as SeedUsers,
-      { classes, lessons } as SeedCatalog,
+      { classes, lessons } as unknown as SeedCatalog,
     );
     expect(sets).toHaveLength(12);
     expect(outcomes).toHaveLength(
@@ -47,6 +51,12 @@ describe('CLO source safeguards', () => {
         .reduce((total, [, topics]) => total + topics.length, 0),
     );
     expect(outcomes).toHaveLength(48);
+    const linked = lessonLinks.mock.calls.map(
+      ([arg]: [{ create: { lessonId: string } }]) => arg.create.lessonId,
+    );
+    expect(linked).toEqual(expect.arrayContaining(['lesson-math-8-1']));
+    for (const version of [3, 4])
+      expect(linked.filter((id) => id.endsWith(`lesson_math-8_v${version}`))).toHaveLength(1);
     expect(sets.every((item) => item.status === 'DRAFT')).toBe(true);
     expect(outcomes.every((item) => item.sourceStatus === 'CANDIDATE')).toBe(true);
     expect(outcomes.every((item) => String(item.sourceUrl).endsWith('.pdf'))).toBe(true);
@@ -73,12 +83,16 @@ describe('CLO source safeguards', () => {
     return jest.fn((strings: TemplateStringsArray) => {
       const sql = strings.join('?');
       if (sql.includes('FROM outcome_sets'))
-        return Promise.resolve([{ status: set.status, programId: set.programId, level: 'L', version: 1 }]);
+        return Promise.resolve([
+          { status: set.status, programId: set.programId, level: 'L', version: 1 },
+        ]);
       if (sql.includes('FROM learning_outcomes'))
         return Promise.resolve(set.outcomes.map(({ id, code }) => ({ id, code })));
       if (sql.includes('FROM lesson_outcomes'))
         return Promise.resolve(
-          set.outcomes.filter((outcome) => outcome.lessonLinks.length).map((outcome) => ({ outcomeId: outcome.id })),
+          set.outcomes
+            .filter((outcome) => outcome.lessonLinks.length)
+            .map((outcome) => ({ outcomeId: outcome.id })),
         );
       return Promise.resolve([]);
     });
@@ -88,11 +102,18 @@ describe('CLO source safeguards', () => {
     return {
       $queryRaw: lockedSetRaw(set),
       program: {
-        findMany: jest.fn().mockResolvedValue([{ id: 'program', subject: 'Toán', subjectId: null }]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 'program', subject: 'Toán', subjectId: null }]),
       },
       class: {
         findMany: jest.fn().mockResolvedValue([
-          { programId: 'program', teacherId: 'teacher', pendingTeacherId: null, pendingTeacherFrom: null },
+          {
+            programId: 'program',
+            teacherId: 'teacher',
+            pendingTeacherId: null,
+            pendingTeacherFrom: null,
+          },
         ]),
       },
       user: {
@@ -120,8 +141,20 @@ describe('CLO source safeguards', () => {
       programId: 'program',
       status: 'DRAFT',
       outcomes: [
-        { id: 'a', code: 'TOAN-8-01', sourceStatus: 'CANDIDATE', verifiedById: null, lessonLinks: [{ lessonId: 'l1' }] },
-        { id: 'b', code: 'TOAN-8-02', sourceStatus: 'VERIFIED', verifiedById: 'teacher-x', lessonLinks: [{ lessonId: 'l2' }] },
+        {
+          id: 'a',
+          code: 'TOAN-8-01',
+          sourceStatus: 'CANDIDATE',
+          verifiedById: null,
+          lessonLinks: [{ lessonId: 'l1' }],
+        },
+        {
+          id: 'b',
+          code: 'TOAN-8-02',
+          sourceStatus: 'VERIFIED',
+          verifiedById: 'teacher-x',
+          lessonLinks: [{ lessonId: 'l2' }],
+        },
       ],
     };
     const db = approvalDb(set);
@@ -147,7 +180,9 @@ describe('CLO source safeguards', () => {
     });
     // A plain read would use the TiDB snapshot taken before the lock wait.
     expect(db.outcomeSet.findUnique).not.toHaveBeenCalled();
-    const sql = (db.$queryRaw.mock.calls as Array<[TemplateStringsArray]>).map(([strings]) => strings.join('?'));
+    const sql = (db.$queryRaw.mock.calls as Array<[TemplateStringsArray]>).map(([strings]) =>
+      strings.join('?'),
+    );
     expect(sql).toHaveLength(3);
     expect(sql.every((query) => query.includes('FOR UPDATE'))).toBe(true);
   });
@@ -176,8 +211,20 @@ describe('CLO source safeguards', () => {
       programId: 'program',
       status: 'DRAFT',
       outcomes: [
-        { id: 'a', code: 'TOAN-8-01', sourceStatus: 'CANDIDATE', verifiedById: null, lessonLinks: [] },
-        { id: 'b', code: 'TOAN-8-02', sourceStatus: 'CANDIDATE', verifiedById: null, lessonLinks: [{ lessonId: 'l' }] },
+        {
+          id: 'a',
+          code: 'TOAN-8-01',
+          sourceStatus: 'CANDIDATE',
+          verifiedById: null,
+          lessonLinks: [],
+        },
+        {
+          id: 'b',
+          code: 'TOAN-8-02',
+          sourceStatus: 'CANDIDATE',
+          verifiedById: null,
+          lessonLinks: [{ lessonId: 'l' }],
+        },
       ],
     };
     const db = approvalDb(set);
@@ -198,13 +245,23 @@ describe('CLO source safeguards', () => {
       id: 'set',
       programId: 'program',
       status: 'DRAFT',
-      outcomes: [{ id: 'a', code: 'SINH-8-01', sourceStatus: 'CANDIDATE', verifiedById: null, lessonLinks: [{ lessonId: 'l' }] }],
+      outcomes: [
+        {
+          id: 'a',
+          code: 'SINH-8-01',
+          sourceStatus: 'CANDIDATE',
+          verifiedById: null,
+          lessonLinks: [{ lessonId: 'l' }],
+        },
+      ],
     };
 
     /** No class of the subject anywhere: the teacher only qualifies as a chosen curriculum reviewer. */
     function unrelatedTeacherDb(chosenCurricula: number): ApprovalDb {
       const db = approvalDb(set, chosenCurricula);
-      db.program.findMany.mockResolvedValue([{ id: 'program', subject: 'Sinh học', subjectId: null }]);
+      db.program.findMany.mockResolvedValue([
+        { id: 'program', subject: 'Sinh học', subjectId: null },
+      ]);
       db.class.findMany.mockResolvedValue([]);
       db.user.findMany.mockResolvedValue([]);
       return db;
@@ -242,7 +299,12 @@ describe('CLO source safeguards', () => {
         { id: 'program-9', subject: 'sinh  hoc', subjectId: null },
       ]);
       db.class.findMany.mockResolvedValue([
-        { programId: 'program-9', teacherId: 'teacher', pendingTeacherId: null, pendingTeacherFrom: null },
+        {
+          programId: 'program-9',
+          teacherId: 'teacher',
+          pendingTeacherId: null,
+          pendingTeacherFrom: null,
+        },
       ]);
       await serviceFor(db).technicalApprove(teacher, 'set');
       expect(db.outcomeSet.update).toHaveBeenCalled();

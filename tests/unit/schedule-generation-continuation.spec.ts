@@ -42,50 +42,70 @@ describe('removed session cancel and center closures (19/11/2026)', () => {
   });
 });
 
-describe('schedule generation continues from the last lesson (C4)', () => {
+type UnitOptions = {
+  lessonCount?: number;
+  weekdays?: number[];
+  term?: { fromDate: string; toDate: string };
+};
+
+// Unit period 2030-01-07..2030-12-31, Mon/Wed/Fri 18:00, six lessons by default.
+function unitAndClass(options: UnitOptions): { unit: unknown; classroom: unknown } {
+  const lessons = Array.from({ length: options.lessonCount ?? 6 }, (_, index) => ({
+    id: `L${index + 1}`,
+    title: `Bài ${index + 1}`,
+    kind: 'LESSON',
+    sequence: index + 1,
+    status: 'APPROVED',
+  }));
+  const unit = {
+    id: 'unit-1',
+    programId: 'program-1',
+    status: 'APPROVED',
+    fromDate: new Date(`${options.term?.fromDate ?? '2030-01-07'}T00:00:00Z`),
+    toDate: new Date(`${options.term?.toDate ?? '2030-12-31'}T00:00:00Z`),
+    lessons,
+  };
+  const weekdays = options.weekdays ?? [1, 3, 5];
+  const classroom = {
+    id: 'class-1',
+    name: 'Toán 8A',
+    programId: 'program-1',
+    teacherId: 'teacher-1',
+    pendingTeacherId: null,
+    pendingTeacherFrom: null,
+    roomId: null,
+    teacher: { role: 'TEACHER', status: 'ACTIVE' },
+    program: { id: 'program-1', isActive: true, sessionsPerWeek: weekdays.length },
+    weeklySchedules: weekdays.map((weekday) => ({
+      weekday,
+      startTime: '18:00',
+      endTime: '20:00',
+    })),
+  };
+  return { unit, classroom };
+}
+
+describe('schedule runs from the start date to the last lesson (D1)', () => {
   type PreviewResult = {
     mode: string;
+    endDate: string;
+    toDate: string;
+    lessonCount: number;
+    unscheduledLessons: unknown[];
     slots: Array<{ date: string; lessonId: string }>;
-    unscheduledLessons: Array<{ id: string }>;
   };
   type PlanSetup = {
-    preview: (fromDate: string, toDate: string) => Promise<PreviewResult>;
-    db: { classSession: { findFirst: jest.Mock } };
+    preview: (fromDate: string) => Promise<PreviewResult>;
+    db: { classSession: { findFirst: jest.Mock }; schedulePreview: { create: jest.Mock } };
   };
 
-  // Term 2030-01-07..2030-01-20, Mon/Wed/Fri: slots 07, 09, 11, 14, 16, 18.
-  function planSetup(options: {
-    last?: { date: string; lessonId: string; sequence: number } | null;
-    lessonCount?: number;
-    term?: { fromDate: string; toDate: string };
-  }): PlanSetup {
-    const lessons = Array.from({ length: options.lessonCount ?? 6 }, (_, index) => ({
-      id: `L${index + 1}`,
-      title: `Bài ${index + 1}`,
-      kind: 'LESSON',
-      sequence: index + 1,
-      status: 'APPROVED',
-    }));
-    const unit = {
-      id: 'unit-1',
-      programId: 'program-1',
-      status: 'APPROVED',
-      fromDate: new Date(`${options.term?.fromDate ?? '2030-01-07'}T00:00:00Z`),
-      toDate: new Date(`${options.term?.toDate ?? '2030-01-20'}T00:00:00Z`),
-      lessons,
-    };
-    const classroom = {
-      id: 'class-1',
-      programId: 'program-1',
-      teacherId: 'teacher-1',
-      teacher: { role: 'TEACHER', status: 'ACTIVE' },
-      program: { id: 'program-1', isActive: true, sessionsPerWeek: 3 },
-      weeklySchedules: [1, 3, 5].map((weekday) => ({
-        weekday,
-        startTime: '18:00',
-        endTime: '20:00',
-      })),
-    };
+  function planSetup(
+    options: UnitOptions & {
+      last?: { date: string; lessonId: string; sequence: number } | null;
+      other?: { lesson: { unit: { id: string; title: string } } } | null;
+    },
+  ): PlanSetup {
+    const { unit, classroom } = unitAndClass(options);
     const last = options.last
       ? {
           startsAt: at(options.last.date),
@@ -97,33 +117,64 @@ describe('schedule generation continues from the last lesson (C4)', () => {
       class: { findUnique: jest.fn().mockResolvedValue(classroom) },
       classSession: {
         findMany: jest.fn().mockResolvedValue([]),
-        findFirst: jest.fn().mockResolvedValue(last),
+        findFirst: jest.fn((args: { where: { lesson: { unitId: unknown } } }) =>
+          Promise.resolve(
+            typeof args.where.lesson.unitId === 'object' ? (options.other ?? null) : last,
+          ),
+        ),
       },
       schedulePreview: {
         create: jest.fn().mockResolvedValue({ id: 'preview-1', expiresAt: new Date() }),
       },
     };
     const service = new CurriculumSchedulingService(db as never, {} as never);
-    const preview = (fromDate: string, toDate: string): Promise<PreviewResult> =>
+    const preview = (fromDate: string): Promise<PreviewResult> =>
       service.preview(manager, 'class-1', {
         curriculumUnitId: 'unit-1',
         fromDate,
-        toDate,
       }) as Promise<PreviewResult>;
     return { preview, db };
   }
 
-  // Legacy data: sessions cancelled before 19/11/2026 (cancel with shift / cancel and drop).
-  it('after a shift, the next range starts with the pushed lesson: none lost, none repeated', async () => {
-    // Week 1: 07 cancelled with shift, 09 = L1, 11 = L2; L3 was pushed out.
+  const pairs = (result: PreviewResult): string[][] =>
+    result.slots.map((slot) => [slot.date, slot.lessonId]);
+
+  it('a new class starts at lesson 1 even when it opens mid-term', async () => {
+    const { preview, db } = planSetup({});
+    const result = await preview('2030-01-14');
+    expect(result.mode).toBe('FIRST_LESSON');
+    expect(pairs(result)).toEqual([
+      ['2030-01-14', 'L1'],
+      ['2030-01-16', 'L2'],
+      ['2030-01-18', 'L3'],
+      ['2030-01-21', 'L4'],
+      ['2030-01-23', 'L5'],
+      ['2030-01-25', 'L6'],
+    ]);
+    expect(result).toMatchObject({
+      endDate: '2030-01-25',
+      toDate: '2030-01-25',
+      lessonCount: 6,
+      unscheduledLessons: [],
+    });
+    expect(db.schedulePreview.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ toDate: new Date('2030-01-25T00:00:00Z') }),
+    });
+  });
+
+  it('a class that already taught lessons continues after the last one', async () => {
     const { preview, db } = planSetup({
       last: { date: '2030-01-11', lessonId: 'L2', sequence: 2 },
     });
-    const result = await preview('2030-01-14', '2030-01-20');
+    const result = await preview('2030-01-14');
     expect(result.mode).toBe('CONTINUE');
-    expect(result.slots.map((slot) => slot.lessonId)).toEqual(['L3', 'L4', 'L5']);
-    // Six lessons, five slots after the cancellation: the term cannot take L6.
-    expect(result.unscheduledLessons.map((row) => row.id)).toEqual(['L6']);
+    expect(pairs(result)).toEqual([
+      ['2030-01-14', 'L3'],
+      ['2030-01-16', 'L4'],
+      ['2030-01-18', 'L5'],
+      ['2030-01-21', 'L6'],
+    ]);
+    expect(result.lessonCount).toBe(4);
     expect(db.classSession.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -135,21 +186,10 @@ describe('schedule generation continues from the last lesson (C4)', () => {
     );
   });
 
-  it('a class opened mid-term teaches the same lesson as the classes that started on time', async () => {
-    const result = await planSetup({}).preview('2030-01-14', '2030-01-20');
-    expect(result.mode).toBe('TERM_POSITION');
-    expect(result.slots.map((slot) => [slot.date, slot.lessonId])).toEqual([
-      ['2030-01-14', 'L4'],
-      ['2030-01-16', 'L5'],
-      ['2030-01-18', 'L6'],
-    ]);
-  });
-
-  it('skips the Tết break when counting positions from the start of the term', async () => {
-    // Tết 2030: break 26/01 (23 tháng Chạp) – 08/02 (mùng 7); Mon/Wed/Fri slots inside it are gone.
-    const term = { fromDate: '2030-01-21', toDate: '2030-02-17' };
-    const full = await planSetup({ term }).preview('2030-01-21', '2030-02-17');
-    expect(full.slots.map((slot) => [slot.date, slot.lessonId])).toEqual([
+  it('skips the Tết break and the next lesson lands after Tết', async () => {
+    // Tết 2030: break 26/01 (23 tháng Chạp) – 08/02 (mùng 7).
+    const result = await planSetup({}).preview('2030-01-21');
+    expect(pairs(result)).toEqual([
       ['2030-01-21', 'L1'],
       ['2030-01-23', 'L2'],
       ['2030-01-25', 'L3'],
@@ -157,131 +197,155 @@ describe('schedule generation continues from the last lesson (C4)', () => {
       ['2030-02-13', 'L5'],
       ['2030-02-15', 'L6'],
     ]);
-    const midTerm = await planSetup({ term }).preview('2030-02-11', '2030-02-17');
-    expect(midTerm.slots.map((slot) => [slot.date, slot.lessonId])).toEqual([
-      ['2030-02-11', 'L4'],
-      ['2030-02-13', 'L5'],
-      ['2030-02-15', 'L6'],
-    ]);
   });
 
-  it('generation skips the Tết break and the next lesson lands after Tết', async () => {
-    // Tết 2027: break 30/01 – 12/02.
-    const result = await planSetup({
-      lessonCount: 9,
-      term: { fromDate: '2027-01-18', toDate: '2027-02-19' },
-    }).preview('2027-01-18', '2027-02-19');
-    expect(result.slots.map((slot) => [slot.date, slot.lessonId])).toEqual([
-      ['2027-01-18', 'L1'],
-      ['2027-01-20', 'L2'],
-      ['2027-01-22', 'L3'],
-      ['2027-01-25', 'L4'],
-      ['2027-01-27', 'L5'],
-      ['2027-01-29', 'L6'],
-      ['2027-02-15', 'L7'],
-      ['2027-02-17', 'L8'],
-      ['2027-02-19', 'L9'],
-    ]);
+  it('runs past the end of the unit period: only the start date must lie inside it', async () => {
+    const term = { fromDate: '2030-01-07', toDate: '2030-01-10' };
+    const long = await planSetup({ term }).preview('2030-01-07');
+    expect(long.lessonCount).toBe(6);
+    expect(long.endDate).toBe('2030-01-18');
+    for (const fromDate of ['2030-01-06', '2030-01-11']) {
+      expect(await rejection(planSetup({ term }).preview(fromDate))).toMatchObject({
+        code: 'RANGE_OUTSIDE_UNIT',
+      });
+    }
   });
 
-  it('cancel-and-drop does not repeat the dropped lesson, except when it was the last one', async () => {
-    // 09 (L2) dropped, last kept session is 11 with L3: continue with L4.
-    const middle = await planSetup({
-      last: { date: '2030-01-11', lessonId: 'L3', sequence: 3 },
-    }).preview('2030-01-14', '2030-01-14');
-    expect(middle.slots.map((slot) => slot.lessonId)).toEqual(['L4']);
-    // 11 (L3) dropped and it was the last session: L3 comes back in the next range.
-    const lastDropped = await planSetup({
-      last: { date: '2030-01-09', lessonId: 'L2', sequence: 2 },
-    }).preview('2030-01-14', '2030-01-14');
-    expect(lastDropped.slots.map((slot) => slot.lessonId)).toEqual(['L3']);
-  });
-
-  it('refuses a range that starts before sessions this class already has', async () => {
+  it('refuses to start before sessions this class already has', async () => {
     const error = await rejection(
       planSetup({ last: { date: '2030-01-16', lessonId: 'L5', sequence: 5 } }).preview(
         '2030-01-14',
-        '2030-01-20',
       ),
     );
     expect(error).toMatchObject({ code: 'SESSIONS_AFTER_RANGE_EXIST', statusCode: 409 });
     expect(error.details).toEqual({ lastScheduledDate: '2030-01-16' });
   });
 
-  it('fails only when the requested range itself runs out of lessons', async () => {
-    // Three lessons, six slots in the term: the first week still works.
-    const short = planSetup({ lessonCount: 3 });
-    expect((await short.preview('2030-01-07', '2030-01-11')).slots).toHaveLength(3);
-    expect(await rejection(short.preview('2030-01-07', '2030-01-14'))).toMatchObject({
-      code: 'INSUFFICIENT_LESSONS',
+  it('a class with sessions of another curriculum is locked to it (CLASS_CURRICULUM_LOCKED)', async () => {
+    const other = { lesson: { unit: { id: 'unit-0', title: 'Giáo trình cũ' } } };
+    const error = await rejection(planSetup({ other }).preview('2030-01-14'));
+    expect(error).toMatchObject({ code: 'CLASS_CURRICULUM_LOCKED', statusCode: 409 });
+    expect(error.details).toEqual({ currentUnitId: 'unit-0', currentUnitTitle: 'Giáo trình cũ' });
+    // Continuing the same unit is unaffected, and so is a class with no sessions.
+    const same = planSetup({ last: { date: '2030-01-11', lessonId: 'L2', sequence: 2 } });
+    expect((await same.preview('2030-01-14')).mode).toBe('CONTINUE');
+    expect((await planSetup({}).preview('2030-01-14')).mode).toBe('FIRST_LESSON');
+  });
+
+  it('a second run on a finished class is CURRICULUM_COMPLETED', async () => {
+    const done = planSetup({ last: { date: '2030-01-18', lessonId: 'L6', sequence: 6 } });
+    expect(await rejection(done.preview('2030-01-21'))).toMatchObject({
+      code: 'CURRICULUM_COMPLETED',
+      statusCode: 409,
     });
-    const done = planSetup({ last: { date: '2030-01-11', lessonId: 'L6', sequence: 6 } });
-    expect(await rejection(done.preview('2030-01-14', '2030-01-14'))).toMatchObject({
-      code: 'INSUFFICIENT_LESSONS',
-    });
+  });
+
+  it('fails with SCHEDULE_TOO_LONG when the lessons do not fit in 24 months', async () => {
+    // One slot a week: about 104 slots in 24 months.
+    const error = await rejection(
+      planSetup({ lessonCount: 120, weekdays: [1] }).preview('2030-01-07'),
+    );
+    expect(error).toMatchObject({ code: 'SCHEDULE_TOO_LONG' });
+    const fits = await planSetup({ lessonCount: 100, weekdays: [1] }).preview('2030-01-07');
+    expect(fits.lessonCount).toBe(100);
+  });
+
+  it('a span that crosses two Tết breaks skips both', async () => {
+    // Tết 2030: 26/01–08/02; Tết 2031: 16/01–29/01 (23 tháng Chạp to mùng 7).
+    const result = await planSetup({
+      lessonCount: 130,
+      weekdays: [1, 3],
+      term: { fromDate: '2030-01-07', toDate: '2030-01-31' },
+    }).preview('2030-01-07');
+    const inBreak = (from: string, to: string): boolean =>
+      result.slots.some((slot) => slot.date >= from && slot.date <= to);
+    expect(result.slots.some((slot) => slot.date > '2031-02-01')).toBe(true);
+    expect(inBreak('2030-01-26', '2030-02-08')).toBe(false);
+    expect(inBreak('2031-01-16', '2031-01-29')).toBe(false);
+    expect(result.slots.some((slot) => slot.date === '2030-02-11')).toBe(true);
+    expect(result.slots.some((slot) => slot.date === '2031-02-03')).toBe(true);
+  });
+
+  it('a class that already taught this curriculum may continue after the unit period ended', async () => {
+    const term = { fromDate: '2030-01-07', toDate: '2030-01-10' };
+    const result = await planSetup({
+      term,
+      last: { date: '2030-01-09', lessonId: 'L2', sequence: 2 },
+    }).preview('2030-01-14');
+    expect(result.mode).toBe('CONTINUE');
+    expect(pairs(result)[0]).toEqual(['2030-01-14', 'L3']);
+    expect(result.lessonCount).toBe(4);
+  });
+
+  it('24 lessons at 2 a week from 2026-12-07 fill 24 slots, lessons 1..24, around Tết 2027', async () => {
+    const result = await planSetup({
+      lessonCount: 24,
+      weekdays: [1, 4],
+      term: { fromDate: '2026-12-01', toDate: '2027-12-31' },
+    }).preview('2026-12-07');
+    expect(result.slots).toHaveLength(24);
+    expect(result.slots.map((slot) => slot.lessonId)).toEqual(
+      Array.from({ length: 24 }, (_, index) => `L${index + 1}`),
+    );
+    expect(result.slots[0].date).toBe('2026-12-07');
+    // Tết 2027: no session from 30/01 to 12/02.
+    expect(
+      result.slots.some((slot) => slot.date >= '2027-01-30' && slot.date <= '2027-02-12'),
+    ).toBe(false);
+    expect(result.endDate).toBe(result.slots[23].date);
+    expect(result.lessonCount).toBe(24);
   });
 });
 
 describe('generate reads the anchor lesson with a lock', () => {
   type GenerateSetup = {
     service: CurriculumSchedulingService;
-    db: { $queryRaw: jest.Mock; classSession: Mocked; scheduleGeneration: Mocked };
+    db: {
+      $queryRaw: jest.Mock;
+      classSession: Mocked;
+      scheduleGeneration: Mocked;
+      curriculumUnit: Mocked;
+      schedulePreview: Mocked;
+    };
     lockedSql: () => string[];
   };
 
-  // Same term as above; the class already taught up to L2 on 2030-01-09 (locked read).
-  function generateSetup(locked: { date: string; lessonId: string } | null): GenerateSetup {
-    const lessons = [1, 2, 3, 4, 5, 6].map((n) => ({
-      id: `L${n}`,
-      title: `Bài ${n}`,
-      kind: 'LESSON',
-      sequence: n,
-      status: 'APPROVED',
-    }));
-    const unit = {
-      id: 'unit-1',
-      programId: 'program-1',
-      status: 'APPROVED',
-      fromDate: new Date('2030-01-07T00:00:00Z'),
-      toDate: new Date('2030-01-20T00:00:00Z'),
-      lessons,
-    };
-    const classroom = {
-      id: 'class-1',
-      name: 'Toán 8A',
-      programId: 'program-1',
-      teacherId: 'teacher-1',
-      pendingTeacherId: null,
-      pendingTeacherFrom: null,
-      roomId: null,
-      teacher: { role: 'TEACHER', status: 'ACTIVE' },
-      program: { id: 'program-1', isActive: true, sessionsPerWeek: 3 },
-      weeklySchedules: [1, 3, 5].map((weekday) => ({
-        weekday,
-        startTime: '18:00',
-        endTime: '20:00',
-      })),
-    };
-    const $queryRaw = jest.fn((strings: TemplateStringsArray) =>
-      Promise.resolve(
-        strings.join('?').includes('LIMIT 1 FOR UPDATE') && locked
+  // The class already taught up to L2 on 2030-01-09 (locked read).
+  function generateSetup(
+    locked: { date: string; lessonId: string } | null,
+    otherUnit = false,
+  ): GenerateSetup {
+    const { unit, classroom } = unitAndClass({});
+    const $queryRaw = jest.fn((strings: TemplateStringsArray) => {
+      const sql = strings.join('?');
+      if (sql.includes('unitId <>')) return Promise.resolve(otherUnit ? [{ lessonId: 'X1' }] : []);
+      return Promise.resolve(
+        sql.includes('LIMIT 1 FOR UPDATE') && locked
           ? [{ startsAt: at(locked.date), lessonId: locked.lessonId }]
           : [],
-      ),
-    );
+      );
+    });
     const db = {
       $queryRaw,
       $transaction: jest.fn((work: (tx: unknown) => Promise<unknown>): Promise<unknown> =>
         work(db as unknown),
       ),
       curriculumUnit: { findUnique: jest.fn().mockResolvedValue(unit) },
+      lesson: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ unit: { id: 'unit-0', title: 'Giáo trình cũ' } }),
+      },
       class: { findUnique: jest.fn().mockResolvedValue(classroom) },
       classSession: {
         // A plain read may see an older snapshot: generate must not use it.
-        findFirst: jest.fn().mockResolvedValue({
-          startsAt: at('2030-01-11'),
-          lesson: { id: 'L3', sequence: 3 },
-        }),
+        findFirst: jest.fn((args: { where: { lesson: { unitId: unknown } } }) =>
+          Promise.resolve(
+            typeof args.where.lesson.unitId === 'object'
+              ? null
+              : { startsAt: at('2030-01-11'), lesson: { id: 'L3', sequence: 3 } },
+          ),
+        ),
         findMany: jest.fn().mockResolvedValue([]),
         createMany: jest.fn().mockResolvedValue({ count: 3 }),
       },
@@ -289,6 +353,10 @@ describe('generate reads the anchor lesson with a lock', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({ id: 'generation-1' }),
         findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'generation-1', sessions: [] }),
+      },
+      schedulePreview: {
+        create: jest.fn().mockResolvedValue({ id: 'preview-1', expiresAt: new Date() }),
+        findUnique: jest.fn().mockResolvedValue(null),
       },
       auditLog: { create: jest.fn().mockResolvedValue({}) },
     };
@@ -307,7 +375,7 @@ describe('generate reads the anchor lesson with a lock', () => {
     };
   }
 
-  const range = { curriculumUnitId: 'unit-1', fromDate: '2030-01-14', toDate: '2030-01-20' };
+  const range = { curriculumUnitId: 'unit-1', fromDate: '2030-01-14' };
 
   it('continues from the lesson seen by the locking read, not the plain snapshot', async () => {
     const { service, db, lockedSql } = generateSetup({ date: '2030-01-09', lessonId: 'L2' });
@@ -317,7 +385,41 @@ describe('generate reads the anchor lesson with a lock', () => {
     ).toBe(true);
     expect(db.classSession.findFirst).not.toHaveBeenCalled();
     const created = call(db.classSession.createMany)[0] as { data: Array<{ lessonId: string }> };
-    expect(created.data.map((row) => row.lessonId)).toEqual(['L3', 'L4', 'L5']);
+    expect(created.data.map((row) => row.lessonId)).toEqual(['L3', 'L4', 'L5', 'L6']);
+    // The generation records the real end date.
+    expect(call(db.scheduleGeneration.create)[0]).toMatchObject({
+      data: { toDate: new Date('2030-01-21T00:00:00Z') },
+    });
+  });
+
+  it('accepts its own preview and rejects it once the curriculum changed', async () => {
+    const { service, db } = generateSetup(null);
+    // No class sessions at all: the plain and the locked anchor agree.
+    db.classSession.findFirst.mockResolvedValue(null);
+    await service.preview(manager, 'class-1', range);
+    const saved = (call(db.schedulePreview.create)[0] as { data: Record<string, unknown> }).data;
+    db.schedulePreview.findUnique.mockResolvedValue({
+      ...saved,
+      id: 'preview-1',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await service.generate(manager, 'class-1', { ...range, previewId: 'preview-1' }, 'gen-1');
+    expect(db.classSession.createMany).toHaveBeenCalledTimes(1);
+
+    // A lesson is added after the preview: the saved preview no longer matches.
+    const unit = (await db.curriculumUnit.findUnique()) as { lessons: Array<{ id: string }> };
+    unit.lessons.push({
+      id: 'L7',
+      title: 'Bài 7',
+      kind: 'LESSON',
+      sequence: 7,
+      status: 'APPROVED',
+    } as never);
+    const error = await rejection(
+      service.generate(manager, 'class-1', { ...range, previewId: 'preview-1' }, 'gen-2'),
+    );
+    expect(error).toMatchObject({ code: 'PREVIEW_STALE' });
+    expect(db.classSession.createMany).toHaveBeenCalledTimes(1);
   });
 
   it('checks sessions after the range start on the locked row', async () => {
@@ -328,11 +430,22 @@ describe('generate reads the anchor lesson with a lock', () => {
     expect(db.classSession.createMany).not.toHaveBeenCalled();
   });
 
-  it('starts from the term position when the locked read finds no session', async () => {
+  it('generate refuses a class locked to another curriculum', async () => {
+    const { service, db, lockedSql } = generateSetup(null, true);
+    const error = await rejection(service.generate(manager, 'class-1', range, 'gen-1'));
+    expect(error).toMatchObject({ code: 'CLASS_CURRICULUM_LOCKED', statusCode: 409 });
+    expect(error.details).toEqual({ currentUnitId: 'unit-0', currentUnitTitle: 'Giáo trình cũ' });
+    expect(lockedSql().some((sql) => sql.includes('unitId <>') && sql.includes('FOR UPDATE'))).toBe(
+      true,
+    );
+    expect(db.classSession.createMany).not.toHaveBeenCalled();
+  });
+
+  it('starts at lesson 1 when the locked read finds no session', async () => {
     const { service, db } = generateSetup(null);
     await service.generate(manager, 'class-1', range, 'gen-1');
     const created = call(db.classSession.createMany)[0] as { data: Array<{ lessonId: string }> };
-    expect(created.data.map((row) => row.lessonId)).toEqual(['L4', 'L5', 'L6']);
+    expect(created.data.map((row) => row.lessonId)).toEqual(['L1', 'L2', 'L3', 'L4', 'L5', 'L6']);
   });
 });
 

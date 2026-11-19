@@ -271,13 +271,20 @@ export class ClassDto {
   @IsString()
   teacherId?: string;
 
-  @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string;
+  @ApiProperty({ description: 'Required (ROOM_REQUIRED). The class capacity is copied from this room.' })
+  @IsOptional()
+  @IsString()
+  roomId?: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({
+    deprecated: true,
+    description: 'Ignored. The class capacity always equals the capacity of its room.',
+  })
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(1000)
-  capacity!: number;
+  capacity?: number;
 
   @ApiProperty()
   @IsNumber()
@@ -303,9 +310,18 @@ export class UpdateClassDto {
   @IsString()
   teacherId?: string | null;
 
-  @ApiPropertyOptional() @IsOptional() @IsString() roomId?: string | null;
+  @ApiPropertyOptional({
+    description:
+      'Changing the room also changes the class capacity. null is rejected (ROOM_REQUIRED).',
+  })
+  @IsOptional()
+  @IsString()
+  roomId?: string | null;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    deprecated: true,
+    description: 'Ignored. The class capacity always equals the capacity of its room.',
+  })
   @IsOptional()
   @IsInt()
   @Min(1)

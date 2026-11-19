@@ -131,10 +131,12 @@ Ví dụ:
   "programId": "program_id",
   "name": "Toán 8A",
   "teacherId": "teacher_id",
-  "capacity": 20,
+  "roomId": "room_id",
   "monthlyFee": 500000
 }
 ```
+
+`roomId` bắt buộc (`ROOM_REQUIRED`); sĩ số lớp lấy từ sức chứa phòng, `capacity` bị bỏ qua. Đổi phòng của lớp (`PATCH /classes/:id`) hoặc sức chứa phòng (`PATCH /rooms/:id`) thì sĩ số lớp đổi theo; chặn `ROOM_CAPACITY_TOO_SMALL` (`details.reservedSeats` hoặc `details.classes`) khi chỗ đã giữ vượt sức chứa mới.
 
 `MANAGER` cấu hình lịch tuần cố định:
 
@@ -447,6 +449,16 @@ ACTIVE
 
 Nếu `startDate` ở tương lai, enrollment vẫn là `ACTIVE` nhưng frontend hiển thị `Sắp học`.
 
+### Giáo trình (từ 19/11/2026, chi tiết ở `CURRICULUM_SCHEDULING_API.md`)
+
+```text
+DRAFT -> PENDING_REVIEW -> (technical review) -> APPROVED -> ARCHIVED
+```
+
+Điều kiện đi trước: khóa có bộ CLO với ít nhất 1 CLO mới tạo được giáo trình (`OUTCOMES_REQUIRED`); `submit`, `technical-review` (approved) và `approve` yêu cầu mọi bài `LESSON` gắn ít nhất 1 CLO (`LESSON_OUTCOME_MISSING`). Giáo trình đã duyệt hoặc lưu trữ không bị kiểm lại.
+
+Bài tập: `DRAFT -> PUBLISHED`; khi `publish`, nếu chương trình đã có bộ CLO APPROVED thì bài tập phải gắn ít nhất 1 CLO (`ASSIGNMENT_OUTCOME_REQUIRED`). Gắn CLO ở cấp bài tập, không theo từng câu hỏi.
+
 ## 7. API hợp đồng chính
 
 ### Auth
@@ -492,6 +504,33 @@ POST  /api/v1/classes/:id/schedules
 ```
 
 Hủy buổi và ngày nghỉ trung tâm: **đã gỡ 19/11/2026**, các route `sessions/:id/cancel`, `sessions/:id/cancel-preview`, `sessions/bulk-cancel-preview`, `sessions/bulk-cancel` và `center-closures` trả 404. Buổi không dạy được thì đổi giờ hoặc dạy thay. Sinh lịch tự bỏ qua kỳ nghỉ Tết (23 tháng Chạp → mùng 7). Chi tiết ở `CURRICULUM_SCHEDULING_API.md`.
+
+### Giáo trình, CLO và bài tập (từ 19/11/2026)
+
+```http
+POST  /api/v1/academic/curriculum-units                 (409 OUTCOMES_REQUIRED)
+POST  /api/v1/academic/curriculum-units/:id/submit      (409 LESSON_OUTCOME_MISSING)
+GET   /api/v1/academic/curriculum-units/:id             (lessons[].outcomeLinks, validation.errors[].lessonIds)
+GET   /api/v1/academic/scheduled-sessions/:id           (lesson.outcomes, không cho phụ huynh)
+POST  /api/v1/academic/assignments                      (outcomeIds)
+PATCH /api/v1/academic/assignments/:id                  (outcomeIds, thay toàn bộ liên kết)
+POST  /api/v1/academic/assignments/:id/publish          (409 ASSIGNMENT_OUTCOME_REQUIRED)
+GET   /api/v1/academic/assignments[/:id]                (outcomes: [{ id, code, title, required }])
+```
+
+`outcomeIds` duy nhất, tối đa 50, cùng một bộ CLO đã duyệt của chương trình lớp; sai thì `409 INVALID_OUTCOME_SET` với `details.outcomeIds`. `409 LESSON_OUTCOME_MISSING` kèm `error.details.lessonIds`. Một lớp chỉ chạy một giáo trình (`409 CLASS_CURRICULUM_LOCKED`, `details { currentUnitId, currentUnitTitle }`, xem `CURRICULUM_SCHEDULING_API.md`).
+
+Nhập CLO từ Excel (từ 19/11/2026, Curriculum Designer, bộ CLO nháp):
+
+```http
+GET  /api/v1/academic/outcome-sets/import-template        (.xlsx mẫu)
+POST /api/v1/academic/outcome-sets/:id/import-preview     (multipart field file, .xlsx|.csv, 5 MB, 200 dòng)
+POST /api/v1/academic/outcome-sets/:id/import-commit      (body { previewId }, Idempotency-Key)
+```
+
+Nhập bài học vào giáo trình (`curriculum-units/:id/import-preview|import-commit`) nhận `.xlsx` và cột tùy chọn `outcomeCodes` ("Mã mục tiêu"); commit phải gửi lại `outcomeCodes` của từng dòng. Mã CLO tra theo bộ APPROVED mới nhất của khóa, không có thì DRAFT mới nhất; `monthKey` `YYYY-MM-DD` (ô ngày Excel) được cắt thành `YYYY-MM`.
+
+Dữ liệu demo: Vật lý chưa có bộ CLO. Luồng thử: người thiết kế tạo bộ CLO cho khóa Vật lý, gắn CLO vào các bài đang soạn, rồi gửi duyệt và duyệt chuyên môn thì mới qua được. Bộ CLO demo của các khóa khác còn DRAFT nên bài tập demo chưa gắn CLO.
 
 ### Đăng ký và thu tiền
 
@@ -579,6 +618,23 @@ Lịch học (B5, B6, từ 10/11; chi tiết ở `CURRICULUM_SCHEDULING_API.md`)
                                   LESSON_SHIFT_BLOCKED)
 409 SESSIONS_AFTER_RANGE_EXIST
 ```
+
+CLO, giáo trình và bài tập (từ 19/11/2026):
+
+```text
+409 OUTCOMES_REQUIRED             (tạo/sửa giáo trình khi khóa chưa có CLO; không có details)
+409 LESSON_OUTCOME_MISSING        (details.lessonIds: các bài chưa gắn CLO)
+409 ASSIGNMENT_OUTCOME_REQUIRED   (publish bài tập chưa gắn CLO; không có details)
+409 INVALID_OUTCOME_SET           (outcomeIds sai bộ CLO; details.outcomeIds)
+409 CLASS_CURRICULUM_LOCKED       (lớp đã học theo một giáo trình khác)
+400 OUTCOME_IMPORT_FILE_INVALID   (nhập CLO; details.code: FILE_REQUIRED, SPREADSHEET_TOO_LARGE,
+                                  SPREADSHEET_UNSUPPORTED, XLSX_INVALID, COLUMN_MISSING, CSV_*)
+400 INVALID_IMPORT                (commit nhập khi preview còn dòng lỗi; dùng cho cả nhập CLO)
+409 OUTCOME_IMPORT_PREVIEW_STALE  (preview hết hạn, của người khác hoặc bộ CLO đã đổi)
+409 OUTCOME_SET_LOCKED            (nhập CLO vào bộ không còn DRAFT)
+```
+
+Mã lỗi dòng khi nhập: CLO `TITLE_REQUIRED`, `VALUE_TOO_LONG`, `VALUE_TOO_SHORT`, `DUPLICATE_CODE_IN_FILE`, `CODE_EXISTS`, `REQUIRED_INVALID`; bài học thêm `UNKNOWN_OUTCOME_CODE`, `AMBIGUOUS_OUTCOME_CODE` (mã có ở các bộ khác cấp độ), `TOO_MANY_OUTCOME_CODES`.
 
 Response lỗi theo chuẩn chung:
 

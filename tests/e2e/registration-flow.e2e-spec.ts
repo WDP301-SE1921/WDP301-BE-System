@@ -52,6 +52,13 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
     path: string,
   ): request.Test =>
     request(httpServer)[method](`/api/v1/${path}`).set('Authorization', `Bearer ${tokens[role]}`);
+  /** A class copies its capacity from its room, so each test creates a room of the size it needs. */
+  async function roomOf(capacity: number): Promise<string> {
+    const room = await call('MANAGER', 'post', 'rooms')
+      .send({ name: `Room ${capacity}-${Math.random().toString(36).slice(2, 8)}`, capacity })
+      .expect(201);
+    return (room.body as Envelope<WithId>).data.id;
+  }
 
   function assertDatabaseName(): void {
     if (!/^edugrade_reg_test_\d+_\d+$/.test(databaseName))
@@ -184,7 +191,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       .send({
         programId: (program.body as Envelope<WithId>).data.id,
         name: 'Toán 8A',
-        capacity: 20,
+        roomId: await roomOf(20),
         monthlyFee: 800000,
         isOpen: false,
       })
@@ -262,7 +269,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
     });
     const before = await db.class.count();
     const current = await call('MANAGER', 'post', 'classes')
-      .send({ programId, name: 'Toán 8Z', capacity: 20, monthlyFee: 800000 })
+      .send({ programId, name: 'Toán 8Z', roomId: await roomOf(20), monthlyFee: 800000 })
       .expect(404);
     expect((current.body as { error: { code: string } }).error.code).toBe('PROGRAM_NOT_FOUND');
     const legacy = await call('MANAGER', 'post', 'academic/classes')
@@ -411,7 +418,12 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       ];
       for (const [key, startTime, endTime, capacity] of slots) {
         const created = await call('MANAGER', 'post', 'classes')
-          .send({ programId, name: `Seats ${key}`, capacity, monthlyFee: 500000 })
+          .send({
+            programId,
+            name: `Seats ${key}`,
+            roomId: await roomOf(capacity),
+            monthlyFee: 500000,
+          })
           .expect(201);
         classes[key] = (created.body as Envelope<WithId>).data.id;
         await call('MANAGER', 'post', `classes/${classes[key]}/schedules`)
@@ -689,7 +701,13 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
       const programId = (program.body as Envelope<WithId>).data.id;
       await call('MANAGER', 'get', `programs/${programId}`).expect(200);
       const classroom = await call('MANAGER', 'post', 'classes')
-        .send({ programId, name: 'Khoa học 7A', capacity: 20, monthlyFee: 500000, isOpen: false })
+        .send({
+          programId,
+          name: 'Khoa học 7A',
+          roomId: await roomOf(20),
+          monthlyFee: 500000,
+          isOpen: false,
+        })
         .expect(201);
       const classroomId = (classroom.body as Envelope<WithId>).data.id;
       const unlocked = await call('MANAGER', 'get', `classes/${classroomId}`).expect(200);
@@ -796,7 +814,7 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
           programId,
           name: 'Frequency class',
           teacherId: teacher.id,
-          capacity: 20,
+          roomId: await roomOf(20),
           monthlyFee: 500000,
         })
         .expect(201);

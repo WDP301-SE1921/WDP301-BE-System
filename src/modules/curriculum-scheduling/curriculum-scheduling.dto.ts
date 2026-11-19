@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsIn,
   IsArray,
+  ArrayMaxSize,
   ArrayMinSize,
   ValidateNested,
   IsBoolean,
@@ -127,6 +128,13 @@ export class ImportRowDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(50000) content!: string;
   @ApiPropertyOptional() @IsOptional() @Matches(/^\d{4}-(0[1-9]|1[0-2])$/) monthKey?: string | null;
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  outcomeCodes?: string[];
 }
 
 export class ImportCommitDto {
@@ -162,10 +170,15 @@ export class ScheduleRangeDto {
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   fromDate!: string;
-  @ApiProperty({ example: '2026-11-30' })
+  @ApiPropertyOptional({
+    example: '2026-11-30',
+    deprecated: true,
+    description: 'Ignored. The schedule runs from fromDate to the last lesson; read endDate.',
+  })
+  @IsOptional()
   @IsDateString({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
-  toDate!: string;
+  toDate?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() previewId?: string;
 }
 

@@ -171,7 +171,9 @@ export class LeaveDto extends ReasonDto {
 }
 export class DecisionDto extends ReasonDto {
   @ApiProperty() @IsBoolean() approve!: boolean;
-  @ApiPropertyOptional({ description: 'Approving a pause of 14+ days: extend the term by its days.' })
+  @ApiPropertyOptional({
+    description: 'Approving a pause of 14+ days: extend the term by its days.',
+  })
   @IsOptional()
   @IsBoolean()
   extendTerm?: boolean;
@@ -277,7 +279,11 @@ export class QuestionDto {
   choices?: string[];
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(10000) correctAnswer?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(10000) rubric?: string;
-  @ApiPropertyOptional({ description: 'Approved CLO measured by this question' })
+  @ApiPropertyOptional({
+    deprecated: true,
+    description:
+      'Deprecated: CLOs are linked to the whole assignment (AssignmentDto.outcomeIds). Still accepted and stored for old clients.',
+  })
   @IsOptional()
   @IsString()
   @MinLength(1)
@@ -306,6 +312,20 @@ export class AssignmentDto {
   @MinLength(1)
   @MaxLength(191)
   outcomeSetId?: string;
+  @ApiPropertyOptional({
+    type: [String],
+    maxItems: 50,
+    description:
+      'CLOs measured by the whole assignment, from one APPROVED set of the class program. Replaces the links on update; omitted = taken from questions[].outcomeId. Publishing needs ≥1 when the program has an approved set.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @MinLength(1, { each: true })
+  @MaxLength(191, { each: true })
+  outcomeIds?: string[];
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) title!: string;
   @ApiProperty() @IsString() @MaxLength(10000) instructions!: string;
   @ApiProperty() @IsDateString() dueAt!: string;
@@ -359,6 +379,10 @@ export class OutcomeSetCreateDto {
 
 export class OutcomeChangeRequestDto {
   @ApiProperty() @IsString() @MinLength(1) @MaxLength(2000) reason!: string;
+}
+
+export class OutcomeImportCommitDto {
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(191) previewId!: string;
 }
 
 export class LearningOutcomeWriteDto {

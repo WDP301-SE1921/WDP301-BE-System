@@ -36,7 +36,7 @@ describe('Academic workflows (database + HTTP)', () => {
     available: (): boolean => true,
     json: jest.fn<Promise<unknown>, [string, unknown]>(),
   };
-  const call = (role: string, method: 'post' | 'get', url: string): request.Test =>
+  const call = (role: string, method: 'post' | 'get' | 'patch', url: string): request.Test =>
     request(server)
       [method](`/api/v1/academic/${url}`)
       .set('Authorization', `Bearer ${tokens[role]}`);
@@ -535,6 +535,89 @@ describe('Academic workflows (database + HTTP)', () => {
       where: { id: { in: [newcomer.id, secondEnrollment.id] } },
       data: { status: 'ENDED' },
     });
+  });
+
+  it('requires an assignment-level CLO to publish when the program has an approved set', async () => {
+    const program = await db.program.create({
+      data: { name: 'Math 9', subject: 'Math', grade: 9 },
+    });
+    const classroom = await db.class.create({
+      data: {
+        programId: program.id,
+        name: 'classClo',
+        teacherId: ids.teacher,
+        capacity: 5,
+        monthlyFee: 500000,
+      },
+    });
+    const order = await db.registrationOrder.create({
+      data: {
+        type: 'FIRST_CHILD',
+        parentEmail: 'parent@academic.test',
+        studentFullName: 'Nguyen An',
+        studentGrade: 9,
+        classId: classroom.id,
+        packageMonths: 12,
+        quotedAmount: 6000000,
+        createdByManagerId: ids.manager,
+        status: 'LINKED',
+      },
+    });
+    const enrollment = await db.enrollment.create({
+      data: {
+        registrationOrderId: order.id,
+        studentProfileId: ids.student,
+        classId: classroom.id,
+        packageMonths: 12,
+        status: 'ACTIVE',
+        startDate: new Date('2020-01-01'),
+        endDate: new Date('2040-12-31'),
+      },
+    });
+    const set = await db.outcomeSet.create({
+      data: {
+        programId: program.id,
+        level: 'Lớp 9',
+        version: 1,
+        status: 'APPROVED',
+        designerId: ids.designer,
+      },
+    });
+    const outcome = await db.learningOutcome.create({
+      data: { outcomeSetId: set.id, code: 'M9-01', title: 'Mục tiêu', statement: 'Làm được' },
+    });
+    const body = {
+      classId: classroom.id,
+      title: 'CLO quiz',
+      instructions: 'Choose one',
+      dueAt: new Date(Date.now() + 86400000).toISOString(),
+      maxAttempts: 1,
+      questions: [
+        {
+          kind: 'MULTIPLE_CHOICE',
+          prompt: '1+1?',
+          choices: ['2', '3'],
+          correctAnswer: '2',
+          maxScore: 10,
+        },
+      ],
+    };
+    const created = await call('teacher', 'post', 'assignments').send(body).expect(201);
+    const id = (created.body as Envelope<WithId>).data.id;
+    const refused = await call('teacher', 'post', `assignments/${id}/publish`)
+      .send({ enrollmentIds: [enrollment.id] })
+      .expect(409);
+    expect(refused.body).toMatchObject({ error: { code: 'ASSIGNMENT_OUTCOME_REQUIRED' } });
+    await call('teacher', 'patch', `assignments/${id}`)
+      .send({ ...body, outcomeIds: [outcome.id] })
+      .expect(200);
+    await call('teacher', 'post', `assignments/${id}/publish`)
+      .send({ enrollmentIds: [enrollment.id] })
+      .expect(201);
+    const detail = await call('teacher', 'get', `assignments/${id}`).expect(200);
+    expect((detail.body as Envelope<{ outcomes: Array<{ id: string }> }>).data.outcomes).toEqual([
+      expect.objectContaining({ id: outcome.id, code: 'M9-01' }),
+    ]);
   });
 
   it('serializes supplemental assignment against publishing answers', async () => {

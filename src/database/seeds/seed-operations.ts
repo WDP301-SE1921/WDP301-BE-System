@@ -53,6 +53,16 @@ export async function seedOperations(
           createdAt: localInstant(addDays(today, -3), 9),
         },
       });
+      await tx.lessonOutcome.upsert({
+        where: {
+          lessonId_outcomeId: {
+            lessonId: revision.id,
+            outcomeId: demoId('outcome_math-8_1'),
+          },
+        },
+        update: {},
+        create: { lessonId: revision.id, outcomeId: demoId('outcome_math-8_1') },
+      });
       resolutionLessonId = revision.id;
     }
     await tx.curriculumFeedback.upsert({

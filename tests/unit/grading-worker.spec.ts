@@ -10,6 +10,7 @@ interface Harness {
   worker: GradingWorkerService;
   aiCalls: () => number;
   askedQuestionIds: () => string[];
+  sentOutcomeCodes: () => string[];
   saved: () => unknown;
 }
 
@@ -35,13 +36,19 @@ describe('GradingWorkerService essays answered in files', () => {
   };
   const mcScore: Score = { questionId: 'mc', score: 4, feedback: 'Đúng' };
 
-  function setup(input: { questions: object[]; essayAnswer: string; aiScores: Score[] }): Harness {
+  function setup(input: {
+    questions: object[];
+    essayAnswer: string;
+    aiScores: Score[];
+    outcomeLinks?: object[];
+  }): Harness {
     const updateMany = jest.fn<Promise<{ count: number }>, [{ data: unknown }]>(() =>
       Promise.resolve({ count: 1 }),
     );
-    const json = jest.fn<Promise<{ scores: Score[] }>, [string, { questions: { id: string }[] }]>(
-      () => Promise.resolve({ scores: input.aiScores }),
-    );
+    const json = jest.fn<
+      Promise<{ scores: Score[] }>,
+      [string, { questions: { id: string }[]; assignmentOutcomes?: { code: string }[] }]
+    >(() => Promise.resolve({ scores: input.aiScores }));
     const db = {
       gradingJob: {
         updateMany,
@@ -64,6 +71,7 @@ describe('GradingWorkerService essays answered in files', () => {
               testType: null,
               class: null,
               session: null,
+              outcomeLinks: input.outcomeLinks ?? [],
               questions: input.questions,
             },
           },
@@ -79,6 +87,8 @@ describe('GradingWorkerService essays answered in files', () => {
     return {
       worker,
       aiCalls: () => json.mock.calls.length,
+      sentOutcomeCodes: () =>
+        (json.mock.calls[0]?.[1].assignmentOutcomes ?? []).map(({ code }) => code),
       askedQuestionIds: () => (json.mock.calls[0]?.[1].questions ?? []).map(({ id }) => id),
       saved: () => updateMany.mock.calls.at(-1)?.[0].data,
     };
@@ -125,5 +135,17 @@ describe('GradingWorkerService essays answered in files', () => {
       status: 'SUCCEEDED',
       result: { scores: [], manualReviewQuestionIds: ['essay'] },
     });
+  });
+
+  it('sends the assignment CLOs once, sorted by code', async () => {
+    const link = (code: string) => ({ outcome: { code, title: code, statement: code } });
+    const { worker, sentOutcomeCodes } = setup({
+      questions: [multipleChoice],
+      essayAnswer: 'x',
+      aiScores: [mcScore],
+      outcomeLinks: [link('B-2'), link('A-1')],
+    });
+    await worker.tick();
+    expect(sentOutcomeCodes()).toEqual(['A-1', 'B-2']);
   });
 });

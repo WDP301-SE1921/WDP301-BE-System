@@ -11,7 +11,14 @@ const manager = { id: 'manager', role: 'MANAGER' } as AuthenticatedUser;
 interface ReviewFixture {
   unit: {
     technicalReviewedAt: Date | null;
-    lessons: Array<{ id: string; kind: string; title: string; content: string; sequence: number }>;
+    lessons: Array<{
+      id: string;
+      kind: string;
+      title: string;
+      content: string;
+      sequence: number;
+      outcomeLinks?: Array<{ outcomeId: string }>;
+    }>;
   };
   db: {
     $queryRaw: jest.Mock;
@@ -27,6 +34,7 @@ interface ReviewFixture {
       jest.Mock
     >;
     class: Record<'count' | 'findMany', jest.Mock>;
+    outcomeSet: { count: jest.Mock };
     program: { findMany: jest.Mock };
     user: Record<'findFirst' | 'findMany', jest.Mock>;
     lesson: Record<'updateMany' | 'createMany', jest.Mock>;
@@ -57,7 +65,16 @@ function setup(overrides: Record<string, unknown> = {}): ReviewFixture {
     revision: 5,
     fromDate: new Date('2026-10-01T00:00:00Z'),
     toDate: new Date('2026-10-31T00:00:00Z'),
-    lessons: [{ id: 'lesson', kind: 'LESSON', title: 'Bài 1', content: 'Nội dung', sequence: 1 }],
+    lessons: [
+      {
+        id: 'lesson',
+        kind: 'LESSON',
+        title: 'Bài 1',
+        content: 'Nội dung',
+        sequence: 1,
+        outcomeLinks: [{ outcomeId: 'clo' }],
+      },
+    ],
     ...overrides,
   };
   const db = {
@@ -73,6 +90,7 @@ function setup(overrides: Record<string, unknown> = {}): ReviewFixture {
       create: jest.fn().mockResolvedValue({ id: 'future-unit' }),
     },
     class: { count: jest.fn().mockResolvedValue(1), findMany: jest.fn().mockResolvedValue([]) },
+    outcomeSet: { count: jest.fn().mockResolvedValue(1) },
     program: {
       findMany: jest.fn().mockResolvedValue([
         { id: 'program', subject: 'Toán', subjectId: 'math' },
