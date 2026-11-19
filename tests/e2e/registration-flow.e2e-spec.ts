@@ -279,6 +279,48 @@ describe('Staff parent search and registration (MySQL + authenticated HTTP)', ()
     expect(await db.class.count()).toBe(before);
   });
 
+  it('requires a room, derives class capacity from it and synchronizes room changes through HTTP', async () => {
+    const program = await call('MANAGER', 'post', 'programs')
+      .send({ name: 'Room capacity contract', subject: 'Toán', grade: 8, sessionsPerWeek: 1 })
+      .expect(201);
+    const programId = (program.body as Envelope<WithId>).data.id;
+    const body = { programId, name: 'Room-derived class', monthlyFee: 0 };
+    const before = await db.class.count({ where: { programId } });
+    const missing = await call('MANAGER', 'post', 'classes').send(body).expect(400);
+    expect(missing.body).toMatchObject({ error: { code: 'ROOM_REQUIRED' } });
+    expect(await db.class.count({ where: { programId } })).toBe(before);
+    const roomId = await roomOf(3);
+    const created = await call('MANAGER', 'post', 'classes')
+      .send({ ...body, roomId, capacity: 999 })
+      .expect(201);
+    expect(created.body).toMatchObject({ data: { roomId, capacity: 3 } });
+    const id = (created.body as Envelope<WithId>).data.id;
+    await call('MANAGER', 'patch', `classes/${id}`).send({ capacity: 999 }).expect(200);
+    expect(await db.class.findUniqueOrThrow({ where: { id } })).toMatchObject({ capacity: 3 });
+    const second = await call('MANAGER', 'post', 'classes')
+      .send({ ...body, name: 'Second room-derived class', roomId })
+      .expect(201);
+    await call('MANAGER', 'patch', `rooms/${roomId}`).send({ capacity: 7 }).expect(200);
+    const classes = await db.class.findMany({ where: { programId } });
+    expect(classes).toHaveLength(2);
+    expect(classes.every((row) => row.capacity === 7)).toBe(true);
+    const anotherRoom = await roomOf(5);
+    const changed = await call('MANAGER', 'patch', `classes/${id}`)
+      .send({ roomId: anotherRoom, capacity: 999 })
+      .expect(200);
+    expect(changed.body).toMatchObject({ data: { roomId: anotherRoom, capacity: 5 } });
+    const cleared = await call('MANAGER', 'patch', `classes/${id}`)
+      .send({ roomId: null })
+      .expect(400);
+    expect(cleared.body).toMatchObject({ error: { code: 'ROOM_REQUIRED' } });
+    expect(
+      await db.class.findUniqueOrThrow({
+        where: { id: (second.body as Envelope<WithId>).data.id },
+      }),
+    ).toMatchObject({ roomId, capacity: 7 });
+    await call('STAFF', 'patch', `rooms/${roomId}`).send({ capacity: 10 }).expect(403);
+  });
+
   it('searches partial email case-insensitively, sorts, limits and returns only safe parent summaries', async () => {
     const response = await call('STAFF', 'get', 'parents/search')
       .query({ email: ' PARENT ', limit: 3 })

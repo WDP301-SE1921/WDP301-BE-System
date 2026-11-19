@@ -618,6 +618,21 @@ describe('Academic workflows (database + HTTP)', () => {
     expect((detail.body as Envelope<{ outcomes: Array<{ id: string }> }>).data.outcomes).toEqual([
       expect.objectContaining({ id: outcome.id, code: 'M9-01' }),
     ]);
+    const parentDetail = await call('parent', 'get', `assignments/${id}`).expect(200);
+    expect(parentDetail.body).toMatchObject({
+      data: { outcomes: [{ id: outcome.id, code: 'M9-01', required: true }] },
+    });
+    const parentQuestions = (
+      parentDetail.body as Envelope<{
+        questions: Array<{ outcomeId?: string | null; correctAnswer?: unknown; rubric?: unknown }>;
+      }>
+    ).data.questions;
+    expect(parentQuestions.every((question) => !question.outcomeId)).toBe(true);
+    expect(
+      parentQuestions.every(
+        (question) => question.correctAnswer === undefined && question.rubric === undefined,
+      ),
+    ).toBe(true);
   });
 
   it('serializes supplemental assignment against publishing answers', async () => {
