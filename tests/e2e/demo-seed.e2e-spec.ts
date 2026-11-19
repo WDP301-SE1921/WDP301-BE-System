@@ -15,6 +15,11 @@ import { ResponseInterceptor } from '../../src/common/interceptors/response.inte
 import { DatabaseService } from '../../src/database/orm/database.service';
 import { TET_BREAKS, tetBreaks } from '../../src/common/lunar-new-year';
 import { seedDemo } from '../../src/database/seeds/seed-demo';
+import { TOPICS, TEXTBOOK_SOURCES } from '../../src/database/seeds/curriculum-content';
+import {
+  planTextbookCurricula,
+  seedTextbookCurricula,
+} from '../../src/database/seeds/seed-textbook-curriculum';
 import {
   addDays,
   dateOnly,
@@ -133,9 +138,9 @@ describe('Demo seed against MySQL and shared APIs', () => {
     }
   });
 
-  it('exposes 48 sourced CLO drafts for math, chemistry and biology without claiming approval', async () => {
-    expect(await db.outcomeSet.count()).toBe(12);
-    expect(await db.learningOutcome.count()).toBe(48);
+  it('exposes full-year sourced CLO drafts for all four subjects without claiming approval', async () => {
+    expect(await db.outcomeSet.count()).toBe(16);
+    expect(await db.learningOutcome.count()).toBe(425);
     expect(await db.outcomeSet.count({ where: { status: 'APPROVED' } })).toBe(0);
     expect(await db.learningOutcome.count({ where: { sourceStatus: 'VERIFIED' } })).toBe(0);
     const auth = app.get(AuthService);
@@ -148,7 +153,7 @@ describe('Demo seed against MySQL and shared APIs', () => {
       .expect(200);
     const managerData = (managerResponse.body as { data: Array<{ outcomes: unknown[] }> }).data;
     expect(managerData).toHaveLength(1);
-    expect(managerData[0].outcomes).toHaveLength(4);
+    expect(managerData[0].outcomes).toHaveLength(47);
     const parentResponse = await request(server)
       .get(url)
       .set('Authorization', `Bearer ${parent}`)
@@ -465,6 +470,69 @@ describe('Demo seed against MySQL and shared APIs', () => {
       'Demo already uses',
     );
   });
+  it('adds full-year textbook drafts without rewriting historical records and preserves edits on rerun', async () => {
+    const before = await counts(db);
+    const sessionsBefore = await db.classSession.findMany({ orderBy: { id: 'asc' } });
+    const approvedBefore = await db.curriculumUnit.findMany({
+      where: { status: 'APPROVED' },
+      include: { lessons: { orderBy: { sequence: 'asc' } } },
+      orderBy: { id: 'asc' },
+    });
+    const plans = await planTextbookCurricula(db);
+    expect(plans).toHaveLength(16);
+    expect(plans.every((plan) => !plan.exists)).toBe(true);
+    expect(await counts(db)).toEqual(before);
+    const first = await seedTextbookCurricula(db, { date: today });
+    expect(first).toEqual({ created: 16, preserved: 0, lessons: 425 });
+    for (const plan of plans) {
+      const unit = await db.curriculumUnit.findUniqueOrThrow({
+        where: { id: plan.unitId },
+        include: {
+          lessons: {
+            include: { outcomeLinks: { include: { outcome: true } } },
+            orderBy: { sequence: 'asc' },
+          },
+        },
+      });
+      expect(unit.status).toBe('DRAFT');
+      expect(unit.approvedAt).toBeNull();
+      expect(unit.technicalReviewedAt).toBeNull();
+      expect(unit.lessons).toHaveLength(TOPICS[plan.key].length);
+      for (const [index, lesson] of unit.lessons.entries()) {
+        const topic = TOPICS[plan.key][index];
+        expect(lesson.title).toBe(topic.title);
+        expect(lesson.sequence).toBe(index + 1);
+        expect(lesson.status).toBe('DRAFT');
+        expect(lesson.outcomeLinks).toHaveLength(1);
+        expect(lesson.outcomeLinks[0].outcome.sourceStatus).toBe('CANDIDATE');
+        expect(lesson.outcomeLinks[0].outcome.sourceUrl).toBe(TEXTBOOK_SOURCES[topic.bookId].url);
+      }
+    }
+    const firstLesson = await db.lesson.findFirstOrThrow({ where: { unitId: plans[0].unitId } });
+    await db.lesson.update({
+      where: { id: firstLesson.id },
+      data: { content: 'Nội dung đã được giáo viên chỉnh sửa.' },
+    });
+    const countsAfter = await counts(db);
+    expect(await seedTextbookCurricula(db, { date: today })).toEqual({
+      created: 0,
+      preserved: 16,
+      lessons: 0,
+    });
+    expect(await counts(db)).toEqual(countsAfter);
+    expect((await db.lesson.findUniqueOrThrow({ where: { id: firstLesson.id } })).content).toBe(
+      'Nội dung đã được giáo viên chỉnh sửa.',
+    );
+    expect(await db.classSession.findMany({ orderBy: { id: 'asc' } })).toEqual(sessionsBefore);
+    expect(
+      await db.curriculumUnit.findMany({
+        where: { status: 'APPROVED' },
+        include: { lessons: { orderBy: { sequence: 'asc' } } },
+        orderBy: { id: 'asc' },
+      }),
+    ).toEqual(approvedBefore);
+  }, 120_000);
+
   it('reseed removes all old data and sessions, reapplies migrations and seeds a fresh date/password', async () => {
     const outsider = await db.user.create({
       data: { email: 'outside-seed@test.local', role: 'STAFF', passwordHash: 'old-non-seed-hash' },

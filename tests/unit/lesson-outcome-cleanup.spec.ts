@@ -15,7 +15,7 @@ interface CleanupDb {
   curriculumFeedback: { count: jest.Mock };
   scheduleGeneration: { count: jest.Mock };
   lesson: Record<'delete' | 'deleteMany' | 'update' | 'createMany' | 'count', jest.Mock>;
-  lessonOutcome: { deleteMany: jest.Mock };
+  lessonOutcome: Record<'findMany' | 'deleteMany', jest.Mock>;
   curriculumImportPreview: Record<'deleteMany' | 'findUnique', jest.Mock>;
   curriculumImportCommit: Record<'deleteMany' | 'findUnique' | 'create', jest.Mock>;
 }
@@ -55,7 +55,7 @@ function setup(): { db: CleanupDb; service: CurriculumSchedulingService } {
       createMany: jest.fn(),
       count: jest.fn().mockResolvedValue(0),
     },
-    lessonOutcome: { deleteMany: jest.fn() },
+    lessonOutcome: { findMany: jest.fn().mockResolvedValue([]), deleteMany: jest.fn() },
     curriculumImportPreview: {
       deleteMany: jest.fn(),
       findUnique: jest.fn().mockResolvedValue({
@@ -124,6 +124,11 @@ describe('deleting draft lessons that carry CLO links', () => {
 
   it('removes the CLO links of replaced lessons in a REPLACE import', async () => {
     const { db, service } = setup();
+    db.lessonOutcome.findMany.mockResolvedValue([
+      { outcome: { outcomeSetId: 'set-2' } },
+      { outcome: { outcomeSetId: 'set-1' } },
+      { outcome: { outcomeSetId: 'set-2' } },
+    ]);
     const input = {
       previewId: 'preview',
       expectedRevision: 3,
@@ -135,6 +140,15 @@ describe('deleting draft lessons that carry CLO links', () => {
       where: { lesson: { unitId: 'unit', kind: 'LESSON' } },
     });
     expect(calledBefore(db.lessonOutcome.deleteMany, db.lesson.deleteMany)).toBe(true);
+    const rawCalls = db.$queryRaw.mock.calls as Array<[TemplateStringsArray, ...unknown[]]>;
+    const setLockIndexes = rawCalls
+      .map((args, index) => ({ args, index }))
+      .filter(({ args }) => args[0].join('?').includes('FROM outcome_sets'));
+    expect(setLockIndexes.map(({ args }) => args[1])).toEqual(['set-1', 'set-2']);
+    for (const { index } of setLockIndexes)
+      expect(db.$queryRaw.mock.invocationCallOrder[index]).toBeLessThan(
+        db.lessonOutcome.deleteMany.mock.invocationCallOrder[0],
+      );
     expect(db.lesson.createMany).toHaveBeenCalled();
   });
 });

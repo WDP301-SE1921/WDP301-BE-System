@@ -7,6 +7,7 @@ import { seedSessions, seedLeavesAndMakeups } from './seed-sessions';
 import { seedAssessments } from './seed-assessments';
 import { seedOperations } from './seed-operations';
 import { demoId, localInstant, referenceDate } from './seed-calendar';
+import { CURRICULUM_EDITION } from './curriculum-content';
 
 export interface DemoSeedResult {
   referenceDate: string;
@@ -24,6 +25,17 @@ export async function seedDemo(
     async (tx) => {
       const manifest = await tx.auditLog.findUnique({ where: { id: demoId('manifest') } });
       const stored = manifest?.afterData;
+      if (
+        manifest &&
+        (!stored ||
+          typeof stored !== 'object' ||
+          Array.isArray(stored) ||
+          stored.curriculumEdition !== CURRICULUM_EDITION)
+      ) {
+        throw new Error(
+          'This demo contains an older curriculum edition. Run pnpm db:seed:curriculum --apply to add sourced drafts without overwriting existing lessons, or seed a fresh development database.',
+        );
+      }
       const savedDate =
         stored &&
         typeof stored === 'object' &&
@@ -55,8 +67,9 @@ export async function seedDemo(
           entityId: 'v1',
           afterData: {
             referenceDate: today.toISOString().slice(0, 10),
-            source: 'CLASS_CURRICULUM_INPUT_TEMPLATE',
-            version: 1,
+            source: 'Chân trời sáng tạo - Nhà xuất bản Giáo dục Việt Nam',
+            version: 2,
+            curriculumEdition: CURRICULUM_EDITION,
           },
           createdAt: localInstant(today, 9),
         },

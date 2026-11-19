@@ -29,14 +29,14 @@ describe('CLO source safeguards', () => {
     };
     const classes: SeedCatalog['classes'] = {};
     const lessons = {} as Record<string, Array<{ id: string; title: string }>>;
-    for (const subject of SUBJECTS.filter((item) => item.key !== 'physics')) {
+    for (const subject of SUBJECTS) {
       for (const grade of [6, 7, 8, 9]) {
         const key = `${subject.key}-${grade}`;
         classes[`${key}-a`] = { programId: `program-${key}` } as SeedCatalog['classes'][string];
-        lessons[key] =
-          key === 'math-8'
-            ? [{ id: 'lesson-math-8-1', title: `${TOPICS[key][0].title} - Khởi động` }]
-            : [];
+        lessons[key] = TOPICS[key].map((topic, index) => ({
+          id: `lesson-${key}-${index + 1}`,
+          title: topic.title,
+        }));
       }
     }
     await seedLearningOutcomes(
@@ -44,22 +44,23 @@ describe('CLO source safeguards', () => {
       { designer: { id: 'designer' }, 'designer-2': { id: 'designer-2' } } as unknown as SeedUsers,
       { classes, lessons } as unknown as SeedCatalog,
     );
-    expect(sets).toHaveLength(12);
-    expect(outcomes).toHaveLength(
-      Object.entries(TOPICS)
-        .filter(([key]) => /^(math|chemistry|biology)-[6-9]$/.test(key))
-        .reduce((total, [, topics]) => total + topics.length, 0),
-    );
-    expect(outcomes).toHaveLength(48);
+    expect(sets).toHaveLength(16);
+    expect(outcomes).toHaveLength(425);
     const linked = lessonLinks.mock.calls.map(
       ([arg]: [{ create: { lessonId: string } }]) => arg.create.lessonId,
     );
     expect(linked).toEqual(expect.arrayContaining(['lesson-math-8-1']));
-    for (const version of [3, 4])
-      expect(linked.filter((id) => id.endsWith(`lesson_math-8_v${version}`))).toHaveLength(1);
+    for (const key of ['math-8', 'physics-8'])
+      for (const version of [3, 4])
+        expect(linked.filter((id) => id.endsWith(`lesson_${key}_v${version}`))).toHaveLength(1);
+    expect(linked).toHaveLength(429);
     expect(sets.every((item) => item.status === 'DRAFT')).toBe(true);
     expect(outcomes.every((item) => item.sourceStatus === 'CANDIDATE')).toBe(true);
-    expect(outcomes.every((item) => String(item.sourceUrl).endsWith('.pdf'))).toBe(true);
+    expect(
+      outcomes.every((item) =>
+        String(item.sourceUrl).startsWith('https://taphuan.olm.vn/tap-huan/doc-sach/'),
+      ),
+    ).toBe(true);
   });
 
   interface ApprovalDb {

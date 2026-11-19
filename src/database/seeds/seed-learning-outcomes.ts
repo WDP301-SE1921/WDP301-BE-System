@@ -1,33 +1,16 @@
 import type { Prisma } from '@prisma/client';
-import { SUBJECTS, TOPICS } from './curriculum-content';
+import { SUBJECTS, TOPICS, TEXTBOOK_SOURCES, topicSourceLocator } from './curriculum-content';
 import type { SeedCatalog, DemoClass } from './seed-catalog';
 import type { SeedUsers } from './seed-accounts';
 import { demoId } from './seed-calendar';
 
-const MATH_SOURCE =
-  'https://admintruong.haiphong.shieldix.app/data/haiphong/thcsandong/2023_6/1/3-cttoan_16202319.pdf';
-const SCIENCE_SOURCE =
-  'https://filethcs.hcm.shieldix.app/data/hcmedu/thcsphongphu/attachments/2020_7/11ctkhoahoctunhien281220188_87202018.pdf';
-const MATH_PAGES: Record<number, string> = {
-  6: 'Lớp 6, Nội dung giáo dục, trang in 46–54',
-  7: 'Lớp 7, Nội dung giáo dục, trang in 55–62',
-  8: 'Lớp 8, Nội dung giáo dục, trang in 63–70',
-  9: 'Lớp 9, Nội dung giáo dục, trang in 71–78',
-};
-const SCIENCE_PAGES: Record<number, string> = {
-  6: 'Lớp 6, Nội dung giáo dục, trang in 22–32',
-  7: 'Lớp 7, Nội dung giáo dục, trang in 33–42',
-  8: 'Lớp 8, Nội dung giáo dục, trang in 43–58',
-  9: 'Lớp 9, Nội dung giáo dục, trang in 59–75',
-};
-
-/** The textbook topics are demo content. Sources are candidates until a teacher verifies each exact requirement. */
+/** Sourced objectives remain drafts until a teacher verifies their pedagogical wording. */
 export async function seedLearningOutcomes(
   tx: Prisma.TransactionClient,
   users: SeedUsers,
   catalog: SeedCatalog,
 ): Promise<void> {
-  for (const subject of SUBJECTS.filter((item) => item.key !== 'physics')) {
+  for (const subject of SUBJECTS) {
     for (const grade of [6, 7, 8, 9]) {
       const key = `${subject.key}-${grade}`;
       const classroom: DemoClass = catalog.classes[`${key}-a`];
@@ -45,6 +28,7 @@ export async function seedLearningOutcomes(
       });
       const outcomeByTopic: Array<{ title: string; id: string }> = [];
       for (const [index, topic] of TOPICS[key].entries()) {
+        const source = TEXTBOOK_SOURCES[topic.bookId];
         const outcome = await tx.learningOutcome.upsert({
           where: { id: demoId(`outcome_${key}_${index + 1}`) },
           update: {},
@@ -53,16 +37,13 @@ export async function seedLearningOutcomes(
             outcomeSetId: set.id,
             code: `${subject.code}-${grade}-${String(index + 1).padStart(2, '0')}`,
             title: topic.title,
-            statement: `Sau chủ đề “${topic.title}”, học sinh có thể: ${topic.summary}`,
-            sourceTitle:
-              subject.key === 'math'
-                ? 'Chương trình giáo dục phổ thông môn Toán (Thông tư 32/2018/TT-BGDĐT)'
-                : 'Chương trình giáo dục phổ thông môn Khoa học tự nhiên (Thông tư 32/2018/TT-BGDĐT)',
-            sourceUrl: subject.key === 'math' ? MATH_SOURCE : SCIENCE_SOURCE,
-            sourceLocator: subject.key === 'math' ? MATH_PAGES[grade] : SCIENCE_PAGES[grade],
+            statement: topic.summary,
+            sourceTitle: source.title,
+            sourceUrl: source.url,
+            sourceLocator: topicSourceLocator(topic),
             sourceStatus: 'CANDIDATE',
             sourceNote:
-              'Đề xuất từ chủ đề demo của trung tâm. Chưa đối chiếu tới từng yêu cầu cần đạt và chưa được giáo viên duyệt.',
+              'Tên bài và trang đã đối chiếu sách Chân trời sáng tạo. Mục tiêu do trung tâm diễn đạt; cần giáo viên xác minh và duyệt, không phải câu trích nguyên văn từ chương trình của Bộ.',
           },
         });
         outcomeByTopic.push({ title: topic.title, id: outcome.id });
@@ -76,8 +57,8 @@ export async function seedLearningOutcomes(
           });
         }
       }
-      // Rule since 2026-11-19: proposal drafts (catalog.ts, math-8 only here) need a CLO too.
-      if (key === 'math-8')
+      // Proposal lessons need an outcome link too, just like the full approved demo edition.
+      if (key === 'math-8' || key === 'physics-8')
         for (const version of [3, 4])
           await tx.lessonOutcome.upsert({
             where: {

@@ -47,24 +47,25 @@ Production chỉ cho phép `seed` ở chế độ `accounts` với `SEED_ALLOW_P
 
 ## Môn học và giáo trình
 
-Nguồn cấu trúc: [CLASS_CURRICULUM_INPUT_TEMPLATE](../../WDP301-FE-System/docs/CLASS_CURRICULUM_INPUT_TEMPLATE.md). Mẫu còn các ô `CHƯA ĐIỀN`, vì vậy các mức học phí, lịch và nội dung dưới đây là **dữ liệu minh họa**, chưa phải cấu hình chính thức của trung tâm hoặc giáo trình đã được đối chiếu với một bộ sách.
+Từ edition `ctst-2026-11-19`, nội dung học bám bộ **Chân trời sáng tạo** của Nhà xuất bản Giáo dục Việt Nam. Toán dùng đủ hai tập mỗi lớp. Vật lý, Hóa học và Sinh học lấy các phần tương ứng trong sách Khoa học tự nhiên; bài mở đầu dùng chung được giữ trong từng phần. Tên bài, chương và trang in đã được đối chiếu mục lục bản sách điện tử đang phát hành. Mục tiêu, ghi chú dạy học, bài tập và lời giải được biên soạn cho trung tâm, không chép nguyên văn sách. Xem [hướng dẫn nguồn và lệnh seed riêng](textbook-curriculum.md) và [danh mục chi tiết](textbook-curriculum-catalog.md).
 
-| Môn      | Khối       | Học phí tháng minh họa |
-| -------- | ---------- | ---------------------- |
-| Toán     | 6, 7, 8, 9 | 800.000 VND            |
-| Vật lý   | 6, 7, 8, 9 | 750.000 VND            |
-| Hóa học  | 6, 7, 8, 9 | 750.000 VND            |
-| Sinh học | 6, 7, 8, 9 | 700.000 VND            |
+| Môn      | Lớp 6 | Lớp 7 | Lớp 8 | Lớp 9 | Học phí tháng demo |
+| -------- | ----: | ----: | ----: | ----: | -----------------: |
+| Toán     |    66 |    54 |    47 |    44 |        800.000 VND |
+| Vật lý   |    18 |    15 |    18 |    20 |        750.000 VND |
+| Hóa học  |    12 |     7 |    16 |    25 |        750.000 VND |
+| Sinh học |    21 |    19 |    26 |    17 |        700.000 VND |
 
-- Có 16 chương trình môn/khối và 21 lớp, gồm lớp song song, lớp đầy, đóng đăng ký, tạm ngừng và chưa phân công.
-- Các lớp cùng môn/khối liên kết cùng chương trình và học phần đã duyệt.
-- Học phần trải từ đầu tháng trước đến hết tháng thứ hai sau tháng tham chiếu: tổng cộng bốn tháng.
-- Dataset mới từ 14/10/2026 có đủ bài học thường cho mọi buổi theo lịch tuần của lớp cần nhiều bài nhất; thứ tự từ 1 và liên tục. Không tạo kiểm tra tháng trong giáo trình. Giáo viên tạo bài kiểm tra riêng theo buổi và loại kiểm tra trong luồng bài tập.
-- Các bản đã duyệt mẫu ghi nhận giáo viên phụ trách thẩm định chuyên môn trước khi quản lý xác nhận. Chạy seed lại trên dataset cũ vẫn giữ nguyên giáo trình/buổi kiểm tra và những thay đổi đã có; không tự sửa bản đã áp dụng.
-- Bài học có mục tiêu, nội dung, bài tập, đáp án/hướng dẫn chấm và ghi chú tài liệu, theo cấu trúc mẫu.
-- Có bản lưu trữ, bản đã duyệt, bản nháp và bản chờ duyệt; góp ý và bài sửa liên kết bằng `basedOnId`/`resolutionLessonId`.
+Tổng 425 mục cho 16 chương trình; 413 mục riêng biệt trong 12 tập sách, do các bài mở đầu Khoa học tự nhiên được dùng chung. Số mục gồm bài học, bài tập cuối chương, ôn tập và hoạt động thực hành có trong mục lục. Không phải số tiết phân phối của nhà trường. Học phí và lịch vẫn là cấu hình demo.
 
-Chỉnh nội dung mẫu tại [curriculum-content.ts](../src/database/seeds/curriculum-content.ts). Chỉnh lớp/lịch/học phí tại [seed-catalog.ts](../src/database/seeds/seed-catalog.ts). Script giữ nguyên bản ghi đã tồn tại; thay đổi file nội dung chỉ áp dụng cho bản ghi chưa được tạo. Muốn thử bộ nội dung khác, dùng database development riêng hoặc sửa qua API.
+- Có 16 chương trình và 21 lớp cho các tình huống nghiệp vụ sẵn có.
+- Dataset mới có đủ nội dung cả năm, theo thứ tự sách. Lịch demo vẫn chỉ trải bốn tháng, từ đầu tháng trước đến hết tháng thứ hai sau ngày tham chiếu, bỏ nghỉ Tết. Chỉ một phần danh mục được gắn vào lịch demo; chương trình không tự ép toàn bộ sách vào bốn tháng.
+- Mỗi bài sách có ít nhất một lesson. Nếu lịch demo cần nhiều buổi hơn số mục sách của phần đó, seed thêm buổi luyện tập có nhãn của trung tâm bên cạnh bài gốc; đây không phải bài mới của sách. Không tạo kiểm tra tháng trong giáo trình.
+- Bộ mục tiêu học tập gồm **16 bộ nháp, 425 mục tiêu**, có nguồn và trang từng bài, gồm cả Vật lý. Nguồn giữ `CANDIDATE`, bộ giữ `DRAFT` để giáo viên xác minh cách diễn đạt và duyệt chuyên môn.
+- Trạng thái duyệt trong các học phần demo là mô phỏng luồng nghiệp vụ. Lệnh giáo trình riêng tạo bản nháp, không giả lập xác nhận của giáo viên.
+- Seed thông thường không ghi đè dữ liệu đã tồn tại. Dataset dùng edition minh họa cũ bị chặn trước khi ghi để tránh trộn nội dung cũ với thứ tự bài mới. Dùng `pnpm db:seed:curriculum --apply` để thêm bản nháp Chân trời sáng tạo cho các chương trình đã có; bản cũ và lịch sử tiếp tục được giữ. Có thể dùng database development mới để chạy toàn bộ demo edition mới.
+
+Chỉnh cấu hình học phí/lớp tại [seed-catalog.ts](../src/database/seeds/seed-catalog.ts). Dữ liệu bài học đặt theo từng môn/khối tại [textbooks](../src/database/seeds/textbooks); khai báo [sources.ts](../src/database/seeds/textbooks/sources.ts) ghi 12 nguồn sách điện tử.
 
 ## Tài khoản
 

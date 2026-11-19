@@ -21,12 +21,11 @@ export interface SeedCatalog {
 }
 
 const PHASES = [
-  'Khái niệm và ví dụ',
-  'Luyện tập cơ bản',
-  'Thực hành theo nhóm',
-  'Vận dụng thực tế',
-  'Giải bài tổng hợp',
-  'Ôn tập và củng cố',
+  'Bài học',
+  'Luyện tập có hướng dẫn',
+  'Giải thích cách làm',
+  'Đối chiếu và sửa bài',
+  'Củng cố kiến thức',
 ];
 
 export async function seedCatalog(
@@ -251,7 +250,8 @@ export async function seedCatalog(
           reviewedById: users.manager.id,
           reviewerTeacherId: users[subject.teacher].id,
           technicalReviewedAt: createdAt,
-          technicalReviewNote: 'Giáo viên phụ trách đã duyệt nội dung chuyên môn.',
+          technicalReviewNote:
+            'Trạng thái duyệt mô phỏng cho dữ liệu demo; không thay thế thẩm định của giáo viên.',
         },
       });
       const unit = await tx.curriculumUnit.upsert({
@@ -261,7 +261,7 @@ export async function seedCatalog(
           ...shared,
           id: demoId(`unit_${key}_v2`),
           basedOnId: archived.id,
-          title: `${subject.name} ${grade} - Học phần ${dateOnly(from).slice(0, 7)} đến ${dateOnly(to).slice(0, 7)}`,
+          title: `${subject.name} ${grade} - Chân trời sáng tạo - Giáo trình cả năm (demo)`,
           version: 2,
           status: 'APPROVED',
           submittedAt: createdAt,
@@ -270,8 +270,10 @@ export async function seedCatalog(
           reviewedById: users.manager.id,
           reviewerTeacherId: users[subject.teacher].id,
           technicalReviewedAt: createdAt,
-          technicalReviewNote: 'Giáo viên phụ trách đã duyệt nội dung chuyên môn.',
-          reviewNote: 'Trung tâm xác nhận áp dụng giáo trình đã được giáo viên duyệt.',
+          technicalReviewNote:
+            'Trạng thái duyệt mô phỏng cho dữ liệu demo; không thay thế thẩm định của giáo viên.',
+          reviewNote:
+            'Dữ liệu demo theo Chân trời sáng tạo, bao phủ cả năm; lịch demo chỉ sử dụng các bài đầu theo thứ tự.',
         },
       });
       result.units[key] = unit;
@@ -329,6 +331,7 @@ export async function seedCatalog(
         orderBy: { sequence: 'asc' },
       });
       const regularCount = Math.max(
+        TOPICS[key].length,
         ...classPlans.map((slots) =>
           legacyTests.length ? slots.length - lastMonthlySlots(slots).size : slots.length,
         ),
@@ -338,8 +341,11 @@ export async function seedCatalog(
       for (let index = 0; index < regularCount; index++) {
         const topicIndex = Math.floor((index * topics.length) / regularCount);
         const topic = topics[topicIndex];
+        const phaseIndex = index - Math.ceil((topicIndex * regularCount) / topics.length);
         const phase =
-          PHASES[(index - Math.ceil((topicIndex * regularCount) / topics.length)) % PHASES.length];
+          phaseIndex === 0
+            ? 'Bài học'
+            : `${PHASES[1 + ((phaseIndex - 1) % (PHASES.length - 1))]}${phaseIndex >= PHASES.length ? ` - Lượt ${Math.floor((phaseIndex - 1) / (PHASES.length - 1)) + 1}` : ''}`;
         const lesson = await tx.lesson.upsert({
           where: { id: demoId(`lesson_${key}_${index + 1}`) },
           update: {},
@@ -348,7 +354,7 @@ export async function seedCatalog(
             unitId: unit.id,
             programId: program.id,
             designerId: users[subject.designer].id,
-            title: `${topic.title} - ${phase}`,
+            title: phase === 'Bài học' ? topic.title : `${topic.title} - ${phase}`,
             content: lessonContent(topic, phase),
             sequence: index + 1,
             status: 'APPROVED',
